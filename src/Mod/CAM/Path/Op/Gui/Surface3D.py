@@ -61,7 +61,7 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             ("boundBoxSelect", "BoundBox"),
             ("layerMode", "LayerMode"),
             ("cutPattern", "CutPattern"),
-            ("clearLastLayer", "ClearLastLayer"),
+            ("cutPatternZLevel", "CutPatternZLevel")
         ]
         enumTups = PathSurface3D.ObjectSurface3D.propertyEnumerations(dataType="raw")
         PathGuiUtil.populateCombobox(form, enumTups, comboToPropertyMap)
@@ -82,13 +82,14 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             obj.LayerMode = str(self.form.layerMode.currentData())
 
         obj.CutPattern = self.form.cutPattern.currentData()
-        obj.ClearLastLayer = self.form.clearLastLayer.currentData()
+
+        obj.CutPatternZLevel = self.form.cutPatternZLevel.currentData()
 
         if obj.AvoidLastX_Faces != self.form.avoidLastX_Faces.value():
             obj.AvoidLastX_Faces = self.form.avoidLastX_Faces.value()
 
         PathGuiUtil.updateInputField(obj, "DepthOffset", self.form.depthOffset)
-        PathGuiUtil.updateInputField(obj, "IgnoreOuterAbove", self.form.ignoreOuterAbove)
+        PathGuiUtil.updateInputField(obj, "StockToLeave", self.form.stockToLeave)
         PathGuiUtil.updateInputField(obj, "BoundaryAdjustment", self.form.boundaryAdjustment)
         PathGuiUtil.updateInputField(obj, "SampleInterval", self.form.sampleInterval)
 
@@ -104,6 +105,15 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         if obj.KeepToolDown != self.form.keepToolDown.isChecked():
             obj.KeepToolDown = self.form.keepToolDown.isChecked()
 
+        if obj.ClearPlanarOnly != self.form.clearPlanarOnly.isChecked():
+            obj.ClearPlanarOnly = self.form.clearPlanarOnly.isChecked()
+
+        if obj.CutPatternReversed != self.form.cutPatternReversed.isChecked():
+            obj.CutPatternReversed = self.form.cutPatternReversed.isChecked()
+
+        if obj.IgnoreOuter != self.form.ignoreOuter.isChecked():
+            obj.IgnoreOuter = self.form.ignoreOuter.isChecked()
+
     def setFields(self, obj):
         """setFields(obj) ... transfers obj's property values to UI"""
         self.setupToolController(obj, self.form.toolController)
@@ -112,17 +122,18 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         self.selectInComboBox(obj.BoundBox, self.form.boundBoxSelect)
         self.selectInComboBox(obj.LayerMode, self.form.layerMode)
         self.selectInComboBox(obj.CutPattern, self.form.cutPattern)
-        self.selectInComboBox(obj.ClearLastLayer, self.form.clearLastLayer)
+        self.selectInComboBox(obj.CutPatternZLevel, self.form.cutPatternZLevel)
 
         self.form.avoidLastX_Faces.setValue(obj.AvoidLastX_Faces)
         self.form.depthOffset.setText(
             FreeCAD.Units.Quantity(obj.DepthOffset.Value, FreeCAD.Units.Length).UserString
         )
-        self.form.ignoreOuterAbove.setText(
-            FreeCAD.Units.Quantity(obj.IgnoreOuterAbove.Value, FreeCAD.Units.Length).UserString
-        )
+
         self.form.boundaryAdjustment.setText(
             FreeCAD.Units.Quantity(obj.BoundaryAdjustment.Value, FreeCAD.Units.Length).UserString
+        )
+        self.form.stockToLeave.setText(
+            FreeCAD.Units.Quantity(obj.StockToLeave.Value, FreeCAD.Units.Length).UserString
         )
         self.form.stepOver.setValue(obj.StepOver)
         self.form.sampleInterval.setText(
@@ -144,6 +155,21 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         else:
             self.form.keepToolDown.setCheckState(QtCore.Qt.Unchecked)
 
+        if obj.ClearPlanarOnly:
+            self.form.clearPlanarOnly.setCheckState(QtCore.Qt.Checked)
+        else:
+            self.form.clearPlanarOnly.setCheckState(QtCore.Qt.Unchecked)
+
+        if obj.CutPatternReversed:
+            self.form.cutPatternReversed.setCheckState(QtCore.Qt.Checked)
+        else:
+            self.form.cutPatternReversed.setCheckState(QtCore.Qt.Unchecked)
+
+        if obj.IgnoreOuter:
+            self.form.ignoreOuter.setCheckState(QtCore.Qt.Checked)
+        else:
+            self.form.ignoreOuter.setCheckState(QtCore.Qt.Unchecked)
+
         self._syncAccuracyLabel()
 
         self.updateVisibility()
@@ -157,11 +183,11 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         signals.append(self.form.boundBoxSelect.currentIndexChanged)
         signals.append(self.form.layerMode.currentIndexChanged)
         signals.append(self.form.cutPattern.currentIndexChanged)
-        signals.append(self.form.clearLastLayer.currentIndexChanged)
+        signals.append(self.form.cutPatternZLevel.currentIndexChanged)
         signals.append(self.form.avoidLastX_Faces.editingFinished)
         signals.append(self.form.depthOffset.editingFinished)
-        signals.append(self.form.ignoreOuterAbove.editingFinished)
         signals.append(self.form.boundaryAdjustment.editingFinished)
+        signals.append(self.form.stockToLeave.editingFinished)
         signals.append(self.form.stepOver.editingFinished)
         signals.append(self.form.sampleInterval.editingFinished)
         signals.append(self.form.accuracySlider.valueChanged)
@@ -170,10 +196,16 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             signals.append(self.form.useStartPoint.checkStateChanged)
             signals.append(self.form.optimizeEnabled.checkStateChanged)
             signals.append(self.form.keepToolDown.checkStateChanged)
+            signals.append(self.form.clearPlanarOnly.checkStateChanged)
+            signals.append(self.form.cutPatternReversed.checkStateChanged)
+            signals.append(self.form.ignoreOuter.checkStateChanged)
         else:  # Qt version < 6.7.0
             signals.append(self.form.useStartPoint.stateChanged)
             signals.append(self.form.optimizeEnabled.stateChanged)
             signals.append(self.form.keepToolDown.stateChanged)
+            signals.append(self.form.clearPlanarOnly.stateChanged)
+            signals.append(self.form.cutPatternReversed.stateChanged)
+            signals.append(self.form.ignoreOuter.stateChanged)
 
         return signals
 
@@ -219,9 +251,10 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         """updateVisibility(sentObj=None)... Updates visibility of Tasks panel objects."""
         strategy = self.form.strategySelect.currentData()
         is_dropcutter = strategy == "DropCutter"
-        is_waterline = strategy in ("Waterline", "AdaptiveWaterline", "SliceWaterline")
+        is_zlevel = strategy == "ZLevelHybrid"
+        is_waterline = strategy in ("Waterline", "AdaptiveWaterline")
 
-        # DropCutter-specific widgets
+        # DropCutter - specific widgets
         if is_dropcutter:
             self.form.cutPattern.show()
             self.form.cutPattern_label.show()
@@ -234,18 +267,47 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             self.form.avoidLastX_Faces.hide()
             self.form.avoidLastX_Faces_label.hide()
             self.form.keepToolDown.hide()
-
-        # Waterline-specific widgets
-        if is_waterline:
-            self.form.clearLastLayer.show()
-            self.form.clearLastLayer_label.show()
-            self.form.ignoreOuterAbove.show()
-            self.form.ignoreOuterAbove_label.show()
+        # Z-Level Hybrid - specific widgets    
+        if is_zlevel:
+            # Show
+            self.form.cutPatternZLevel.show()
+            self.form.cutPatternZLevel_label.show()
+            self.form.depthOffset.show()
+            self.form.depthOffset_label.show()
+            self.form.stockToLeave.show()
+            self.form.stockToLeave_label.show()
+            self.form.clearPlanarOnly.show()
+            self.form.cutPatternReversed.show()
+            self.form.ignoreOuter.show()
+            # Hide
+            self.form.accuracySlider.hide()
+            self.form.accuracyDescription.hide()
+            self.form.useStartPoint.hide()
+            self.form.sampleInterval.hide()
+            self.form.sampleInterval_label.hide()
+            self.form.optimizeEnabled.hide()
+            self.form.layerMode.hide()
+            self.form.layerMode_label.hide()
         else:
-            self.form.clearLastLayer.hide()
-            self.form.clearLastLayer_label.hide()
-            self.form.ignoreOuterAbove.hide()
-            self.form.ignoreOuterAbove_label.hide()
+            # Hide
+            self.form.cutPatternZLevel.hide()
+            self.form.cutPatternZLevel_label.hide()
+            self.form.depthOffset.hide()
+            self.form.depthOffset_label.hide()
+            self.form.stockToLeave.hide()
+            self.form.stockToLeave_label.hide()
+            self.form.clearPlanarOnly.hide()
+            self.form.cutPatternReversed.hide()
+            self.form.ignoreOuter.hide()
+            # Show
+            self.form.accuracySlider.show()
+            self.form.accuracyDescription.show()
+            self.form.useStartPoint.show()
+            self.form.sampleInterval.show()
+            self.form.sampleInterval_label.show()
+            self.form.optimizeEnabled.show()
+            self.form.layerMode.show()
+            self.form.layerMode_label.show()
 
     def registerSignalHandlers(self, obj):
         self.form.strategySelect.currentIndexChanged.connect(self.updateVisibility)

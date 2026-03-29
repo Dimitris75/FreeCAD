@@ -437,6 +437,7 @@ SET(PathPythonBaseGenerator_SRCS
     Path/Base/Generator/surface_dropcutter.py
     Path/Base/Generator/surface_waterline.py
     Path/Base/Generator/surface_stl.py
+    Path/Base/Generator/surface_zlevel.py
 )
 
 # C++ extensions are built in App/CMakeLists.txt

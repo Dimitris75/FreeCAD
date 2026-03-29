@@ -72,7 +72,7 @@ class ObjectSurface3D(PathOp.ObjectOp):
     - DropCutter: 3D surface finishing via drop-cutter along scan patterns
     - Waterline: Constant-Z contours via OCL push-cutter + Weave
     - AdaptiveWaterline: Adaptive-sampling variant of Waterline
-    - SliceWaterline: Waterline contours via shape slicing (no OCL, fallback)
+    - Z-Level Hybrid: Z-Level Waterline contours via shape slicing (no OCL, fallback)
     """
 
     # Accuracy level presets for Speed vs Accuracy control
@@ -188,7 +188,7 @@ class ObjectSurface3D(PathOp.ObjectOp):
                     "App::Property",
                     "Select the 3D surfacing strategy: DropCutter for scan-based finishing, "
                     "Waterline/AdaptiveWaterline for constant-Z contours, "
-                    "or SliceWaterline for non-OCL fallback.",
+                    "or Z-Lvel Hybrid for non-OCL fallback.",
                 ),
             ),
             # -- Mesh Conversion --
@@ -267,6 +267,15 @@ class ObjectSurface3D(PathOp.ObjectOp):
                 ),
             ),
             (
+                "App::PropertyEnumeration",
+                "CutPatternZLevel",
+                "Clearing Options",
+                QT_TRANSLATE_NOOP(
+                    "App::Property",
+                    "Set the geometric clearing pattern to use for the operation."
+                    ),
+            ),
+            (
                 "App::PropertyFloat",
                 "CutPatternAngle",
                 "Clearing Options",
@@ -337,18 +346,30 @@ class ObjectSurface3D(PathOp.ObjectOp):
             # -- Waterline-specific --
             (
                 "App::PropertyEnumeration",
-                "ClearLastLayer",
+                "SamplingAccuracy",
                 "Clearing Options",
-                QT_TRANSLATE_NOOP(
-                    "App::Property",
-                    "Set to clear last layer in a `Multi-pass` operation.",
-                ),
+                QT_TRANSLATE_NOOP("App::Property", "Number of sub-slices for 3D tool compensation."),
             ),
             (
                 "App::PropertyDistance",
-                "IgnoreOuterAbove",
+                "StockToLeave",
                 "Clearing Options",
-                QT_TRANSLATE_NOOP("App::Property", "Ignore outer waterlines above this height."),
+                QT_TRANSLATE_NOOP("App::Property", "Material to leave on the part in the XY plane."),
+            ),
+            (
+                "App::PropertyBool",
+                "ClearPlanarOnly",
+                "Clearing Options",
+                QT_TRANSLATE_NOOP(
+                    "App::Property",
+                    "If true, clears only detected horizontal floors.",
+                ),
+            ),
+            (
+                "App::PropertyBool",
+                "IgnoreOuter",
+                "Clearing Options",
+                QT_TRANSLATE_NOOP("App::Property", "Ignore outer waterlines."),
             ),
             # -- Optimization --
             (
@@ -412,7 +433,7 @@ class ObjectSurface3D(PathOp.ObjectOp):
                 (translate("CAM_Surface3D", "DropCutter"), "DropCutter"),
                 (translate("CAM_Surface3D", "Waterline"), "Waterline"),
                 (translate("CAM_Surface3D", "AdaptiveWaterline"), "AdaptiveWaterline"),
-                (translate("CAM_Surface3D", "SliceWaterline"), "SliceWaterline"),
+                (translate("CAM_Surface3D", "Z-Level Hybrid"), "ZLevelHybrid"),
             ],
             "BoundBox": [
                 (translate("CAM_Surface3D", "BaseBoundBox"), "BaseBoundBox"),
@@ -423,15 +444,6 @@ class ObjectSurface3D(PathOp.ObjectOp):
                 (translate("CAM_Surface3D", "CenterOfBoundBox"), "CenterOfBoundBox"),
                 (translate("CAM_Surface3D", "XminYmin"), "XminYmin"),
                 (translate("CAM_Surface3D", "Custom"), "Custom"),
-            ],
-            "ClearLastLayer": [
-                (translate("CAM_Surface3D", "Off"), "Off"),
-                (translate("CAM_Surface3D", "Circular"), "Circular"),
-                (translate("CAM_Surface3D", "CircularZigZag"), "CircularZigZag"),
-                (translate("CAM_Surface3D", "Line"), "Line"),
-                (translate("CAM_Surface3D", "Offset"), "Offset"),
-                (translate("CAM_Surface3D", "Spiral"), "Spiral"),
-                (translate("CAM_Surface3D", "ZigZag"), "ZigZag"),
             ],
             "CutMode": [
                 (translate("CAM_Surface3D", "Conventional"), "Conventional"),
@@ -445,9 +457,23 @@ class ObjectSurface3D(PathOp.ObjectOp):
                 (translate("CAM_Surface3D", "Spiral"), "Spiral"),
                 (translate("CAM_Surface3D", "Offset"), "Offset"),
             ],
+            "CutPatternZLevel": [
+                (translate("CAM_Surface3D", "None"), "None"),
+                (translate("CAM_Surface3D", "Line"), "Line"),
+                (translate("CAM_Surface3D", "ZigZag"), "ZigZag"),
+                (translate("CAM_Surface3D", "Offset"), "Offset"),
+                (translate("CAM_Surface3D", "Grid"), "Grid"),
+            ],
             "LayerMode": [
                 (translate("CAM_Surface3D", "Single-pass"), "Single-pass"),
                 (translate("CAM_Surface3D", "Multi-pass"), "Multi-pass"),
+            ],
+            "SamplingAccuracy": [
+                (translate("path_waterline", "Standard"), "4"),
+                (translate("path_waterline", "High"), "8"),
+                (translate("path_waterline", "Very High"), "16"),
+                (translate("path_waterline", "Ultra"), "32"),
+                (translate("path_waterline", "Extreme"), "64"),
             ],
         }
 
@@ -475,10 +501,13 @@ class ObjectSurface3D(PathOp.ObjectOp):
             "LayerMode": "Single-pass",
             "CutMode": "Conventional",
             "CutPattern": "Line",
+            "CutPatternZLevel": "None",
             "PatternCenterAt": "CenterOfMass",
-            "ClearLastLayer": "Off",
-            "StepOver": 100.0,
-            "CutPatternAngle": 0.0,
+            "ClearPlanarOnly": False,
+            "IgnoreOuter": False,
+            "StockToLeave": 0.0,
+            "StepOver": 50.0,
+            "CutPatternAngle": 45.0,
             "DepthOffset": 0.0,
             "SampleInterval": 1.0,
             "BoundaryAdjustment": 0.0,
@@ -488,6 +517,7 @@ class ObjectSurface3D(PathOp.ObjectOp):
             "AngularDeflection": 0.25,
             "LinearDeflection": 0.001,
             "MeshSimplification": 1,  # Default to highest accuracy (no simplification)
+            "SamplingAccuracy": "4",
         }
 
         warn = True
@@ -505,15 +535,21 @@ class ObjectSurface3D(PathOp.ObjectOp):
     def setEditorProperties(self, obj):
         """setEditorProperties(obj) ... Adjust property visibility based on Strategy."""
         Path.Log.track()
-        # Default: hide everything strategy-specific, then show what's needed
-        show = 0  # 0 = show
-        hide = 2  # 2 = hide
+        # UI modes: 0 = show, 2 = hide
+        show = 0
+        hide = 2
 
-        strategy = obj.Strategy if hasattr(obj, "Strategy") else "DropCutter"
-        is_dropcutter = strategy == "DropCutter"
-        is_waterline = strategy in ("Waterline", "AdaptiveWaterline", "SliceWaterline")
+        # Logic Groups:
+        # A: Z-Level Hybrid specific properties
+        # B: DropCutter/Mesh-specific properties
+        # C: Pattern-dependent settings (StepOver, etc.)
+        A, B, C = hide, show, show
 
-        # DropCutter-specific: scan pattern, pattern angle
+        strategy = getattr(obj, "Strategy", "DropCutter")
+        is_dropcutter = (strategy == "DropCutter")
+        is_zlevel = (strategy == "ZLevelHybrid")
+
+        # DropCutter context
         obj.setEditorMode("CutPattern", show if is_dropcutter else hide)
         obj.setEditorMode("CutPatternAngle", show if is_dropcutter else hide)
 
@@ -526,23 +562,45 @@ class ObjectSurface3D(PathOp.ObjectOp):
         obj.setEditorMode("PatternCenterAt", show if pattern_needs_center else hide)
         obj.setEditorMode("PatternCenterCustom", show if pattern_needs_center else hide)
 
-        # Waterline-specific
-        obj.setEditorMode("ClearLastLayer", show if is_waterline else hide)
-        obj.setEditorMode("IgnoreOuterAbove", show if is_waterline else hide)
+        # ZLevelHybrid context
+        if is_zlevel:
+            A, B = show, hide
+            z_pattern = getattr(obj, "CutPatternZLevel", "None")
+            C = hide if z_pattern == "None" else show
 
-        # Common to all strategies
-        obj.setEditorMode("StepOver", show)
-        obj.setEditorMode("SampleInterval", show)
+        # Apply Visibility to Z-Level Group (A)
+        obj.setEditorMode("ClearPlanarOnly", A)
+        obj.setEditorMode("IgnoreOuter", A)
+        obj.setEditorMode("StockToLeave", A)
+        obj.setEditorMode("CutPatternAngle", A)
+        obj.setEditorMode("CutPatternZLevel", A)
+        obj.setEditorMode("SamplingAccuracy", A)
+
+        # Apply Visibility to Mesh/OCL Group (B)
+        obj.setEditorMode("LayerMode", B)
+        obj.setEditorMode("AngularDeflection", B)
+        obj.setEditorMode("LinearDeflection", B)
+        obj.setEditorMode("MeshSimplification", B)
+        obj.setEditorMode("AvoidLastX_Faces", B)
+        obj.setEditorMode("GapThreshold", B)
+        obj.setEditorMode("KeepToolDown", B)
+        obj.setEditorMode("OptimizeLinearPaths", B)
+        obj.setEditorMode("SampleInterval", B)
+
+        # Apply Visibility to Common/Contextual Group (C)
+        obj.setEditorMode("StepOver", C)
+        obj.setEditorMode("CutPatternReversed", C)
+
+        # Global Properties
         obj.setEditorMode("CutMode", show)
-        obj.setEditorMode("CutPatternReversed", show)
         obj.setEditorMode("DepthOffset", show)
-        obj.setEditorMode("LayerMode", show)
         obj.setEditorMode("BoundBox", show)
+        obj.setEditorMode("LayerMode", show if not is_zlevel else hide)
 
     def opOnChanged(self, obj, prop):
         if hasattr(self, "propertiesReady"):
             if self.propertiesReady:
-                if prop in ["Strategy", "CutPattern"]:
+                if prop in ["Strategy", "CutPattern", "CutPatternZLevel"]:
                     self.setEditorProperties(obj)
                 elif prop == "MeshSimplification":
                     if hasattr(obj, "MeshSimplification"):
@@ -696,6 +754,10 @@ class ObjectSurface3D(PathOp.ObjectOp):
         if obj.AvoidLastX_Faces > 100:
             obj.AvoidLastX_Faces = 100
             Path.Log.error("AvoidLastX_Faces: Avoid last X faces count limited to 100.")
+
+        # Limit StockToLeave to positive values
+        if obj.StockToLeave < 0:
+            obj.StockToLeave = 0
 
     def opUpdateDepths(self, obj):
         if hasattr(obj, "Base") and obj.Base:
@@ -1267,62 +1329,189 @@ class ObjectSurface3D(PathOp.ObjectOp):
 
         return cmds
 
-    def _executeSliceWaterline(self, obj, job, bb):
-        """Execute the SliceWaterline strategy (no OCL required).
+    def _executeZLevelHybrid(self, obj, job, bb):
+        """Execute the Z-Level Hybrid strategy (no OCL required).
+
+        A high-precision geometric finishing strategy that operates directly on
+        B-Rep geometry. It combines constant-Z contouring with automatic floor
+        detection and clearing.
 
         Flow:
-        1. Get model shapes
-        2. Slice at multiple Z-heights
-        3. Convert to G-code
+        1. Prepare and fuse model geometry into a manifold shape.
+        2. Extract ToolBit parameters for specific 3D profile math.
+        3. Arguments and Dictionaries preparation
+        4. Generate master boundary (TrimFace) and stable background pool.
+        5. Categorize depths, reconciling standard steps with physical model floors.
+        6. Dispatch to surface_zlevel generator for C++ accelerated geometry stacking.
+        7. Convert the resulting geometry stack into optimized G-code Path commands.
         """
+
+        def _makeExtendedBoundBox(wBB, bbBfr, zDep):
+            """Creates a large rectangular wire around the stock."""
+            p1 = FreeCAD.Vector(wBB.XMin - bbBfr, wBB.YMin - bbBfr, zDep)
+            p2 = FreeCAD.Vector(wBB.XMax + bbBfr, wBB.YMin - bbBfr, zDep)
+            p3 = FreeCAD.Vector(wBB.XMax + bbBfr, wBB.YMax + bbBfr, zDep)
+            p4 = FreeCAD.Vector(wBB.XMin - bbBfr, wBB.YMax + bbBfr, zDep)
+            return Part.makePolygon([p1, p2, p3, p4, p1])
+
+        def _getZLevelToolParams():
+            """Specialized helper for Z-Level Hybrid math requirements."""
+            tool = obj.ToolController.Tool
+            dia = float(tool.Diameter)
+            shape_type = getattr(tool, "ShapeType")
+            radius = dia / 2.0
+
+            is_3d = False
+            c_rad = 0.0
+            if "Ballend" in shape_type:
+                is_3d = True
+                c_rad = radius
+            elif "Bullnose" in shape_type:
+                is_3d = True
+                c_rad = float(getattr(tool, "CornerRadius", 0.0))
+            elif "Endmill" in shape_type:
+                profile = "Endmill"
+                c_rad = 0.0
+                is_threeD = False
+            else:
+                return None
+
+            return {
+                "radius": radius,
+                "c_rad": c_rad,
+                "profile": shape_type,
+                "is_threeD": is_3d
+            }
+
+        def _getZLevelTrimFace(shape, borderFace, tool_params, wpc):
+            """Calculates the 'Outside World' mask to clip the toolpath."""
+
+            # In Z-Level Hybrid, we always use the entire model silhouette
+            # make_boundary_face(faces, radius, extra_offset)
+            radius = tool_params["radius"]
+            adj = obj.BoundaryAdjustment.Value - 0.01
+
+            if obj.BoundBox == "Stock":
+                bbFace = surface_common.make_boundary_face(job.Stock.Shape.Faces, radius, adj)
+            else:
+                bbFace = surface_common.make_boundary_face(shape.Faces, radius, adj)
+
+            trim_engine = Path.Area()
+            trim_engine.setPlane(wpc)
+            trim_engine.add(borderFace)
+
+            if bbFace:
+                bbFace.translate(FreeCAD.Vector(0, 0, -bbFace.BoundBox.ZMin))
+                trim_engine.add(bbFace, op=1)
+
+            return trim_engine.getShape()
+
         startTime = time.time()
 
-        min_z = obj.FinalDepth.Value
-        max_z = obj.StartDepth.Value
-        step_down = obj.StepDown.Value
-        cut_climb = obj.CutMode == "Climb"
-        if obj.CutPatternReversed:
-            cut_climb = not cut_climb
+        # 1. Geometry prep - Exclusively use the whole model
+        models = job.Model.Group
+        if not models:
+            Path.Log.error("Z-Level Hybrid: No model found in Job.")
+            return []
 
-        # Get the model shape(s)
-        shapes = []
-        for base, subs in self.baseShapes(obj):
-            shapes.append(base.Shape)
+        shape = models[0].Shape if len(models) == 1 else models[0].Shape.multiFuse([m.Shape for m in models[1:]])
 
-        if not shapes:
-            # Fallback to model shapes
-            for model in job.Model.Group:
-                shapes.append(model.Shape)
+        if not shape:
+            Path.Log.error("Z-Level Hybrid: No geometry found to process.")
+            return []
 
-        # Combine shapes if multiple
-        if len(shapes) == 1:
-            shape = shapes[0]
-        else:
-            shape = shapes[0]
-            for s in shapes[1:]:
-                shape = shape.fuse(s)
+        # Explicitly check if the Base Geometry list is empty.---------------------------------------------------------------
+        # This prevents the algorithm from attempting to process a 'raw' model 
+        # that might be topologically invalid. After the issue has been resolved, remove those lines.
+        if not hasattr(obj, "Base") or not obj.Base:
+            msg = translate("CAM_Surface3D", "Z-Level Hybrid: No Base Geometry selected. "
+                                             "The shape is invalid for an unknown reason when no Base Geometry is selected.")
+            FreeCAD.Console.PrintError(msg + "\n")
+            return []  # Exit early to prevent crash-------------------------------------------------------------------------
 
-        Path.Log.info(
-            "SliceWaterline: min_z={:.2f}, max_z={:.2f}, step_down={:.2f}".format(
-                min_z, max_z, step_down
+        # 2. Extract ToolBit parameters
+        tool_params = _getZLevelToolParams()
+        if tool_params is None:
+            error_msg = translate(
+                "Surface3D",
+                "Operation failed: A Tool Type has been selected that is not supported by Z-Level Hybrid Algorithm.",
             )
+            FreeCAD.Console.PrintError(error_msg + "\n")
+            return []
+
+        # 3. Arguments and Dictionaries preparation
+        wpc = Part.makeCircle(2.0, FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(0, 0, 1))
+        radius = tool_params["radius"]
+
+        clear_planar_only = getattr(obj, "ClearPlanarOnly", True)
+        depth_offset = obj.DepthOffset.Value
+        ignore_outer = getattr(obj, "IgnoreOuter", False)
+        accuracy_val = getattr(obj, "SamplingAccuracy", "4")
+        step_over = (obj.StepOver / 100.0) * (radius * 2)
+        stock_to_leave = obj.StockToLeave.Value
+
+        pattern_options = {
+            "cut_climb": obj.CutMode == "Climb",
+            "cut_pattern": getattr(obj, "CutPatternZLevel", "None"),
+            "pattern_angle": getattr(obj, "CutPatternAngle" , "45"),
+            "reverse_pattern": getattr(obj, "CutPatternReversed", False)
+        }
+
+        height_params = {
+            "safe_hght": obj.SafeHeight.Value,
+            "clearance_hght": obj.ClearanceHeight.Value
+        }
+
+        feed_params = {
+            "horizFeed": self.horizFeed,
+            "vertFeed": self.vertFeed,
+            "horizRapid": self.horizRapid,
+            "vertRapid": self.vertRapid
+        }
+
+        # 4. Boundary preparation
+        buffer = radius * 10.0
+        border_poly = _makeExtendedBoundBox(job.Stock.Shape.BoundBox, buffer, 0.0)
+        borderFace = Part.Face(border_poly)
+        trimFace = _getZLevelTrimFace(shape, borderFace, tool_params, wpc)
+
+        import Path.Base.Generator.surface_zlevel as surface_zlevel
+        # 5. Depth categorization
+        cat_steps = surface_zlevel.categorize_floor_steps(
+            shape,
+            obj.OpStartDepth.Value,
+            obj.OpFinalDepth.Value,
+            obj.StepDown.Value
         )
 
-        wl_data = surface_waterline.slice_waterline(shape, min_z, max_z, step_down)
+        # 6. Generate Geometry Stack
+        wl_data = surface_zlevel.zlevel_hybrid_stack(
+            shape,
+            cat_steps,
+            borderFace,
+            trimFace,
+            tool_params,
+            stock_to_leave,
+            accuracy_val,
+            depth_offset,
+            wpc
+        )
 
-        cmds = surface_waterline.waterline_to_gcode(
+        # 7. Convert to G-Code
+        cmds = surface_zlevel.zlevel_hybrid_to_gcode(
             wl_data,
-            horiz_feed=self.horizFeed,
-            vert_rapid=self.vertRapid,
-            horiz_rapid=self.horizRapid,
-            safe_z=obj.SafeHeight.Value,
-            clearance_z=obj.ClearanceHeight.Value,
-            cut_climb=cut_climb,
+            feed_params,
+            height_params,
+            pattern_options,
+            ignore_outer,
+            clear_planar_only,
+            step_over,
+            radius
         )
 
         elapsed = time.time() - startTime
         Path.Log.info(
-            "SliceWaterline strategy completed in {:.2f}s, {} commands".format(elapsed, len(cmds))
+            "Z-Level Hybrid strategy completed in {:.2f}s, {} commands".format(elapsed, len(cmds))
         )
 
         return cmds
@@ -1380,10 +1569,10 @@ class ObjectSurface3D(PathOp.ObjectOp):
                 Path.Log.debug("Surface3D: Processing whole model (no specific face selection)")
                 # Continue with whole model processing
 
-        # SliceWaterline doesn't need OCL cutter or STL
-        if strategy == "SliceWaterline":
+        # Z-Level Hybrid doesn't need OCL cutter or STL
+        if strategy == "ZLevelHybrid":
             bb = self._getBoundBox(obj, JOB, selected_faces)
-            cmds = self._executeSliceWaterline(obj, JOB, bb)
+            cmds = self._executeZLevelHybrid(obj, JOB, bb)
             self.commandlist.extend(cmds)
             return
 
@@ -1528,4 +1717,16 @@ def SetupProperties():
     setup.append("SampleInterval")
     setup.append("StepOver")
     setup.append("OptimizeLinearPaths")
+    # --- Z-Level Hybrid Specific Properties ---
+    setup.append("CutPatternZLevel")
+    setup.append("SamplingAccuracy")
+    setup.append("StockToLeave")
+    setup.append("ClearPlanarOnly")
+    setup.append("IgnoreOuter")
+    # --- Optimization and Mesh ---
+    setup.append("OptimizeLinearPaths")
+    setup.append("SampleInterval")
+    setup.append("LinearDeflection")
+    setup.append("AngularDeflection")
+    setup.append("MeshSimplification")
     return setup

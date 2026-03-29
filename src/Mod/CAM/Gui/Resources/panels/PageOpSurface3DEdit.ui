@@ -174,16 +174,16 @@
        </widget>
       </item>
       <item row="5" column="0">
-       <widget class="QLabel" name="clearLastLayer_label">
+       <widget class="QLabel" name="cutPatternZLevel_label">
         <property name="text">
-         <string>Clear last layer</string>
+         <string>Cut pattern Z-Level</string>
         </property>
        </widget>
       </item>
       <item row="5" column="1">
-       <widget class="QComboBox" name="clearLastLayer">
+       <widget class="QComboBox" name="cutPatternZLevel">
         <property name="toolTip">
-         <string>Set to clear last layer in a Multi-pass operation</string>
+         <string>Set the geometric clearing pattern to use for the operation</string>
         </property>
        </widget>
       </item>
@@ -219,16 +219,16 @@
        </widget>
       </item>
       <item row="8" column="0">
-       <widget class="QLabel" name="ignoreOuterAbove_label">
+       <widget class="QLabel" name="stockToLeave_label">
         <property name="text">
-         <string>Ignore outer above</string>
+         <string>Stock to leave</string>
         </property>
        </widget>
       </item>
       <item row="8" column="1">
-       <widget class="Gui::InputField" name="ignoreOuterAbove">
+       <widget class="Gui::InputField" name="stockToLeave">
         <property name="toolTip">
-         <string>Ignore outer waterlines above this height</string>
+         <string>Material to leave on the part in the XY plane</string>
         </property>
         <property name="unit" stdset="0">
          <string notr="true">mm</string>
@@ -318,6 +318,36 @@ A step over of 100% results in no overlap between two different cycles.</string>
         </property>
         <property name="text">
          <string>Keep tool down</string>
+        </property>
+       </widget>
+      </item>
+      <item row="14" column="0">
+       <widget class="QCheckBox" name="clearPlanarOnly">
+        <property name="toolTip">
+         <string>If true, clears only detected horizontal floors.</string>
+        </property>
+        <property name="text">
+         <string>Clear planar only</string>
+        </property>
+       </widget>
+      </item>
+      <item row="14" column="1">
+       <widget class="QCheckBox" name="cutPatternReversed">
+        <property name="toolTip">
+         <string>Reverse the cut order of the stepover paths. For circular cut patterns, begin at the outside and work toward the center..</string>
+        </property>
+        <property name="text">
+         <string>Cut pattern reverse</string>
+        </property>
+       </widget>
+      </item>
+      <item row="15" column="0">
+       <widget class="QCheckBox" name="ignoreOuter">
+        <property name="toolTip">
+         <string>Ignore outer waterlines.</string>
+        </property>
+        <property name="text">
+         <string>ignoreOuter</string>
         </property>
        </widget>
       </item>
