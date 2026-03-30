@@ -252,7 +252,7 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         strategy = self.form.strategySelect.currentData()
         is_dropcutter = strategy == "DropCutter"
         is_zlevel = strategy == "ZLevelHybrid"
-        is_waterline = strategy in ("Waterline", "AdaptiveWaterline")
+        # is_waterline remains for OCL-based waterline logic
 
         # DropCutter - specific widgets
         if is_dropcutter:
@@ -267,9 +267,13 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             self.form.avoidLastX_Faces.hide()
             self.form.avoidLastX_Faces_label.hide()
             self.form.keepToolDown.hide()
+
         # Z-Level Hybrid - specific widgets    
         if is_zlevel:
-            # Show
+            # Hide the entire Accuracy Section (Label, Slider, and Description)
+            self.form.accuracyFrame.hide() 
+
+            # Show Z-Level Specifics
             self.form.cutPatternZLevel.show()
             self.form.cutPatternZLevel_label.show()
             self.form.depthOffset.show()
@@ -279,9 +283,8 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             self.form.clearPlanarOnly.show()
             self.form.cutPatternReversed.show()
             self.form.ignoreOuter.show()
-            # Hide
-            self.form.accuracySlider.hide()
-            self.form.accuracyDescription.hide()
+
+            # Hide standard Waterline/DropCutter controls
             self.form.useStartPoint.hide()
             self.form.sampleInterval.hide()
             self.form.sampleInterval_label.hide()
@@ -289,7 +292,10 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             self.form.layerMode.hide()
             self.form.layerMode_label.hide()
         else:
-            # Hide
+            # Show the Accuracy Section for non-Z-Level strategies
+            self.form.accuracyFrame.show()
+
+            # Hide Z-Level Specifics
             self.form.cutPatternZLevel.hide()
             self.form.cutPatternZLevel_label.hide()
             self.form.depthOffset.hide()
@@ -299,9 +305,8 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             self.form.clearPlanarOnly.hide()
             self.form.cutPatternReversed.hide()
             self.form.ignoreOuter.hide()
-            # Show
-            self.form.accuracySlider.show()
-            self.form.accuracyDescription.show()
+
+            # Show standard controls
             self.form.useStartPoint.show()
             self.form.sampleInterval.show()
             self.form.sampleInterval_label.show()

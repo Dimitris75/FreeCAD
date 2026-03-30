@@ -1329,7 +1329,7 @@ class ObjectSurface3D(PathOp.ObjectOp):
 
         return cmds
 
-    def _executeZLevelHybrid(self, obj, job, bb):
+    def _executeZLevelHybrid(self, obj, job):
         """Execute the Z-Level Hybrid strategy (no OCL required).
 
         A high-precision geometric finishing strategy that operates directly on
@@ -1417,17 +1417,17 @@ class ObjectSurface3D(PathOp.ObjectOp):
         shape = models[0].Shape if len(models) == 1 else models[0].Shape.multiFuse([m.Shape for m in models[1:]])
 
         if not shape:
-            Path.Log.error("Z-Level Hybrid: No geometry found to process.")
-            return []
-
-        # Explicitly check if the Base Geometry list is empty.---------------------------------------------------------------
-        # This prevents the algorithm from attempting to process a 'raw' model 
-        # that might be topologically invalid. After the issue has been resolved, remove those lines.
-        if not hasattr(obj, "Base") or not obj.Base:
-            msg = translate("CAM_Surface3D", "Z-Level Hybrid: No Base Geometry selected. "
-                                             "The shape is invalid for an unknown reason when no Base Geometry is selected.")
-            FreeCAD.Console.PrintError(msg + "\n")
-            return []  # Exit early to prevent crash-------------------------------------------------------------------------
+            all_shapes = []
+            for base, subs in self.baseShapes(obj):
+                if base.Shape and not base.Shape.isNull():
+                    all_shapes.append(base.Shape)
+            if not all_shapes:
+                Path.Log.error("Z-Level Hybrid: No geometry found to process.")
+                return []
+            if len(all_shapes) == 1:
+                shape = all_shapes[0]
+            else:
+                shape = all_shapes[0].multiFuse(all_shapes[1:])
 
         # 2. Extract ToolBit parameters
         tool_params = _getZLevelToolParams()
@@ -1571,8 +1571,7 @@ class ObjectSurface3D(PathOp.ObjectOp):
 
         # Z-Level Hybrid doesn't need OCL cutter or STL
         if strategy == "ZLevelHybrid":
-            bb = self._getBoundBox(obj, JOB, selected_faces)
-            cmds = self._executeZLevelHybrid(obj, JOB, bb)
+            cmds = self._executeZLevelHybrid(obj, JOB)
             self.commandlist.extend(cmds)
             return
 
