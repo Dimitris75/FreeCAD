@@ -473,7 +473,6 @@ class ObjectSurface3D(PathOp.ObjectOp):
                 (translate("path_waterline", "High"), "8"),
                 (translate("path_waterline", "Very High"), "16"),
                 (translate("path_waterline", "Ultra"), "32"),
-                (translate("path_waterline", "Extreme"), "64"),
             ],
         }
 
