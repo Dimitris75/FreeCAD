@@ -132,19 +132,35 @@ def _get_fused_floor_geometry(
             norm = norm.multiply(-1)
         return norm.z > 0.99
 
+    def isAccessibleFromTop(face, shape, abs_top):
+        """Accessibility Check: Solid Projection (Shadow Test)."""
+        try:
+            z = face.Vertexes[0].Z
+            extrude_h = (abs_top - z) + 5.0
+            test_face = face.copy()
+            test_face.translate(FreeCAD.Vector(0, 0, 0.001))  # Nudge above floor
+            projection = test_face.extrude(FreeCAD.Vector(0, 0, extrude_h))
+
+            # If the intersection with the model is empty, path is clear
+            return not shape.common(projection).Vertexes
+        except:
+            return False
+
     floor_accumulator = {}
+    abs_top = shape.BoundBox.ZMax
     z_min, z_max = min(start_z, final_z), max(start_z, final_z)
 
     for face in shape.Faces:
         if is_upward(face):
-            z = round(face.Vertexes[0].Z, 5)
-            if (z >= z_min - tolerance) and (z <= z_max + tolerance):
-                f_copy = face.copy()
-                f_copy.translate(FreeCAD.Vector(0, 0, -f_copy.BoundBox.ZMin))
-
-                if z not in floor_accumulator:
-                    floor_accumulator[z] = []
-                floor_accumulator[z].append(f_copy)
+            if isAccessibleFromTop(face, shape, abs_top):
+                z = round(face.Vertexes[0].Z, 5)
+                if (z >= z_min - tolerance) and (z <= z_max + tolerance):
+                    f_copy = face.copy()
+                    f_copy.translate(FreeCAD.Vector(0, 0, -f_copy.BoundBox.ZMin))
+    
+                    if z not in floor_accumulator:
+                        floor_accumulator[z] = []
+                    floor_accumulator[z].append(f_copy)
 
     fused = {}
     for z, faces in floor_accumulator.items():
@@ -320,27 +336,28 @@ def zlevel_hybrid_stack(
         cutArea = layer_engine.getShape()
 
         # C: Reconciliation & Translation
-        if cutArea and cutArea.Area > 1e-7:
-            # Handle Mixed steps
-            if status == "Mixed" and floor_geo:
-                layer_engine.add(floor_geo, op=0)
-                layer_engine.add(currentSilhouette, op=1)
-
+        if cutArea:
             # Apply final DepthOffset (Axial Stock to Leave)
             total_shift = z_target + z_offset
 
             final_cut = cutArea.copy()
             final_cut.translate(FreeCAD.Vector(0, 0, total_shift))
-            
+
             # Store target G-code depth, calculated geometry, and metadata
             stack.append((total_shift, final_cut, status))
 
         # Update Persistent Mask (strictly model silhouette to keep pockets open)
         mask_engine = Path.Area()
         mask_engine.setPlane(wpc)
+        # Start with the mask from layers above
         if allPrevComp:
             mask_engine.add(allPrevComp)
+        # Add the current model silhouette
         mask_engine.add(currentSilhouette)
+        # Add the physical floors (Mixed or Extra)
+        if (status == "Mixed" or status == "Extra") and floor_geo:
+            mask_engine.add(floor_geo)
+        # Extract the new 'Watertight' mask for the next iteration
         allPrevComp = mask_engine.getShape()
 
         indicator.next()
