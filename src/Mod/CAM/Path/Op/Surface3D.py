@@ -1388,7 +1388,7 @@ class ObjectSurface3D(PathOp.ObjectOp):
 
             # In Z-Level Hybrid, we always use the entire model silhouette
             # make_boundary_face(faces, radius, extra_offset)
-            radius = tool_params["radius"]
+            radius = -tool_params["radius"]
             adj = obj.BoundaryAdjustment.Value - 0.01
 
             if obj.BoundBox == "Stock":
