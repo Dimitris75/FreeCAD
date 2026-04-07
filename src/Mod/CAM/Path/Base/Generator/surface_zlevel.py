@@ -436,8 +436,8 @@ def zlevel_hybrid_to_gcode(
             indicator.next()
             continue
 
-        # Winding adjustment for Climb vs Conventional milling
-        working_area = cutArea.reversed() if cut_climb else cutArea
+        # Cut pattern reversed
+        working_area = cutArea.reversed() if reverse_pattern else cutArea
 
         # Determine start index (0 = machine stock edge, 1 = ignore stock edge)
         start_w_idx = 1 if ignore_outer else 0
@@ -558,7 +558,7 @@ def _generatePattern(
     """
     Path.Log.debug(f"Z-Level Hybrid: Generating {cut_pattern} pattern at Z={z_target}")
     cmds = []
-    should_reverse = False
+    should_reverse = True
 
     # 1. Validation Guards
     if not cutArea or cutArea.isNull():
@@ -580,9 +580,9 @@ def _generatePattern(
         pattern_mode = 1
     elif cut_pattern == "Offset":
         pattern_mode = 2
-        # Specific logic for Offset: if both Climb and Reverse are requested,
-        if cut_climb and reverse_pattern:
-            should_reverse = True
+        # Specific logic for Offset: Climb vs Reverse
+        if cut_climb != reverse_pattern:
+            should_reverse = False
     elif cut_pattern == "Line":
         pattern_mode = 5
     elif cut_pattern == "Grid":
@@ -599,7 +599,7 @@ def _generatePattern(
     params['PocketExtraOffset'] = -extra_offset
     params["Angle"] = float(pattern_angle)
     params["ToolRadius"] = radius
-    params["FromCenter"] = reverse_pattern 
+    params["FromCenter"] = reverse_pattern
 
     engine.setParams(**params)  
 
@@ -616,7 +616,7 @@ def _generatePattern(
 
     # Apply topological reversal for Climb milling on Offset rings if needed
     if should_reverse:
-        res_area = res_area.reversed()  # --- Test Climb ---
+        res_area = res_area.reversed()
 
     # 6. G-Code Generation Loop
     for wire in res_area.Wires:
@@ -635,17 +635,13 @@ def _generatePattern(
             "feedrate": horiz_feed,
             "start": start_p,
             "preamble": False,
-            "retraction": z_target,
-            "resume_height": z_target
+            'verbose': True,
+            "retraction": safe_hght,
+            "resume_height": safe_hght
         }
         pp = Path.fromShapes(**path_params)
-
-        # Extract commands from Toolpath object
-        for c in pp.Commands:
-            # Enforce machining depth for all linear and circular moves
-            if any(k in c.Parameters for k in ['X', 'Y']):
-                c.Parameters['Z'] = z_target
-            cmds.append(c)
+        # Extend Commands list
+        cmds.extend(pp.Commands)
 
         # C. Safety Retract after each segment (island or ring)
         cmds.append(Path.Command("G0", {"Z": safe_hght}))
