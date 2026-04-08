@@ -347,7 +347,7 @@ A step over of 100% results in no overlap between two different cycles.</string>
          <string>Ignore outer waterlines.</string>
         </property>
         <property name="text">
-         <string>ignoreOuter</string>
+         <string>Ignore outer</string>
         </property>
        </widget>
       </item>
