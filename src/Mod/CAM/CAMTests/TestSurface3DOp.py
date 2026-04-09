@@ -70,7 +70,22 @@ class TestSurface3DOp(PathTestWithAssets):
 
         job = PathJob.Create("Job", [box])
 
-        # Load a 6mm endmill from assets and assign to tool controller
+        # Load a 5mm endmill from assets and assign to tool controller
+        toolbit = self.assets.get("toolbit://5mm_Endmill")
+        loaded_tool = toolbit.attach_to_doc(doc=self.doc)
+        job.Tools.Group[0].Tool = loaded_tool
+
+        self.doc.recompute()
+        return job
+
+    def _createJobWithSphere(self, radius=50):
+        """Helper: create a Job with a simple sphere model and endmill tool."""
+        sphere = self.doc.addObject("Part::Feature", "TestSphere")
+        sphere.Shape = Part.makeSphere(radius)
+
+        job = PathJob.Create("Job", [sphere])
+
+        # Load a 5mm endmill from assets and assign to tool controller
         toolbit = self.assets.get("toolbit://5mm_Endmill")
         loaded_tool = toolbit.attach_to_doc(doc=self.doc)
         job.Tools.Group[0].Tool = loaded_tool
@@ -114,7 +129,7 @@ class TestSurface3DOp(PathTestWithAssets):
 
         EXPECTED OUTPUT:
         - Should contain "Strategy" enumeration
-        - Strategy should include: DropCutter, Waterline, AdaptiveWaterline, SliceWaterline
+        - Strategy should include: DropCutter, Waterline, AdaptiveWaterline, ZLevelHybrid
         - These are the four supported 3D surfacing strategies
         """
         enums = PathSurface3D.ObjectSurface3D.propertyEnumerations()
@@ -125,7 +140,7 @@ class TestSurface3DOp(PathTestWithAssets):
         self.assertIn("DropCutter", strategies)
         self.assertIn("Waterline", strategies)
         self.assertIn("AdaptiveWaterline", strategies)
-        self.assertIn("SliceWaterline", strategies)
+        self.assertIn("ZLevelHybrid", strategies)
 
     def test02(self):
         """
@@ -152,6 +167,31 @@ class TestSurface3DOp(PathTestWithAssets):
         self.assertIn("Spiral", patterns)
 
     def test03(self):
+        """
+        Verifies that the CutPatternZLevel property has the correct enumeration values.
+
+        INPUT:
+        - Function: ObjectSurface3D.propertyEnumerations()
+        - Parameters: dataType="data"
+        - Input data: Class method call for enumeration data
+
+        EXPECTED OUTPUT:
+        - Should contain "CutPatternZLevel" enumeration
+        - CutPatternZLevel should include: None, Line, ZigZag, Offset, Grid
+        - These are the scan patterns available for Z-Level Hybrid strategy
+        """
+        enums = PathSurface3D.ObjectSurface3D.propertyEnumerations()
+        enum_dict = {name: values for name, values in enums}
+
+        self.assertIn("CutPatternZLevel", enum_dict)
+        patterns = enum_dict["CutPatternZLevel"]
+        self.assertIn("None", patterns)
+        self.assertIn("Line", patterns)
+        self.assertIn("ZigZag", patterns)
+        self.assertIn("Offset", patterns)
+        self.assertIn("Grid", patterns)
+
+    def test04(self):
         """
         Verifies that opFeatures returns the expected feature flags.
 
@@ -341,29 +381,29 @@ class TestSurface3DOp(PathTestWithAssets):
             "AdaptiveWaterline should produce G-code commands",
         )
 
-    # -- SliceWaterline execution tests --
+    # -- Z-Level Hybrid execution tests --
 
     def test30(self):
         """
-        Executes the SliceWaterline strategy on a box (no OCL required).
+        Executes the Z-Level Hybrid strategy on a sphere (no OCL required).
 
         INPUT:
         - Function: ObjectSurface3D.opExecute()
-        - Parameters: Strategy=SliceWaterline on a 100x100x10mm box
+        - Parameters: Strategy=ZLevelHybrid on a 50mm radius sphere
         - Input data: Simple rectangular solid with 5mm endmill
 
         EXPECTED OUTPUT:
         - Operation should execute without errors
         - Should produce G-code commands (non-empty path)
-        - SliceWaterline uses FreeCAD shape slicing, no OCL dependency
+        - Z-Level Hybrid uses FreeCAD shape slicing, no OCL dependency
         """
-        job = self._createJobWithBox()
+        job = self._createJobWithSphere()
 
         op = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", "Surface3D")
         proxy = PathSurface3D.ObjectSurface3D(op, "Surface3D")
         proxy.initOperation(op)
 
-        op.Strategy = "SliceWaterline"
+        op.Strategy = "ZLevelHybrid"
 
         # Set the Base geometry to the job's model
         op.Base = job.Model.Group
@@ -375,7 +415,7 @@ class TestSurface3DOp(PathTestWithAssets):
 
         self.assertTrue(
             len(op.Path.Commands) > 0,
-            "SliceWaterline should produce G-code commands",
+            "Z-Level Hybrid should produce G-code commands",
         )
 
     # -- Property visibility tests --
@@ -391,7 +431,8 @@ class TestSurface3DOp(PathTestWithAssets):
 
         EXPECTED OUTPUT:
         - CutPattern should be visible (editor mode 0)
-        - ClearLastLayer should be hidden (editor mode 2) since it's waterline-only
+        - ClearPlanarOnly, IgnoreOuter, SamplingAccuracy, CutPatternZLevel and StockToLeave
+          should be hidden (editor mode 2) since it's Z-Level-specific
         - Ensures UI shows relevant properties for the selected strategy
         """
         job = self._createJobWithBox()
@@ -404,7 +445,11 @@ class TestSurface3DOp(PathTestWithAssets):
         proxy.setEditorProperties(op)
 
         self.assertEqual(op.getEditorMode("CutPattern"), [])  # visible
-        self.assertEqual(op.getEditorMode("ClearLastLayer"), ["Hidden"])  # hidden
+        self.assertEqual(op.getEditorMode("ClearPlanarOnly"), ["Hidden"])  # hidden
+        self.assertEqual(op.getEditorMode("IgnoreOuter"), ["Hidden"])  # hidden
+        self.assertEqual(op.getEditorMode("SamplingAccuracy"), ["Hidden"])  # hidden
+        self.assertEqual(op.getEditorMode("CutPatternZLevel"), ["Hidden"])  # hidden
+        self.assertEqual(op.getEditorMode("StockToLeave"), ["Hidden"])  # hidden
 
     def test41(self):
         """
@@ -417,7 +462,8 @@ class TestSurface3DOp(PathTestWithAssets):
 
         EXPECTED OUTPUT:
         - CutPattern should be hidden (editor mode 2) since waterline doesn't use scan patterns
-        - ClearLastLayer should be visible (editor mode 0) since it's waterline-specific
+        - ClearPlanarOnly, IgnoreOuter, SamplingAccuracy, CutPatternZLevel and StockToLeave
+          should be hidden (editor mode 2) since it's Z-Level-specific
         - Ensures UI adapts to the selected strategy
         """
         job = self._createJobWithBox()
@@ -430,7 +476,11 @@ class TestSurface3DOp(PathTestWithAssets):
         proxy.setEditorProperties(op)
 
         self.assertEqual(op.getEditorMode("CutPattern"), ["Hidden"])  # hidden
-        self.assertEqual(op.getEditorMode("ClearLastLayer"), [])  # visible
+        self.assertEqual(op.getEditorMode("ClearPlanarOnly"), ["Hidden"])  # hidden
+        self.assertEqual(op.getEditorMode("IgnoreOuter"), ["Hidden"])  # hidden
+        self.assertEqual(op.getEditorMode("SamplingAccuracy"), ["Hidden"])  # hidden
+        self.assertEqual(op.getEditorMode("CutPatternZLevel"), ["Hidden"])  # hidden
+        self.assertEqual(op.getEditorMode("StockToLeave"), ["Hidden"])  # hidden
 
     # -- Accuracy Preset Tests --
 
