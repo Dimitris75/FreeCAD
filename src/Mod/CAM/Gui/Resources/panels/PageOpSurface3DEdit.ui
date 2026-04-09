@@ -385,10 +385,12 @@ A step over of 100% results in no overlap between two different cycles.</string>
   <tabstop>accuracySlider</tabstop>
   <tabstop>accuracyDescription</tabstop>
   <tabstop>cutPattern</tabstop>
-  <tabstop>clearLastLayer</tabstop>
+  <tabstop>cutPatternZLevel</tabstop>
+  <tabstop>cutPatternReversed</tabstop>
+  <tabstop>clearPlanarOnly</tabstop>
   <tabstop>avoidLastX_Faces</tabstop>
   <tabstop>depthOffset</tabstop>
-  <tabstop>ignoreOuterAbove</tabstop>
+  <tabstop>ignoreOuter</tabstop>
   <tabstop>stepOver</tabstop>
   <tabstop>sampleInterval</tabstop>
   <tabstop>boundaryAdjustment</tabstop>
