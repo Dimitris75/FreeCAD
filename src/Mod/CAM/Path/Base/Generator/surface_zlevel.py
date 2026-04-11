@@ -194,9 +194,10 @@ def zlevel_hybrid_stack(
     """Calculates a stack of 2D clearing areas using geometric slicing and Clipper Booleans.
 
     This function processes the 3D model layer-by-layer. For each layer, it generates 
-    a composite silhouette by sub-sampling the model curvature (Linear Radius Squeeze), 
-    applies tool radius compensation, and resolves the final machining area 
-    using a persistent C++ masking engine.
+    a composite silhouette by sub-sampling the model curvature, applies tool radius compensation,
+    and resolves the final machining area using a persistent C++ masking engine.
+    Uses a dual Squeeze-and-Snap strategy: Pack samples at the tool tip to handle 
+    high-curvature contact, and snap samples to model floors for precise transitions.    
 
     Args:
         shape: The source Part.Shape to be machined.
@@ -214,10 +215,38 @@ def zlevel_hybrid_stack(
     """
     Path.Log.debug("Z-Level Hybrid: Starting geometric stack generation.")
 
-    stack = []
-    allPrevComp = None  # Persistent C++ mask engine (Tracks model silhouette)
+    # Helpers
+    def _get_h_from_r(r_target):
+        """Inverse Math: Finds height h for a specific radius r."""
+        if not is_3d or r_target <= 1e-7: return 0.0
+        if profile == "Ballend":
+            return R - math.sqrt(max(0, R**2 - r_target**2))
+        if profile == "Bullnose":
+            if r_target <= (R - c_rad): return 0.0
+            return c_rad - math.sqrt(max(0, c_rad**2 - (r_target - (R - c_rad))**2))
+        return 0.0
 
-    # 1. Initialization and Pre-loading
+    def _get_r_from_h(h_target):
+        """Forward Math: Finds radius r for a specific height h."""
+        if not is_3d: return R
+        if profile == "Ballend":
+            return math.sqrt(max(0, R**2 - (R - h_target)**2))
+        if profile == "Bullnose":
+            if h_target < c_rad:
+                return (R - c_rad) + math.sqrt(max(0, c_rad**2 - (c_rad - h_target)**2))
+            return R
+        return R
+
+    # 1. Initialization
+    stack = []
+    allPrevComp = None
+    tol = 0.001
+
+    R, c_rad = tool_params["radius"], tool_params["c_rad"]
+    profile, is_3d = tool_params["profile"], tool_params["is_threeD"]
+    num_slices = int(accuracy_val) if is_3d else 1
+
+    # 2. Pre-load C++ engine
     area_engine = Path.Area()
     area_engine.setPlane(wpc)
 
@@ -229,67 +258,59 @@ def zlevel_hybrid_stack(
     params = area_engine.getParams()
     params["SectionTolerance"] = 0.0001
 
-    # Extract tool geometry
-    radius = tool_params["radius"]
-    c_rad = tool_params["c_rad"]
-    profile = tool_params["profile"]
-    is_3d = tool_params["is_threeD"]
-
-    # Sampling strategy
-    num_slices = int(accuracy_val) if is_3d else 1
-
+    # 3. Identify critical snapping depths (Top and floors)
     modelBottom, modelTop = proc_shape.BoundBox.ZMin, proc_shape.BoundBox.ZMax
+    critical_heights = {round(h, 6) for h, status, _ in categorizedSteps if status in ["Mixed", "Extra"]}
+    critical_heights.add(round(modelTop, 6))
 
     # Progress Indicator
     indicator = FreeCAD.Base.ProgressIndicator()
-    total_layers = len(categorizedSteps)
-    indicator.start("Z-Level Hybrid: Processing Geometry...", total_layers)
+    indicator.start("Z-Level Hybrid: Processing Geometry...", len(categorizedSteps))
 
-    # 2. Main Machining Loop
-    for idx, (z_target, status, floor_geo) in enumerate(categorizedSteps):
-
-        if z_target > (modelTop - 0.001):
+    # 4. Main layer loop
+    for z_target, status, floor_geo in categorizedSteps:
+        if z_target > (modelTop - tol):
             indicator.next()
             continue
 
-        # A: Multi-Slice composite silhouette
-        # Calculate vertical contact window
+        # A. Squeeze logic: Calculate sampling window
         dist_submerged = max(0, modelTop - z_target)
-        is_at_top = dist_submerged < c_rad
+        # Nudge slice height based on whether we are clearing a floor or a wall
+        # Standard layers nudge up (+); Floors nudge down (-) to stay inside material
+        slice_bias = 0.0002 if status in ["Mixed", "Extra"] else -0.0002
 
-        # Apply 2.2% safety bias ONLY when tool tip is just entering the model top
-        r_bias = 0.978 if (is_at_top and is_3d) else 1.0
+        # Widest radius reachable in current contact zone
+        max_r_reachable = _get_r_from_h(dist_submerged) if dist_submerged < c_rad else R
+        h_ceiling = min(c_rad, dist_submerged - tol) if is_3d else 0.0
 
-        max_h = min(c_rad, dist_submerged - 0.001)
-        if max_h < 0: max_h = 0
+        # B. Generate sampling plan (Height, Radius pairs)
+        # Pre-calculating pairs avoids redundant math inside the heavy C++ loop
+        sampling_plan = []
 
-        # Calculate maximum radius reachable for this submerged depth
-        max_r_reachable = math.sqrt(max(0, radius**2 - (radius - max_h)**2)) if is_3d else radius
+        # Linear Radius Steps (Squeeze sampling on Top of the model)
+        for i in range(num_slices):
+            r_theo = (max_r_reachable / (num_slices - 1)) * i if num_slices > 1 else max_r_reachable
+            sampling_plan.append((_get_h_from_r(r_theo), r_theo))
 
-        # Engine to fuse sub-samples into one clean silhouette
+        # Geometric Feature Snapping (Snap of an extra sample on edges)
+        for ch in critical_heights:
+            rel_h = ch - z_target
+            if 0.0001 < rel_h < (h_ceiling - 0.0001):
+                sampling_plan.append((rel_h, _get_r_from_h(rel_h)))
+
+        # Clean, Unique, and Sort steps from Tip (h=0) to Equator
+        # We sort by h to keep the slicing sequence logical
+        unique_steps = sorted({(round(h, 6), round(r, 6)) for h, r in sampling_plan})
+
+        # C. Composite silhouette fusion
         fusion = Path.Area()
         fusion.setPlane(wpc)
 
-        sections = None
-        for i in range(num_slices):
-            # Divide radius linearly to ensure steps are spread equally
-            div = (num_slices - 1) if num_slices > 1 else 1
-            r_theo = (max_r_reachable / div) * i if num_slices > 1 else max_r_reachable
+        for h, r_theo in unique_steps:
+            r_comp = r_theo + stock_to_leave
 
-            # Inverse math: find height h that corresponds to this horizontal radius
-            h = 0.0
-            if is_3d and r_theo > 1e-7:
-                if profile == "Ballend":
-                    h = radius - math.sqrt(max(0, radius**2 - r_theo**2))
-                elif profile == "Bullnose":
-                    if r_theo > (radius - c_rad):
-                        h = c_rad - math.sqrt(max(0, c_rad**2 - (r_theo - (radius - c_rad))**2))
-
-            # Final offset distance including Stock to Leave and top-corner bias
-            r_comp = (r_theo * r_bias) + stock_to_leave
-            
-            # Slicing height: ensure it stays within model boundaries
-            slice_z = max(modelBottom + 1e-5, min(z_target + h + 0.0005, modelTop - 1e-5))
+            # Synchronized Slicing
+            slice_z = max(modelBottom + 1e-5, min(z_target + h + slice_bias, modelTop - 1e-5))
 
             # Trigger C++ Slicing with dynamic offset
             params["Offset"] = r_comp
@@ -299,7 +320,7 @@ def zlevel_hybrid_stack(
             if sections:
                 sub_face = sections[0].getShape()
                 if sub_face and not sub_face.isNull():
-                    # Normalize to Z=0 for fusion with other heights
+                    # Move results to machine plane for dissolved fusion
                     sub_face.translate(FreeCAD.Vector(0, 0, -sub_face.BoundBox.ZMin))
                     fusion.add(sub_face)
 
@@ -312,7 +333,7 @@ def zlevel_hybrid_stack(
         if hasattr(currentSilhouette, "removeSplitter"):
             currentSilhouette = currentSilhouette.removeSplitter()
 
-        # B: Clearing engine (Clipper Booleans)
+        # D: Clearing engine (Clipper Booleans)
         layer_engine = Path.Area()
         layer_engine.setPlane(wpc)
 
@@ -321,6 +342,10 @@ def zlevel_hybrid_stack(
             if floor_geo:
                 layer_engine.add(floor_geo)
                 layer_engine.add(currentSilhouette, op=1)  # Subtract model
+
+            if trimFace:
+                layer_engine.add(trimFace, op=1)
+
         else:
             # Standard Mode: Material = (Stock - Model) - TrimMask
             layer_engine.add(borderFace)
@@ -335,7 +360,7 @@ def zlevel_hybrid_stack(
 
         cutArea = layer_engine.getShape()
 
-        # C: Reconciliation & Translation
+        # E: Reconciliation & Translation
         if cutArea:
             # Apply final DepthOffset (Axial Stock to Leave)
             total_shift = z_target + z_offset
