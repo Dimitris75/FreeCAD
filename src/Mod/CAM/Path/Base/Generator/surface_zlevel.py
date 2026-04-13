@@ -255,7 +255,7 @@ def zlevel_hybrid_stack(
     # Cache state
     prev_Area = None
     cached_cut_area = None
-    cache_is_safe = step_down < (R + 0.01)
+    cache_is_safe = False if step_down > (c_rad + 0.01) and is_3d else True
 
     # 2. Pre-load C++ engine
     area_engine = Path.Area()
