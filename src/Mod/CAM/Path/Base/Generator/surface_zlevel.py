@@ -189,15 +189,18 @@ def zlevel_hybrid_stack(
     stock_to_leave,
     accuracy_val,
     z_offset,
+    step_down,
     wpc
 ):
     """Calculates a stack of 2D clearing areas using geometric slicing and Clipper Booleans.
 
-    This function processes the 3D model layer-by-layer. For each layer, it generates 
+    This function processes the 3D model layer-by-layer. For each layer, it generates
     a composite silhouette by sub-sampling the model curvature, applies tool radius compensation,
     and resolves the final machining area using a persistent C++ masking engine.
-    Uses a dual Squeeze-and-Snap strategy: Pack samples at the tool tip to handle 
-    high-curvature contact, and snap samples to model floors for precise transitions.    
+    Uses a dual Squeeze-and-Snap strategy: Pack samples at the tool tip to handle
+    high-curvature contact, and snap samples to model floors for precise transitions.
+    Linear radius sampling is performed equator-first to enable geometric 
+    caching on vertical walls.
 
     Args:
         shape: The source Part.Shape to be machined.
@@ -208,6 +211,7 @@ def zlevel_hybrid_stack(
         stock_to_leave: Horizontal (XY) distance to keep from the model (mm).
         accuracy_val: Integer or string representing the number of sub-slices.
         z_offset: Vertical (Axial) distance to shift the final paths (mm).
+        step_down: The vertical step distance (mm).
         wpc: The Part.Circle workplane defining the 2D calculation plane.
 
     Returns:
@@ -218,7 +222,8 @@ def zlevel_hybrid_stack(
     # Helpers
     def _get_h_from_r(r_target):
         """Inverse Math: Finds height h for a specific radius r."""
-        if not is_3d or r_target <= 1e-7: return 0.0
+        if not is_3d or r_target <= 1e-7:
+            return 0.0
         if profile == "Ballend":
             return R - math.sqrt(max(0, R**2 - r_target**2))
         if profile == "Bullnose":
@@ -228,7 +233,8 @@ def zlevel_hybrid_stack(
 
     def _get_r_from_h(h_target):
         """Forward Math: Finds radius r for a specific height h."""
-        if not is_3d: return R
+        if not is_3d:
+            return R
         if profile == "Ballend":
             return math.sqrt(max(0, R**2 - (R - h_target)**2))
         if profile == "Bullnose":
@@ -245,6 +251,11 @@ def zlevel_hybrid_stack(
     R, c_rad = tool_params["radius"], tool_params["c_rad"]
     profile, is_3d = tool_params["profile"], tool_params["is_threeD"]
     num_slices = int(accuracy_val) if is_3d else 1
+
+    # Cache state
+    prev_Area = None
+    cached_cut_area = None
+    cache_is_safe = step_down < R
 
     # 2. Pre-load C++ engine
     area_engine = Path.Area()
@@ -301,12 +312,14 @@ def zlevel_hybrid_stack(
         # Clean, Unique, and Sort steps from Tip (h=0) to Equator
         # We sort by h to keep the slicing sequence logical
         unique_steps = sorted({(round(h, 6), round(r, 6)) for h, r in sampling_plan})
+        unique_steps.reverse()
 
-        # C. Composite silhouette fusion
+        # C. Geometric Fusion with Lazy Cache Validation
         fusion = Path.Area()
         fusion.setPlane(wpc)
+        hit_cache = False
 
-        for h, r_theo in unique_steps:
+        for idx, (h, r_theo) in enumerate(unique_steps):
             r_comp = r_theo + stock_to_leave
 
             # Synchronized Slicing
@@ -320,70 +333,89 @@ def zlevel_hybrid_stack(
             if sections:
                 sub_face = sections[0].getShape()
                 if sub_face and not sub_face.isNull():
+                    # Cache check: We check the Area of the very first sub-sample
+                    if idx == 0 and cache_is_safe and not status in ["Mixed", "Extra"]:
+                        current_Area = sub_face.Area
+                        if current_Area == prev_Area and cached_cut_area is not None:
+                            hit_cache = True
+                            break
+                        prev_Area = current_Area
                     # Move results to machine plane for dissolved fusion
                     sub_face.translate(FreeCAD.Vector(0, 0, -sub_face.BoundBox.ZMin))
                     fusion.add(sub_face)
 
-        if not sections:
+        if not sub_face:
             indicator.next()
             continue
 
-        # currentSilhouette is the union of all 3D contact points at this depth
-        currentSilhouette = fusion.getShape()
-        if hasattr(currentSilhouette, "removeSplitter"):
-            currentSilhouette = currentSilhouette.removeSplitter()
+        # D. Boolean resolution
+        total_shift = z_target + z_offset
 
-        # D: Clearing engine (Clipper Booleans)
-        layer_engine = Path.Area()
-        layer_engine.setPlane(wpc)
-
-        if status == "Extra":
-            # Surgical Floor Mode: Only clear the floor geometry, ignore stock boundary
-            if floor_geo:
-                layer_engine.add(floor_geo)
-                layer_engine.add(currentSilhouette, op=1)  # Subtract model
-
-            if trimFace:
-                layer_engine.add(trimFace, op=1)
-
-        else:
-            # Standard Mode: Material = (Stock - Model) - TrimMask
-            layer_engine.add(borderFace)
-            layer_engine.add(currentSilhouette, op=1)
-
-            if trimFace:
-                layer_engine.add(trimFace, op=1)
-
-            # Rest Machining: subtract material cleared in layers above
-            if allPrevComp:
-                layer_engine.add(allPrevComp, op=1)
-
-        cutArea = layer_engine.getShape()
-
-        # E: Reconciliation & Translation
-        if cutArea:
-            # Apply final DepthOffset (Axial Stock to Leave)
-            total_shift = z_target + z_offset
-
-            final_cut = cutArea.copy()
+        if hit_cache:
+            # Rapid Path: Reuse previous clearing result
+            final_cut = cached_cut_area.copy()
             final_cut.translate(FreeCAD.Vector(0, 0, total_shift))
 
             # Store target G-code depth, calculated geometry, and metadata
             stack.append((total_shift, final_cut, status))
+        else:
+            # currentSilhouette is the union of all 3D contact points at this depth
+            currentSilhouette = fusion.getShape()
+            if hasattr(currentSilhouette, "removeSplitter"):
+                currentSilhouette = currentSilhouette.removeSplitter()
 
-        # Update Persistent Mask (strictly model silhouette to keep pockets open)
-        mask_engine = Path.Area()
-        mask_engine.setPlane(wpc)
-        # Start with the mask from layers above
-        if allPrevComp:
-            mask_engine.add(allPrevComp)
-        # Add the current model silhouette
-        mask_engine.add(currentSilhouette)
-        # Add the physical floors (Mixed or Extra)
-        if (status == "Mixed" or status == "Extra") and floor_geo:
-            mask_engine.add(floor_geo)
-        # Extract the new 'Watertight' mask for the next iteration
-        allPrevComp = mask_engine.getShape()
+            # Clearing engine (Clipper Booleans)
+            layer_engine = Path.Area()
+            layer_engine.setPlane(wpc)
+
+            if status == "Extra":
+                # Surgical Floor Mode: Only clear the floor geometry, ignore stock boundary
+                if floor_geo:
+                    layer_engine.add(floor_geo)
+                    layer_engine.add(currentSilhouette, op=1)  # Subtract model
+
+                if trimFace:
+                    layer_engine.add(trimFace, op=1)
+
+            else:
+                # Standard Mode: Material = (Stock - Model) - TrimMask
+                layer_engine.add(borderFace)
+                layer_engine.add(currentSilhouette, op=1)
+
+                if trimFace:
+                    layer_engine.add(trimFace, op=1)
+
+                # Rest Machining: subtract material cleared in layers above
+                if allPrevComp:
+                    layer_engine.add(allPrevComp, op=1)
+
+            cutArea = layer_engine.getShape()
+
+            # Reconciliation & Translation
+            if cutArea:
+                # Cache cutArea
+                if cache_is_safe:
+                    cached_cut_area = cutArea.copy()
+
+                final_cut = cutArea.copy()
+                final_cut.translate(FreeCAD.Vector(0, 0, total_shift))
+
+                # Store target G-code depth, calculated geometry, and metadata
+                stack.append((total_shift, final_cut, status))
+
+                # Update Persistent Mask (strictly model silhouette to keep pockets open)
+                mask_engine = Path.Area()
+                mask_engine.setPlane(wpc)
+                # Start with the mask from layers above
+                if allPrevComp:
+                    mask_engine.add(allPrevComp)
+                # Add the current model silhouette
+                mask_engine.add(currentSilhouette)
+                # Add the physical floors (Mixed or Extra)
+                if (status == "Mixed" or status == "Extra") and floor_geo:
+                    mask_engine.add(floor_geo)
+                # Extract the new 'Watertight' mask for the next iteration
+                allPrevComp = mask_engine.getShape()
 
         indicator.next()
 
