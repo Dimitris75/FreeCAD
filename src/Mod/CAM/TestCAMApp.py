@@ -113,6 +113,7 @@ from CAMTests.TestSurfaceCommonGenerator import TestSurfaceCommonGenerator
 from CAMTests.TestSurfaceDropCutterGenerator import TestSurfaceDropCutterGenerator
 from CAMTests.TestSurfaceScanGenerator import TestSurfaceScanGenerator
 from CAMTests.TestSurfaceWaterlineGenerator import TestSurfaceWaterlineGenerator
+from CAMTests.TestSurfaceZLevelGenerator import TestSurfaceZLevelGenerator
 from CAMTests.TestSurface3DOp import TestSurface3DOp
 from CAMTests.TestSurfaceStl import TestSurfaceStl
 from CAMTests.TestSurface3DBoundary import TestSurface3DBoundary

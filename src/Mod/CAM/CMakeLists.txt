@@ -563,6 +563,7 @@ SET(Tests_SRCS
     CAMTests/TestSurfaceCommonGenerator.py
     CAMTests/TestSurfaceDropCutterGenerator.py
     CAMTests/TestSurfaceWaterlineGenerator.py
+    CAMTests/TestSurfaceZLevelGenerator.py
     CAMTests/TestSurface3DOp.py
     CAMTests/TestSurfaceStl.py
     CAMTests/TestSurface3DBoundary.py
