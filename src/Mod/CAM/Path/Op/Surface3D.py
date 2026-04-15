@@ -1448,7 +1448,6 @@ class ObjectSurface3D(PathOp.ObjectOp):
         accuracy_val = getattr(obj, "SamplingAccuracy", "4")
         step_over = (obj.StepOver / 100.0) * (radius * 2)
         stock_to_leave = obj.StockToLeave.Value
-        step_down = obj.StepDown.Value
 
         pattern_options = {
             "cut_climb": obj.CutMode == "Climb",
@@ -1494,7 +1493,6 @@ class ObjectSurface3D(PathOp.ObjectOp):
             stock_to_leave,
             accuracy_val,
             depth_offset,
-            step_down,
             wpc
         )
 

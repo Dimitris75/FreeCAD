@@ -189,7 +189,6 @@ def zlevel_hybrid_stack(
     stock_to_leave,
     accuracy_val,
     z_offset,
-    step_down,
     wpc
 ):
     """Calculates a stack of 2D clearing areas using geometric slicing and Clipper Booleans.
@@ -211,7 +210,6 @@ def zlevel_hybrid_stack(
         stock_to_leave: Horizontal (XY) distance to keep from the model (mm).
         accuracy_val: Integer or string representing the number of sub-slices.
         z_offset: Vertical (Axial) distance to shift the final paths (mm).
-        step_down: The vertical step distance (mm).
         wpc: The Part.Circle workplane defining the 2D calculation plane.
 
     Returns:
@@ -220,6 +218,12 @@ def zlevel_hybrid_stack(
     Path.Log.debug("Z-Level Hybrid: Starting geometric stack generation.")
 
     # Helpers
+    def _get_fingerprint(shp):
+        """Area + Position Fingerprint: Fast and 100% reliable for translation detection."""
+        if not shp or shp.isNull():
+            return None
+        return (shp.Area, shp.BoundBox.XMin)
+
     def _get_h_from_r(r_target):
         """Inverse Math: Finds height h for a specific radius r."""
         if not is_3d or r_target <= 1e-7:
@@ -253,9 +257,9 @@ def zlevel_hybrid_stack(
     num_slices = int(accuracy_val) if is_3d else 1
 
     # Cache state
-    prev_Area = None
+    prev_fp = None
     cached_cut_area = None
-    cache_is_safe = False if step_down > (c_rad + 0.01) and is_3d else True
+    cache_is_safe = False
 
     # 2. Pre-load C++ engine
     area_engine = Path.Area()
@@ -317,7 +321,10 @@ def zlevel_hybrid_stack(
         # C. Geometric Fusion with Lazy Cache Validation
         fusion = Path.Area()
         fusion.setPlane(wpc)
+
         hit_cache = False
+        # Cache is safe only if we are on a standard wall (Pure) and fully submerged
+        cache_is_safe = (status == "Pure") and (dist_submerged >= c_rad)
 
         for idx, (h, r_theo) in enumerate(unique_steps):
             r_comp = r_theo + stock_to_leave
@@ -325,28 +332,42 @@ def zlevel_hybrid_stack(
             # Synchronized Slicing
             slice_z = max(modelBottom + 1e-5, min(z_target + h + slice_bias, modelTop - 1e-5))
 
+            # Cache probe: If idx=0 and is_3d, take current slice + one slice deeper
+            is_probe = (idx == 0 and cache_is_safe and is_3d)
+            target_heights = [slice_z, slice_z - c_rad] if is_probe else [slice_z]
+
             # Trigger C++ Slicing with dynamic offset
             params["Offset"] = r_comp
             area_engine.setParams(**params)
-            sections = area_engine.makeSections(mode=0, project=False, heights=[slice_z])
+            sections = area_engine.makeSections(mode=0, project=False, heights=target_heights)
 
-            if sections:
-                sub_face = sections[0].getShape()
-                if sub_face and not sub_face.isNull():
-                    # Cache check: We check the Area of the very first sub-sample
-                    if idx == 0 and cache_is_safe and not status in ["Mixed", "Extra"]:
-                        current_Area = sub_face.Area
-                        if current_Area == prev_Area and cached_cut_area is not None:
-                            hit_cache = True
-                            break
-                        prev_Area = current_Area
-                    # Move results to machine plane for dissolved fusion
-                    sub_face.translate(FreeCAD.Vector(0, 0, -sub_face.BoundBox.ZMin))
-                    fusion.add(sub_face)
+            if not sections:
+                indicator.next()
+                continue
 
-        if not sub_face:
-            indicator.next()
-            continue
+            sub_face = sections[0].getShape()
+
+            if not sub_face or sub_face.isNull():
+                indicator.next()
+                continue
+
+            # Cache validation
+            if idx == 0 and cache_is_safe and cached_cut_area is not None:
+                current_fp = _get_fingerprint(sub_face)
+                if is_probe:  # is_3d
+                    # Check one slice deeper for safety
+                    probe_sub_face = sections[1].getShape()
+                    check_fp = _get_fingerprint(probe_sub_face)
+                else:  # Flat endmill
+                    check_fp = current_fp
+                if prev_fp == check_fp:
+                    hit_cache = True
+                    break
+                prev_fp = current_fp
+
+            # Move results to machine plane for dissolved fusion
+            sub_face.translate(FreeCAD.Vector(0, 0, -sub_face.BoundBox.ZMin))
+            fusion.add(sub_face)
 
         # D. Boolean resolution
         total_shift = z_target + z_offset
@@ -360,7 +381,14 @@ def zlevel_hybrid_stack(
             stack.append((total_shift, final_cut, status))
         else:
             # currentSilhouette is the union of all 3D contact points at this depth
-            currentSilhouette = fusion.getShape()
+            try:
+                currentSilhouette = fusion.getShape()
+            except Exception as e:
+                # Log the error and skip this specific layer to keep the recompute alive
+                Path.Log.error(f"Z-Level Hybrid: Silhouette resolution failed at Z={round(z_target, 3)}. Error: {str(e)}")
+                indicator.next()
+                continue
+
             if hasattr(currentSilhouette, "removeSplitter"):
                 currentSilhouette = currentSilhouette.removeSplitter()
 
@@ -389,7 +417,12 @@ def zlevel_hybrid_stack(
                 if allPrevComp:
                     layer_engine.add(allPrevComp, op=1)
 
-            cutArea = layer_engine.getShape()
+            try:
+                cutArea = layer_engine.getShape()
+            except Exception as e:
+                Path.Log.error(f"Z-Level Hybrid: Layer engine failed at Z={round(z_target, 3)}. Error: {str(e)}")
+                indicator.next()
+                continue
 
             # Reconciliation & Translation
             if cutArea:

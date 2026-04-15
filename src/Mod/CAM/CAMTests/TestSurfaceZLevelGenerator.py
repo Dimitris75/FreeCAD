@@ -101,7 +101,6 @@ class TestSurfaceZLevelGenerator(PathTestUtils.PathTestBase):
             stock_to_leave=0.0,
             accuracy_val=4,
             z_offset=0.0,
-            step_down=5.0,
             wpc=wpc
         )
         
@@ -148,7 +147,6 @@ class TestSurfaceZLevelGenerator(PathTestUtils.PathTestBase):
             0.0,
             4,
             0.0,
-            1.0,
             wpc
         )
         
