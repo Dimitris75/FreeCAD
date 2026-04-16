@@ -219,6 +219,7 @@ def zlevel_hybrid_stack(
 
     # 1. Initialization
     stack = []
+    sub_face = None
     allPrevComp = None
     tol = 0.001
 
