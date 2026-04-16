@@ -217,43 +217,13 @@ def zlevel_hybrid_stack(
     """
     Path.Log.debug("Z-Level Hybrid: Starting geometric stack generation.")
 
-    # Helpers
-    def _get_fingerprint(shp):
-        """Area + Position Fingerprint: Fast and 100% reliable for translation detection."""
-        if not shp or shp.isNull():
-            return None
-        return (shp.Area, shp.BoundBox.XMin)
-
-    def _get_h_from_r(r_target):
-        """Inverse Math: Finds height h for a specific radius r."""
-        if not is_3d or r_target <= 1e-7:
-            return 0.0
-        if profile == "Ballend":
-            return R - math.sqrt(max(0, R**2 - r_target**2))
-        if profile == "Bullnose":
-            if r_target <= (R - c_rad): return 0.0
-            return c_rad - math.sqrt(max(0, c_rad**2 - (r_target - (R - c_rad))**2))
-        return 0.0
-
-    def _get_r_from_h(h_target):
-        """Forward Math: Finds radius r for a specific height h."""
-        if not is_3d:
-            return R
-        if profile == "Ballend":
-            return math.sqrt(max(0, R**2 - (R - h_target)**2))
-        if profile == "Bullnose":
-            if h_target < c_rad:
-                return (R - c_rad) + math.sqrt(max(0, c_rad**2 - (c_rad - h_target)**2))
-            return R
-        return R
-
     # 1. Initialization
     stack = []
     allPrevComp = None
     tol = 0.001
 
-    R, c_rad = tool_params["radius"], tool_params["c_rad"]
-    profile, is_3d = tool_params["profile"], tool_params["is_threeD"]
+    c_rad = tool_params["c_rad"]
+    is_3d = tool_params["is_threeD"]
     num_slices = int(accuracy_val) if is_3d else 1
 
     # Cache state
@@ -284,41 +254,28 @@ def zlevel_hybrid_stack(
 
     # 4. Main layer loop
     for z_target, status, floor_geo in categorizedSteps:
+
         if z_target > (modelTop - tol):
             indicator.next()
             continue
 
-        # A. Squeeze logic: Calculate sampling window
+        # The depth at which the tool has submerged from the modelTop
         dist_submerged = max(0, modelTop - z_target)
         # Nudge slice height based on whether we are clearing a floor or a wall
         # Standard layers nudge up (+); Floors nudge down (-) to stay inside material
         slice_bias = 0.0002 if status in ["Mixed", "Extra"] else -0.0002
 
-        # Widest radius reachable in current contact zone
-        max_r_reachable = _get_r_from_h(dist_submerged) if dist_submerged < c_rad else R
-        h_ceiling = min(c_rad, dist_submerged - tol) if is_3d else 0.0
+        # A. Generate sampling plan (Height, Radius pairs)
+        unique_steps = _generate_sampling_plan(
+            z_target,
+            dist_submerged,
+            tol,
+            critical_heights,
+            num_slices,
+            tool_params
+        )
 
-        # B. Generate sampling plan (Height, Radius pairs)
-        # Pre-calculating pairs avoids redundant math inside the heavy C++ loop
-        sampling_plan = []
-
-        # Linear Radius Steps (Squeeze sampling on Top of the model)
-        for i in range(num_slices):
-            r_theo = (max_r_reachable / (num_slices - 1)) * i if num_slices > 1 else max_r_reachable
-            sampling_plan.append((_get_h_from_r(r_theo), r_theo))
-
-        # Geometric Feature Snapping (Snap of an extra sample on edges)
-        for ch in critical_heights:
-            rel_h = ch - z_target
-            if 0.0001 < rel_h < (h_ceiling - 0.0001):
-                sampling_plan.append((rel_h, _get_r_from_h(rel_h)))
-
-        # Clean, Unique, and Sort steps from Tip (h=0) to Equator
-        # We sort by h to keep the slicing sequence logical
-        unique_steps = sorted({(round(h, 6), round(r, 6)) for h, r in sampling_plan})
-        unique_steps.reverse()
-
-        # C. Geometric Fusion with Lazy Cache Validation
+        # B. Geometric Fusion with Lazy Cache Validation
         fusion = Path.Area()
         fusion.setPlane(wpc)
 
@@ -353,23 +310,20 @@ def zlevel_hybrid_stack(
 
             # Cache validation
             if idx == 0 and cache_is_safe and cached_cut_area is not None:
-                current_fp = _get_fingerprint(sub_face)
-                if is_probe:  # is_3d
-                    # Check one slice deeper for safety
-                    probe_sub_face = sections[1].getShape()
-                    check_fp = _get_fingerprint(probe_sub_face)
-                else:  # Flat endmill
-                    check_fp = current_fp
-                if prev_fp == check_fp:
-                    hit_cache = True
+                hit_cache, prev_fp = _validate_cache(
+                    sections,
+                    sub_face,
+                    prev_fp,
+                    is_probe
+                )
+                if hit_cache:
                     break
-                prev_fp = current_fp
 
             # Move results to machine plane for dissolved fusion
             sub_face.translate(FreeCAD.Vector(0, 0, -sub_face.BoundBox.ZMin))
             fusion.add(sub_face)
 
-        # D. Boolean resolution
+        # C. Boolean resolution
         total_shift = z_target + z_offset
 
         if hit_cache:
@@ -380,8 +334,8 @@ def zlevel_hybrid_stack(
             # Store target G-code depth, calculated geometry, and metadata
             stack.append((total_shift, final_cut, status))
         else:
-            # currentSilhouette is the union of all 3D contact points at this depth
             try:
+                # currentSilhouette is the union of all 3D contact points at this depth
                 currentSilhouette = fusion.getShape()
             except Exception as e:
                 # Log the error and skip this specific layer to keep the recompute alive
@@ -437,23 +391,197 @@ def zlevel_hybrid_stack(
                 stack.append((total_shift, final_cut, status))
 
                 # Update Persistent Mask (strictly model silhouette to keep pockets open)
-                mask_engine = Path.Area()
-                mask_engine.setPlane(wpc)
-                # Start with the mask from layers above
-                if allPrevComp:
-                    mask_engine.add(allPrevComp)
-                # Add the current model silhouette
-                mask_engine.add(currentSilhouette)
-                # Add the physical floors (Mixed or Extra)
-                if (status == "Mixed" or status == "Extra") and floor_geo:
-                    mask_engine.add(floor_geo)
-                # Extract the new 'Watertight' mask for the next iteration
-                allPrevComp = mask_engine.getShape()
+                allPrevComp = _update_machining_mask(
+                    wpc, 
+                    allPrevComp, 
+                    currentSilhouette, 
+                    status, 
+                    floor_geo
+                )
 
         indicator.next()
 
     indicator.stop()
     return stack
+
+def _generate_sampling_plan(
+    z_target,
+    dist_submerged,
+    tol,
+    critical_heights,
+    num_slices,
+    tool_params
+):
+    """Generates a sorted, unique list of (height, radius) sampling pairs.
+
+    This helper function implements the core 'Squeeze-and-Snap' strategy. It calculates
+    a distribution of points along the tool's corner profile to ensure accurate
+    3D contact resolution.
+
+    Args:
+        z_target (float): The target machining depth for the current layer.
+        dist_submerged (float): Vertical distance from the tool tip to the model top.
+        tol (float): Geometric tolerance.
+        critical_heights (list): Absolute Z-heights of physical model floors/top.
+        num_slices (int): Base number of samples requested via Accuracy setting.
+        tool_params (dict): Tool geometry containing 'radius', 'c_rad', 'profile', 'is_threeD'.
+
+    Returns:
+        list: Tuples [(h, r), ...] sorted descending (Equator to Tip) for cache probing.
+    """
+
+    # Internal Math Helpers
+    def _get_h_from_r(r_target):
+        """Inverse Math: Finds height h for a specific radius r."""
+        if not is_3d or r_target <= 1e-7:
+            return 0.0
+        if profile == "Ballend":
+            return R - math.sqrt(max(0, R**2 - r_target**2))
+        if profile == "Bullnose":
+            if r_target <= (R - c_rad):
+                return 0.0
+            return c_rad - math.sqrt(max(0, c_rad**2 - (r_target - (R - c_rad))**2))
+        return 0.0
+
+    def _get_r_from_h(h_target):
+        """Forward Math: Finds radius r for a specific height h."""
+        if not is_3d:
+            return R
+        if profile == "Ballend":
+            return math.sqrt(max(0, R**2 - (R - h_target)**2))
+        if profile == "Bullnose":
+            if h_target < c_rad:
+                return (R - c_rad) + math.sqrt(max(0, c_rad**2 - (c_rad - h_target)**2))
+            return R
+        return R
+
+    plan = []
+    
+    # 1. Extract Tool Geometry
+    R = tool_params["radius"]
+    c_rad = tool_params["c_rad"]
+    profile = tool_params["profile"]
+    is_3d = tool_params["is_threeD"]
+
+    # 2. Determine Local Contact Window
+    # Widest radius reachable in current submerged contact zone
+    max_r = _get_r_from_h(dist_submerged) if dist_submerged < c_rad else R
+    # The vertical 'ceiling' of tool contact for this layer
+    h_ceiling = min(c_rad, dist_submerged - tol) if is_3d else 0.0
+
+    # 3. Squeeze Logic (Linear Radius Steps)
+    # We divide the available horizontal reach into equal steps.
+    for i in range(num_slices):
+        r_theo = (max_r / (num_slices - 1)) * i if num_slices > 1 else max_r
+        # Find the vertical height h on the tool that corresponds to this radius
+        plan.append((_get_h_from_r(r_theo), r_theo))
+
+    # 4. Geometric Feature Snapping (The Snap)
+    # Check if any model floors exist between the current tip and the contact ceiling
+    for ch in critical_heights:
+        rel_h = ch - z_target
+        # Only snap if the feature is within the tool's active contact zone
+        if 0.0001 < rel_h < (h_ceiling - 0.0001):
+            # For a snapped height, calculate the corresponding theoretical radius
+            plan.append((rel_h, _get_r_from_h(rel_h)))
+
+    # 5. Clean, Unique, and Sort
+    # Rounding to 6 decimals prevents duplicate slices caused by floating point noise.
+    # Sorted descending (reverse=True) so the loop starts at the equator for the cache probe.
+    unique_steps = sorted({(round(h, 6), round(r, 6)) for h, r in plan}, reverse=True)
+
+    return unique_steps
+
+def _validate_cache(
+    sections,
+    sub_face,
+    prev_fp,
+    is_probe
+):
+    """Generates slice fingerprints and validates the Verticality Cache.
+
+    Args:
+        sections (list): The list of Path.Area.Section objects from makeSections.
+        sub_face (Part.Shape): The 2D geometry of the current sub-sample
+        is_probe (bool): True if this iteration is intended to validate the cache.
+        prev_fp (tuple): The geometric fingerprint from the previous machined layer.
+
+    Returns:
+        tuple: (hit_cache [bool], current_fp [tuple], current_shape [Part.Shape])
+        - hit_cache: True if the wall is vertical and geometry matches the cache.
+        - current_fp: The fingerprint of the current slice to store for the next layer.
+    """
+
+    # Helper to generate fingerprint
+    def _get_fingerprint(s):
+        bb = s.BoundBox
+        return (s.Area, bb.XMin)
+
+    current_fp = _get_fingerprint(sub_face)
+
+    # Validate cache only during the first sub-sample (the probe)
+    if is_probe and len(sections) > 1:  # is_3d
+        # Check 'Future' slice (Z - Radius) provided by the double-slice probe
+        probe_sub_face = sections[1].getShape()
+        if probe_sub_face and not probe_sub_face.isNull():
+            check_fp = _get_fingerprint(probe_sub_face)
+    else:  # Flat endmill
+        check_fp = current_fp
+
+    if prev_fp == check_fp:
+        return True, prev_fp
+        
+    return False, current_fp
+
+def _update_machining_mask(
+    wpc,
+    allPrevComp,
+    currentSilhouette,
+    status,
+    floor_geo
+):
+    """Updates the persistent cumulative mask with new cleared areas.
+
+    This function maintains a 'shadow' of all material processed in layers
+    above the current depth. It performs a C++ union of the previous mask,
+    the current model footprint, and any detected physical floors. This
+    prevents the tool from air-cutting previously finished surfaces.
+
+    Args:
+        wpc (Part.Circle): The workplane for Path.Area operations.
+        allPrevComp (Part.Shape): The cumulative mask from previous layers.
+        currentSilhouette (Part.Shape): The tool-compensated footprint of
+            the current model slice.
+        status (str): The layer status ("Pure", "Mixed", or "Extra").
+        floor_geo (Part.Face): The physical floor geometry detected at this depth.
+
+    Returns:
+        Part.Shape: The updated, dissolved cumulative mask at Z=0.
+    """
+
+    mask_engine = Path.Area()
+    mask_engine.setPlane(wpc)
+
+    # 1. Add the mask from all layers above
+    if allPrevComp and not allPrevComp.isNull():
+        mask_engine.add(allPrevComp)
+
+    # 2. Add the current model silhouette (the walls/islands)
+    mask_engine.add(currentSilhouette)
+
+    # 3. Add physical floors (Mixed or Extra)
+    # This treats 'shelves' as solid barriers for all layers below
+    if status in ["Mixed", "Extra"] and floor_geo:
+        # floor_geo was normalized to Z=0 during categorization
+        mask_engine.add(floor_geo)
+
+    # 4. Extract the dissolved result
+    try:
+        allPrevComp = mask_engine.getShape()
+    except Exception as e:
+        Path.Log.error(f"Z-Level Hybrid: Machining mask update failed: {str(e)}")
+
+    return allPrevComp
 
 
 # ---------------------------------------------------------------------------
@@ -499,14 +627,11 @@ def zlevel_hybrid_to_gcode(
     commands = []
 
     # Extract feeds and speeds
-    h_feed = feed_params.get("horizFeed", 0.0)
-    v_feed = feed_params.get("vertFeed", 0.0)
-    h_rapid = feed_params.get("horizRapid", 0.0)
     v_rapid = feed_params.get("vertRapid", 0.0)
 
     # Extract heights
-    safe_z = height_params.get("safe_hght", 3.0)
-    clear_z = height_params.get("clearance_hght", 5.0)
+    safe_hght = height_params.get("safe_hght", 3.0)
+    clear_hght = height_params.get("clearance_hght", 5.0)
 
     # Extract pattern logic
     cut_climb = pattern_options.get("cut_climb", True)
@@ -550,27 +675,15 @@ def zlevel_hybrid_to_gcode(
                 # Start at the end vertex for Climb to move backward through CCW wire
                 start_p = FreeCAD.Vector(V[lv].X, V[lv].Y, V[lv].Z) if cut_climb else FreeCAD.Vector(V[0].X, V[0].Y, V[0].Z)
 
-                # Safety transition: Rapid to SafeHeight, then to start position
-                commands.append(Path.Command("G0", {"Z": safe_z, "F": v_rapid}))
-                commands.append(Path.Command("G0", {"X": start_p.x, "Y": start_p.y, "F": h_rapid}))
-                # Move to depth (plunge)
-                commands.append(Path.Command("G1", {"Z": z_target, "F": v_feed}))
-
                 # Generate the wire-following path
-                path_params = {
-                    "shapes": [wire],
-                    "feedrate": h_feed,
-                    "start": start_p,
-                    "preamble": False,
-                    "retraction": safe_z,
-                    "resume_height": safe_z
-                }
-
-                try:
-                    pp = Path.fromShapes(**path_params)
-                    commands.extend(pp.Commands)
-                except Exception as e:
-                    Path.Log.error(f"Z-Level Hybrid: Path generation failed at Z={z_target}: {str(e)}")
+                commands.extend(_generate_wire_path(
+                    wire,
+                    z_target,
+                    safe_hght,
+                    start_p,
+                    feed_params
+                    )
+                )
 
         # B: Cut pattern
         should_clear = False
@@ -585,7 +698,7 @@ def zlevel_hybrid_to_gcode(
 
         if should_clear:
             # Ensure tool is at a safe level before moving into the pattern
-            commands.append(Path.Command("G0", {"Z": safe_z, "F": v_rapid}))
+            commands.append(Path.Command("G0", {"Z": safe_hght, "F": v_rapid}))
 
             # Dispatch to the high-speed Path.Area pattern engine
             pattern_cmds = _generatePattern(
@@ -598,7 +711,7 @@ def zlevel_hybrid_to_gcode(
                 step_over,
                 radius,
                 feed_params,
-                safe_z
+                safe_hght
             )
             commands.extend(pattern_cmds)
 
@@ -608,7 +721,7 @@ def zlevel_hybrid_to_gcode(
     indicator.stop()
 
     # Return to clearance height
-    commands.append(Path.Command("G0", {"Z": clear_z, "F": v_rapid}))
+    commands.append(Path.Command("G0", {"Z": clear_hght, "F": v_rapid}))
 
     Path.Log.info(f"Z-Level Hybrid: G-code generation complete. {len(commands)} commands.")
     return commands
@@ -647,7 +760,7 @@ def _generatePattern(
         A list of Path.Command objects representing the clearing G-code.
     """
     Path.Log.debug(f"Z-Level Hybrid: Generating {cut_pattern} pattern at Z={z_target}")
-    cmds = []
+    commands = []
     should_reverse = True
 
     # 1. Validation Guards
@@ -659,8 +772,7 @@ def _generatePattern(
         return []
 
     # 2. Engine Setup
-    horiz_feed = feed_params.get("horizFeed", 0.0)
-    vert_feed = feed_params.get("vertFeed", 0.0)
+    v_rapid = feed_params.get("vertRapid", 0.0)
 
     engine = Path.Area()
     engine.add(cutArea)
@@ -691,7 +803,7 @@ def _generatePattern(
     params["ToolRadius"] = radius
     params["FromCenter"] = reverse_pattern
 
-    engine.setParams(**params)  
+    engine.setParams(**params)
 
     # 5. Execute Native Solver
     try:
@@ -713,27 +825,74 @@ def _generatePattern(
         if not wire.isClosed() and pattern_mode == 2:  # Offsets should be closed
             continue
 
-        # A. Lead-In: Transition at Safe Height, then plunge
         start_p = wire.Vertexes[0].Point
-        cmds.append(Path.Command("G0", {"Z": safe_hght}))
-        cmds.append(Path.Command("G0", {"X": start_p.x, "Y": start_p.y}))
-        cmds.append(Path.Command("G1", {"Z": z_target, "F": vert_feed}))
 
-        # B. Generate XY Path
-        path_params = {
-            "shapes": [wire],
-            "feedrate": horiz_feed,
-            "start": start_p,
-            "preamble": False,
-            'verbose': True,
-            "retraction": safe_hght,
-            "resume_height": safe_hght
-        }
+        # Generate the wire-following path
+        commands.extend(_generate_wire_path(
+            wire,
+            z_target,
+            safe_hght,
+            start_p,
+            feed_params
+            )
+        )
+
+        # Safety Retract after each segment (island or ring)
+        commands.append(Path.Command("G0", {"Z": safe_hght, "F": v_rapid}))
+
+    return commands
+
+def _generate_wire_path(
+    wire,
+    z_target,
+    safe_hght,
+    start_p,
+    feed_params
+):
+    """Standardizes G-code generation for a single wire segment.
+
+    Args:
+        wire (Part.Wire): The geometric path to follow.
+        z_target (float): The target machining depth.
+        safe_hght (float): The height for safe transitions.
+        start_p (Vector): The optimized starting point.
+        feed_params: Dictionary containing 'horizFeed' and 'vertFeed' values.
+
+    Returns:
+        list: A list of Path.Command objects.
+    """
+
+    commands = []
+
+    # Extract feeds and speeds
+    h_feed = feed_params.get("horizFeed", 0.0)
+    v_feed = feed_params.get("vertFeed", 0.0)
+    h_rapid = feed_params.get("horizRapid", 0.0)
+    v_rapid = feed_params.get("vertRapid", 0.0)
+
+    # Safety transition: Rapid to SafeHeight, then to start position
+    commands.append(Path.Command("G0", {"Z": safe_hght, "F": v_rapid}))
+    commands.append(Path.Command("G0", {"X": start_p.x, "Y": start_p.y, "F": h_rapid}))
+    # Move to depth (plunge)
+    commands.append(Path.Command("G1", {"Z": z_target, "F": v_feed}))
+        
+    path_params = {
+        "shapes": [wire],
+        "feedrate": h_feed,
+        "start": start_p,
+        "preamble": False,
+        "verbose": True,
+        "retraction": safe_hght,
+        "resume_height": safe_hght
+    }
+
+    try:
         pp = Path.fromShapes(**path_params)
-        # Extend Commands list
-        cmds.extend(pp.Commands)
+    except Exception as e:
+        Path.Log.error(f"Z-Level Hybrid: Path.fromShapes failed at Z={z_target}: {str(e)}")
+        return []
 
-        # C. Safety Retract after each segment (island or ring)
-        cmds.append(Path.Command("G0", {"Z": safe_hght}))
-
-    return cmds
+    # Extend Commands list
+    commands.extend(pp.Commands)
+    # Return commands
+    return commands
