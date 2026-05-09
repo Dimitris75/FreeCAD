@@ -1324,6 +1324,7 @@ class ObjectSurface(PathOp.ObjectOp):
             accuracy_val,
             depth_offset,
             wpc,
+            start_z=obj.StartDepth.Value,
         )
 
         # 6. Convert to G-Code
