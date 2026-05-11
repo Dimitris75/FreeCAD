@@ -965,7 +965,7 @@ class ObjectSurface(PathOp.ObjectOp):
             if pattern == "Offset":
                 if boundary_face:
                     main_scan_lines = surface_pattern.generate_offset_scan_lines(
-                        boundary_face, step_over, sample_interval, pattern_reverse, cut_climb
+                        boundary_face, step_over, tool_diam, sample_interval, pattern_reverse, cut_climb
                     )
                 else:
                     pattern = "Line"
@@ -1080,6 +1080,7 @@ class ObjectSurface(PathOp.ObjectOp):
         sample_interval = obj.SampleInterval.Value
         opt_transitions = getattr(obj, "KeepToolDown", False)
         is_whole_model_job = False if cutting_faces else True
+        force_keep_down = True if obj.CutPattern in ("ZigZag", "CircularZigZag") else False
 
         # Ensure we have cutting faces (Fallback to whole model if none selected)
         if not cutting_faces:
@@ -1116,17 +1117,17 @@ class ObjectSurface(PathOp.ObjectOp):
                     Path.Command("G0", {"Z": obj.SafeHeight.Value, "F": self.vertRapid})
                 )
 
-            # D. Post-process and generate G-code for this group
-            if obj.OptimizeLinearPaths:
-                scan_lines = [
-                    surface_postprocess.filter_cl_points(line, 0.005) for line in scan_lines
-                ]
-
-            # E. Multi-pass operation
+            # D. Multi-pass operation
             if getattr(obj, "LayerMode", "Single-pass") == "Multi-pass":
                 scan_lines = surface_postprocess.apply_multipass(
                     scan_lines, obj.StartDepth.Value, obj.FinalDepth.Value, obj.StepDown.Value
                 )
+
+            # E. Post-process and generate G-code for this group
+            if obj.OptimizeLinearPaths:
+                scan_lines = [
+                    surface_postprocess.filter_cl_points(line, 0.005) for line in scan_lines
+                ]
 
             # F. Generate G-Code
             # For "Individual" mode, we force full retracts between features.
@@ -1150,6 +1151,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 optimize_transitions=opt_transitions,
                 safe_stl=safe_stl if opt_transitions else None,
                 cutter=cutter if opt_transitions else None,
+                force_keep_down=force_keep_down,
             )
             all_final_cmds.extend(group_cmds)
 
