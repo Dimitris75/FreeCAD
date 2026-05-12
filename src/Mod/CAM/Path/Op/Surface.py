@@ -1312,7 +1312,7 @@ class ObjectSurface(PathOp.ObjectOp):
 
         # 4. Depth categorization
         cat_steps = surface_zlevel.categorize_floor_steps(
-            shape, obj.StartDepth.Value, obj.FinalDepth.Value, obj.StepDown.Value
+            shape, obj.StartDepth.Value, obj.FinalDepth.Value, obj.StepDown.Value, clear_planar_only
         )
 
         # 5. Generate Geometry Stack
