@@ -41,70 +41,189 @@ if False:
 else:
     Path.Log.setLevel(Path.Log.Level.INFO, Path.Log.thisModule())
 
-    # ---------------------------------------------------------------------------
-    # Boundary preparation
-    # ---------------------------------------------------------------------------
 
-    def extendedBoundBox(wBB, bbBfr, zDep):
-        """
-        Creates a large, oversized rectangular wire from a given bounding box.
+# ---------------------------------------------------------------------------
+# Fill selected holes
+# ---------------------------------------------------------------------------
 
-        This wire serves as the absolute outermost boundary or "canvas" for the Z-Level
-        strategy. It is intentionally made much larger than the stock to ensure that
-        any boolean subtractions near the model's edge have a clean, unambiguous
-        area to cut from.
 
-        Args:
-            wBB (FreeCAD.BoundBox): The source bounding box (typically from the stock or model).
-            bbBfr (float): The buffer or margin distance to expand the box by in X and Y.
-            zDep (float): The Z-height at which to create the 2D wire.
+def _get_selected_faces(base_property):
+    """
+    Parses the Path operation's 'Base' property to extract all selected Part.Face objects.
 
-        Returns:
-            Part.Wire: A closed, rectangular Part.Wire object.
-        """
-        p1 = FreeCAD.Vector(wBB.XMin - bbBfr, wBB.YMin - bbBfr, zDep)
-        p2 = FreeCAD.Vector(wBB.XMax + bbBfr, wBB.YMin - bbBfr, zDep)
-        p3 = FreeCAD.Vector(wBB.XMax + bbBfr, wBB.YMax + bbBfr, zDep)
-        p4 = FreeCAD.Vector(wBB.XMin - bbBfr, wBB.YMax + bbBfr, zDep)
-        return Part.makePolygon([p1, p2, p3, p4, p1])
+    Args:
+        base_property (list): The operation's `obj.Base` list of (object, subnames) tuples.
 
-    def getTrimFace(borderFace, bbFace, wpc):
-        """
-        Calculates the 'Outside World' mask used to clip the toolpath.
+    Returns:
+        list: A flat list of all valid Part.Face objects found in the selection.
+    """
+    extracted_faces = []
+    if not base_property:
+        return extracted_faces
 
-        This function takes a giant outer boundary (`borderFace`) and subtracts the
-        model's actual 2D silhouette (`bbFace`) from it. The result is a face with a
-        hole in it, representing everything *outside* the area to be machined. This
-        "trim face" is used in later boolean operations to ensure the toolpath does
-        not extend beyond the model's perimeter.
+    for base, subs in base_property:
+        for sub in subs:
+            if not sub:
+                continue
+            try:
+                shape = base.Shape.getElement(sub)
+                if shape and isinstance(shape, Part.Face):
+                    extracted_faces.append(shape)
+            except Exception as e:
+                Path.Log.debug(
+                    f"_get_selected_faces: Bypassed invalid sub-element '{sub}' on '{base.Label}': {str(e)}\n"
+                )
+    return extracted_faces
 
-        Args:
-            borderFace (Part.Face): The oversized outer boundary created by extendedBoundBox.
-            bbFace (Part.Face): The 2D silhouette of the model or stock.
-            wpc (Part.Wire): The workplane context for the Path.Area (ClipperLib) engine.
 
-        Returns:
-            Part.Shape: The final trim face shape, or an empty shape on failure.
-        """
-        trim_engine = Path.Area()
-        trim_engine.setPlane(wpc)
-        trim_engine.add(borderFace)
+def fill_selected(base_property):
+    """
+    Creates flat, 2D "lids" or "caps" for selected hole/pocket wall faces.
 
-        if bbFace:
-            bbFace.translate(FreeCAD.Vector(0, 0, -bbFace.BoundBox.ZMin))
-            trim_engine.add(bbFace, op=1)
+    This function iterates through user-selected faces. For each valid face (assumed
+    to be the wall of a hole), it finds the highest Z-coordinate of its boundary wire,
+    creates a flat face at that Z-level, and returns it. These "lids" are used as
+    keep-out masks in the main algorithm.
 
-        trim_face = trim_engine.getShape()
+    Args:
+        base_property (list): The operation's `obj.Base` list.
+
+    Returns:
+        list: A list of tuples, where each tuple is `(max_z, mask_face_at_z0)`.
+              `max_z` is the original Z-max-height of the selected face.
+              `mask_face_at_z0` is the Part.Face object translated to Z=0 for masking.
+    """
+    # 1. Extract selected faces using the helper function
+    selected_faces = _get_selected_faces(base_property)
+
+    if not selected_faces:
+        Path.Log.warning("No faces found in the Base Geometry selection.\n")
+        return []
+
+    fill_holes_mask = []
+    flat_edges, sorted_edges, mask_face = None, None, None
+
+    # 2. Process each selected face to generate flat horizontal masks
+    for face in selected_faces:
+        # Complex multi-step boundaries or multi-wire exterior faces are skipped here.
+        if not face.Wires or len(face.Wires) != 1 or not face.Wires[0].isClosed():
+            Path.Log.debug(
+                "surface_zlevel.fill_selected: Face skipped. Does not match the requirement for a standard hole wall.\n"
+            )
+            continue
+
+        # Get the highest uniform Z-level boundary of the entire wire loop
+        hole_wire = face.Wires[0]
+        max_z = hole_wire.BoundBox.ZMax
+        flat_edges = []
+
+        # Discretize and flatten ALL edges of the wire loop to guarantee a closed mask
+        for edge in hole_wire.Edges:
+            try:
+                points = edge.discretize(Distance=0.10)
+                flat_points = [FreeCAD.Vector(p.x, p.y, max_z) for p in points]
+                flat_edge = Part.makePolygon(flat_points)
+                flat_edges.extend(flat_edge.Edges)
+            except Exception as e:
+                Path.Log.debug(
+                    f"surface_zlevel.fill_selected: Critical error flattening edge geometry: {str(e)}\n"
+                )
+                continue
+
+        if not flat_edges:
+            continue
 
         try:
-            if hasattr(trim_face, "removeSplitter"):
-                trim_face = trim_face.removeSplitter()
-        except Exception as e:
-            Path.Log.debug(
-                f"surface_zlevel.getTrimFace: Removing splitter on trim face failed: {str(e)}"
-            )
+            # Reassemble individual flat edges by sorting them vertex-to-vertex first
+            sorted_edges = Part.__sortEdges__(flat_edges)
 
-        return trim_face
+            flat_wire = Part.Wire(sorted_edges)
+
+            mask_face = Part.Face(flat_wire)
+
+            # Append the calculated Z height along with the light 2D surface mas
+            mask_face.translate(FreeCAD.Vector(0, 0, -mask_face.BoundBox.ZMin))
+            fill_holes_mask.append((max_z, mask_face))
+        except Exception as e:
+            Path.Log.warning(f"An unexpected error occurred while creating a fill-hole cap: {e}")
+            continue
+
+    if not fill_holes_mask:
+        Path.Log.warning("Failed to fill selected holes.")
+        return []
+
+    Path.Log.debug(
+        f"surface_zlevel.fill_selected: Generated {len(fill_holes_mask)} lightweight horizontal mask definitions.\n"
+    )
+    return fill_holes_mask
+
+
+# ---------------------------------------------------------------------------
+# Boundary preparation
+# ---------------------------------------------------------------------------
+
+
+def extendedBoundBox(wBB, bbBfr, zDep):
+    """
+    Creates a large, oversized rectangular wire from a given bounding box.
+
+    This wire serves as the absolute outermost boundary or "canvas" for the Z-Level
+    strategy. It is intentionally made much larger than the stock to ensure that
+    any boolean subtractions near the model's edge have a clean, unambiguous
+    area to cut from.
+
+    Args:
+        wBB (FreeCAD.BoundBox): The source bounding box (typically from the stock or model).
+        bbBfr (float): The buffer or margin distance to expand the box by in X and Y.
+        zDep (float): The Z-height at which to create the 2D wire.
+
+    Returns:
+        Part.Wire: A closed, rectangular Part.Wire object.
+    """
+    p1 = FreeCAD.Vector(wBB.XMin - bbBfr, wBB.YMin - bbBfr, zDep)
+    p2 = FreeCAD.Vector(wBB.XMax + bbBfr, wBB.YMin - bbBfr, zDep)
+    p3 = FreeCAD.Vector(wBB.XMax + bbBfr, wBB.YMax + bbBfr, zDep)
+    p4 = FreeCAD.Vector(wBB.XMin - bbBfr, wBB.YMax + bbBfr, zDep)
+    return Part.makePolygon([p1, p2, p3, p4, p1])
+
+
+def getTrimFace(border_face, bbFace, wpc):
+    """
+    Calculates the 'Outside World' mask used to clip the toolpath.
+
+    This function takes a giant outer boundary (`border_face`) and subtracts the
+    model's actual 2D silhouette (`bbFace`) from it. The result is a face with a
+    hole in it, representing everything *outside* the area to be machined. This
+    "trim face" is used in later boolean operations to ensure the toolpath does
+    not extend beyond the model's perimeter.
+
+    Args:
+        border_face (Part.Face): The oversized outer boundary created by extendedBoundBox.
+        bbFace (Part.Face): The 2D silhouette of the model or stock.
+        wpc (Part.Wire): The workplane context for the Path.Area (ClipperLib) engine.
+
+    Returns:
+        Part.Shape: The final trim face shape, or an empty shape on failure.
+    """
+    trim_engine = Path.Area()
+    trim_engine.setPlane(wpc)
+    trim_engine.add(border_face)
+
+    if bbFace:
+        bbFace.translate(FreeCAD.Vector(0, 0, -bbFace.BoundBox.ZMin))
+        trim_engine.add(bbFace, op=1)
+
+    trim_face = trim_engine.getShape()
+
+    try:
+        if hasattr(trim_face, "removeSplitter"):
+            trim_face = trim_face.removeSplitter()
+    except Exception as e:
+        Path.Log.debug(
+            f"surface_zlevel.getTrimFace: Removing splitter on trim face failed: {str(e)}"
+        )
+
+    return trim_face
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +231,7 @@ else:
 # ---------------------------------------------------------------------------
 
 
-def categorize_floor_steps(shape, start_z, final_z, step_down, clear_planar_only):
+def categorize_floor_steps(shape, start_z, final_z, step_down, clear_planar_only, tolerance=0.0001):
     """Reconciles physical model floors with calculated step-down heights.
 
     This function generates a top-down list of Z-depths starting from start_z
@@ -133,7 +252,7 @@ def categorize_floor_steps(shape, start_z, final_z, step_down, clear_planar_only
     # 1. Generate standard Z-heights list top-down
     z_heights = []
     curr_z = start_z - step_down
-    while curr_z > (final_z + 0.0001):
+    while curr_z > (final_z + tolerance):
         z_heights.append(round(curr_z, 5))
         curr_z -= step_down
     z_heights.append(round(final_z, 5))
@@ -156,7 +275,7 @@ def categorize_floor_steps(shape, start_z, final_z, step_down, clear_planar_only
             if clear_planar_only:
                 # We are in "Clear Planar Only" mode. Split the "Mixed" step
                 # into two separate virtual passes for the main loop to process.
-                final_depth_logic.append((z_std+0.0001, "Pure", None))  # Set higher to be processed first
+                final_depth_logic.append((z_std + tolerance, "Pure", None))  # Set higher to be processed first
                 final_depth_logic.append((z_std, "Extra", fused_geometry[match_z]))
             else:
                 final_depth_logic.append((z_std, "Mixed", fused_geometry[match_z]))
@@ -214,7 +333,7 @@ def _get_fused_floor_geometry(shape, start_z, final_z, tolerance=0.001):
         except:
             return False
 
-    FACE_COUNT_THRESHOLD = 250
+    FACE_COUNT_THRESHOLD = 350
     if len(shape.Faces) > FACE_COUNT_THRESHOLD:
         Path.Log.info(
             f"Shape has >{FACE_COUNT_THRESHOLD} faces. Skipping slow planar floor detection for performance."
@@ -258,8 +377,9 @@ def _get_fused_floor_geometry(shape, start_z, final_z, tolerance=0.001):
 def zlevel_hybrid_stack(
     shape,
     categorizedSteps,
-    borderFace,
-    trimFace,
+    border_face,
+    trim_face,
+    fill_holes_masks,
     tool_params,
     stock_to_leave,
     accuracy_val,
@@ -280,8 +400,9 @@ def zlevel_hybrid_stack(
     Args:
         shape: The source Part.Shape to be machined.
         categorizedSteps: List of tuples (z_target, status, floor_geo) from categorization.
-        borderFace: A Part.Face representing the stock or boundary footprint.
-        trimFace: A Part.Face representing the 'Outside World' ( forbidden zone).
+        border_face: A Part.Face representing the stock or boundary footprint.
+        trim_face: A Part.Face representing the 'Outside World' ( forbidden zone).
+        fill_holes_mask: A list of tuples, where each tuple is `(max_z, mask_face_at_z0)
         tool_params: Dict containing 'radius', 'c_rad', 'profile', 'is_threeD'.
         stock_to_leave: Horizontal (XY) distance to keep from the model (mm).
         accuracy_val: Integer or string representing the number of sub-slices.
@@ -367,24 +488,36 @@ def zlevel_hybrid_stack(
         for s in layer_slices:
             fusion.add(s)
 
-        # C. Boolean resolution
+        # D. Process and apply active fill hole masks
+        if fill_holes_masks:
+            # Create a list of masks that are active for this layer and all subsequent layers.
+            active_masks_for_this_layer = [mask for z, mask in fill_holes_masks if z >= z_target]
+
+            # This prevents the tool from machining inside them when we calculate the cutArea below.
+            for mask in active_masks_for_this_layer:
+                allPrevComp = _update_machining_mask(
+                    wpc, allPrevComp, mask, status="Pure", floor_geo=None
+                )
+            # For the next iteration, keep only the masks that have not yet been activated.
+            fill_holes_masks = [
+                (z, mask) for z, mask in fill_holes_masks if z < z_target
+            ]
+
+        # E. Boolean resolution
         currentSilhouette = None
         try:
             # currentSilhouette is the union of all 3D contact points at this depth
             currentSilhouette = fusion.getShape()
-
-            #if hasattr(currentSilhouette, "removeSplitter"):
-            #    currentSilhouette = currentSilhouette.removeSplitter()
         except Exception as e:
             Path.Log.error(f"Silhouette fusion failed at Z={round(z_target, 3)}. Error: {str(e)}")
             continue
 
-        # D: Calculate the final cutting area using the new helper
+        # F: Calculate the final cutting area using the new helper
         cutArea = _calculate_cut_area(
-            wpc, status, currentSilhouette, floor_geo, borderFace, trimFace, allPrevComp, z_target
+            wpc, status, currentSilhouette, floor_geo, border_face, trim_face, allPrevComp, z_target
         )
 
-        # E: Finalize and store the result for this layer
+        # G: Finalize and store the result for this layer
         if cutArea:
             total_shift = z_target + z_offset
 
@@ -463,8 +596,8 @@ def _calculate_cut_area(
     status,
     currentSilhouette,
     floor_geo,
-    borderFace,
-    trimFace,
+    border_face,
+    trim_face,
     allPrevComp,
     z_target,
 ):
@@ -480,8 +613,8 @@ def _calculate_cut_area(
         status (str): The status of the layer ("Pure", "Mixed", "Extra").
         currentSilhouette (Part.Shape): The tool-compensated model silhouette at Z=0.
         floor_geo (Part.Shape): The detected physical floor geometry at Z=0.
-        borderFace (Part.Shape): The main stock boundary at Z=0.
-        trimFace (Part.Shape): The "outside world" mask to clip the toolpath.
+        border_face (Part.Shape): The main stock boundary at Z=0.
+        trim_face (Part.Shape): The "outside world" mask to clip the toolpath.
         allPrevComp (Part.Shape): The cumulative mask of areas already machined in upper layers.
         z_target (float): The current Z-height, used for logging errors.
 
@@ -503,7 +636,7 @@ def _calculate_cut_area(
         # Standard Mode: The area to machine is the stock boundary, minus the model,
         # minus any areas we've already cleared, and clipped by the trim mask.
         # Stock = Border; Material = (Stock - Model - PreviouslyCleared) - TrimMask
-        layer_engine.add(borderFace)
+        layer_engine.add(border_face)
         layer_engine.add(currentSilhouette, op=1)
 
         # Rest Machining: subtract material cleared in layers above
@@ -511,8 +644,8 @@ def _calculate_cut_area(
             layer_engine.add(allPrevComp, op=1)
 
         # Apply the 'outside world' mask only in standard mode
-        if trimFace:
-            layer_engine.add(trimFace, op=1)
+        if trim_face:
+            layer_engine.add(trim_face, op=1)
 
     try:
         cutArea = layer_engine.getShape()
@@ -902,9 +1035,6 @@ def _generatePattern(
         # Generate the wire-following path
         commands.extend(_generate_wire_path(wire, z_target, safe_hght, start_p, feed_params))
 
-        # Safety Retract after each segment (island or ring)
-        commands.append(Path.Command("G0", {"Z": safe_hght, "F": v_rapid}))
-
     return commands
 
 
@@ -927,18 +1057,11 @@ def _generate_wire_path(wire, z_target, safe_hght, start_p, feed_params):
     # Extract feeds and speeds
     h_feed = feed_params.get("horizFeed", 0.0)
     v_feed = feed_params.get("vertFeed", 0.0)
-    h_rapid = feed_params.get("horizRapid", 0.0)
-    v_rapid = feed_params.get("vertRapid", 0.0)
-
-    # Safety transition: Rapid to SafeHeight, then to start position
-    commands.append(Path.Command("G0", {"Z": safe_hght, "F": v_rapid}))
-    commands.append(Path.Command("G0", {"X": start_p.x, "Y": start_p.y, "F": h_rapid}))
-    # Move to depth (plunge)
-    commands.append(Path.Command("G1", {"Z": z_target, "F": v_feed}))
 
     path_params = {
         "shapes": [wire],
         "feedrate": h_feed,
+        "feedrate_v": v_feed,
         "start": start_p,
         "preamble": False,
         "verbose": True,

@@ -388,7 +388,6 @@ class ObjectSurface(PathOp.ObjectOp):
                     "A custom center point for radial patterns.",
                 ),
             ),
-            # -- Waterline-specific --
             (
                 "App::PropertyEnumeration",
                 "SamplingAccuracy",
@@ -419,6 +418,12 @@ class ObjectSurface(PathOp.ObjectOp):
                 "IgnoreOuter",
                 "Clearing Options",
                 QT_TRANSLATE_NOOP("App::Property", "Ignore outer waterlines."),
+            ),
+            (
+                "App::PropertyBool",
+                "FillSelectedHoles",
+                "Clearing Options",
+                QT_TRANSLATE_NOOP("App::Property", "Selected vertical face(s) in the 'Base Geometry' will be filled/capped."),
             ),
             # -- Optimization --
             (
@@ -562,6 +567,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "PatternCenterCustom": FreeCAD.Vector(0.0, 0.0, 0.0),
             "ClearPlanarOnly": False,
             "IgnoreOuter": False,
+            "FillSelectedHoles": False,
             "StockToLeave": 0.0,
             "StepOver": 50.0,
             "CutPatternAngle": 0.0,
@@ -640,6 +646,7 @@ class ObjectSurface(PathOp.ObjectOp):
         # Apply Visibility to Z-Level Group (B)
         obj.setEditorMode("ClearPlanarOnly", B)
         obj.setEditorMode("IgnoreOuter", B)
+        obj.setEditorMode("FillSelectedHoles", B)
         obj.setEditorMode("StockToLeave", B)
         obj.setEditorMode("CutPatternZLevel", B)
         obj.setEditorMode("SamplingAccuracy", B)
@@ -1243,10 +1250,11 @@ class ObjectSurface(PathOp.ObjectOp):
         Flow:
         1. Extract ToolBit parameters for specific 3D profile math.
         2. Data preparation
-        3. Generate master boundary (TrimFace) and stable background pool.
-        4. Categorize depths, reconciling standard steps with physical model floors.
-        5. Dispatch to surface_zlevel generator for C++ accelerated geometry stacking.
-        6. Convert the resulting geometry stack into optimized G-code Path commands.
+        3. Generate mask for Fill selected holes feature
+        4. Generate master boundary (TrimFace) and stable background pool.
+        5. Categorize depths, reconciling standard steps with physical model floors.
+        6. Dispatch to surface_zlevel generator for C++ accelerated geometry stacking.
+        7. Convert the resulting geometry stack into optimized G-code Path commands.
         """
         import Path.Base.Generator.surface_zlevel as surface_zlevel
 
@@ -1272,10 +1280,12 @@ class ObjectSurface(PathOp.ObjectOp):
 
         clear_planar_only = getattr(obj, "ClearPlanarOnly", True)
         ignore_outer = getattr(obj, "IgnoreOuter", False)
+        fill_selected_holes = getattr(obj, "FillSelectedHoles", False)
         accuracy_val = getattr(obj, "SamplingAccuracy", "4")
         step_over = (obj.StepOver / 100.0) * (radius * 2)
         stock_to_leave = obj.StockToLeave.Value
         depth_offset = obj.DepthOffset.Value
+        fill_holes_masks = []
 
         zlevel_tool_params = {
             "radius": radius,
@@ -1303,24 +1313,30 @@ class ObjectSurface(PathOp.ObjectOp):
             "vertRapid": self.vertRapid,
         }
 
-        # 3. Boundary preparation
+        # 3. Fill selected holes
+        if fill_selected_holes:
+            base_prop = getattr(obj, "Base", [])
+            fill_holes_masks = surface_zlevel.fill_selected(base_prop)
+
+        # 4. Boundary preparation
         buffer = radius * 10.0
         border_poly = surface_zlevel.extendedBoundBox(job.Stock.Shape.BoundBox, buffer, 0.0)
-        borderFace = Part.makeFace(border_poly)
+        border_face = Part.makeFace(border_poly)
 
-        trimFace = surface_zlevel.getTrimFace(borderFace, bb_face, wpc)
+        trim_face = surface_zlevel.getTrimFace(border_face, bb_face, wpc)
 
-        # 4. Depth categorization
+        # 5. Depth categorization
         cat_steps = surface_zlevel.categorize_floor_steps(
             shape, obj.StartDepth.Value, obj.FinalDepth.Value, obj.StepDown.Value, clear_planar_only
         )
 
-        # 5. Generate Geometry Stack
+        # 6. Generate Geometry Stack
         wl_data = surface_zlevel.zlevel_hybrid_stack(
             shape,
             cat_steps,
-            borderFace,
-            trimFace,
+            border_face,
+            trim_face,
+            fill_holes_masks,
             zlevel_tool_params,
             stock_to_leave,
             accuracy_val,
@@ -1329,7 +1345,7 @@ class ObjectSurface(PathOp.ObjectOp):
             start_z=obj.StartDepth.Value,
         )
 
-        # 6. Convert to G-Code
+        # 7. Convert to G-Code
         cmds = surface_zlevel.zlevel_hybrid_to_gcode(
             wl_data,
             feed_params,
@@ -1558,6 +1574,7 @@ def SetupProperties():
     setup.append("StockToLeave")
     setup.append("ClearPlanarOnly")
     setup.append("IgnoreOuter")
+    setup.append("FillSelectedHoles")
     setup.append("OptimizeLinearPaths")
     setup.append("SampleInterval")
     setup.append("AdaptiveSampling")
