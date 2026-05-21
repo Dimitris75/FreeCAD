@@ -1267,16 +1267,12 @@ class ObjectSurface(PathOp.ObjectOp):
         c_rad = tool_params.get("corner_radius", 0.0)
         is_3d = True if shape_type in ["ballend", "bullnose"] else False
 
-        if dia == 0.0 or not is_3d and "endmill" not in shape_type:
-            error_msg = translate(
-                "Surface",
-                "Operation failed: A Tool Type has been selected that is not supported by Z-Level Hybrid Algorithm.",
-            )
-            FreeCAD.Console.PrintError(error_msg + "\n")
+        if dia == 0.0 or (not is_3d and "endmill" not in shape_type):
+            Path.Log.error(f"Unsupported tool type for Z-Level Hybrid: '{shape_type}'")
             return []
 
         # 2. Data preparation
-        wpc = Part.makeCircle(2.0, FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(0, 0, 1))
+        wpc = Part.makeCircle(1.0, FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(0, 0, 1))
 
         clear_planar_only = getattr(obj, "ClearPlanarOnly", True)
         ignore_outer = getattr(obj, "IgnoreOuter", False)
@@ -1297,7 +1293,7 @@ class ObjectSurface(PathOp.ObjectOp):
         pattern_options = {
             "cut_climb": obj.CutMode == "Climb",
             "cut_pattern": getattr(obj, "CutPatternZLevel", "None"),
-            "pattern_angle": getattr(obj, "CutPatternAngle", "45"),
+            "pattern_angle": getattr(obj, "CutPatternAngle", 45.0),
             "reverse_pattern": getattr(obj, "CutPatternReversed", False),
         }
 
@@ -1568,7 +1564,6 @@ def SetupProperties():
     setup.append("DepthOffset")
     setup.append("LayerMode")
     setup.append("StepOver")
-    setup.append("OptimizeLinearPaths")
     setup.append("CutPatternZLevel")
     setup.append("SamplingAccuracy")
     setup.append("StockToLeave")

@@ -100,7 +100,7 @@ def fill_selected(base_property):
         Path.Log.warning("No faces found in the Base Geometry selection.\n")
         return []
 
-    fill_holes_mask = []
+    fill_holes_masks = []
     flat_edges, sorted_edges, mask_face = None, None, None
 
     # 2. Process each selected face to generate flat horizontal masks
@@ -143,19 +143,21 @@ def fill_selected(base_property):
 
             # Append the calculated Z height along with the light 2D surface mas
             mask_face.translate(FreeCAD.Vector(0, 0, -mask_face.BoundBox.ZMin))
-            fill_holes_mask.append((max_z, mask_face))
+            fill_holes_masks.append((max_z, mask_face))
         except Exception as e:
             Path.Log.warning(f"An unexpected error occurred while creating a fill-hole cap: {e}")
             continue
 
-    if not fill_holes_mask:
+    if not fill_holes_masks:
         Path.Log.warning("Failed to fill selected holes.")
         return []
 
     Path.Log.debug(
-        f"surface_zlevel.fill_selected: Generated {len(fill_holes_mask)} lightweight horizontal mask definitions.\n"
+        f"surface_zlevel.fill_selected: Generated {len(fill_holes_masks)} lightweight horizontal mask definitions.\n"
     )
-    return fill_holes_mask
+
+    sorted_list = sorted(fill_holes_masks, key=lambda x: x[0], reverse=True)
+    return sorted_list
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +253,7 @@ def categorize_floor_steps(shape, start_z, final_z, step_down, clear_planar_only
     """
     # 1. Generate standard Z-heights list top-down
     z_heights = []
+    floor_match_tol = 0.0005
     curr_z = start_z - step_down
     while curr_z > (final_z + tolerance):
         z_heights.append(round(curr_z, 5))
@@ -267,7 +270,7 @@ def categorize_floor_steps(shape, start_z, final_z, step_down, clear_planar_only
     for z_std in z_heights:
         match_z = None
         for floor_z in fused_geometry.keys():
-            if abs(floor_z - z_std) < 0.0005:
+            if abs(floor_z - z_std) < floor_match_tol:
                 match_z = floor_z
                 break
 
@@ -335,8 +338,9 @@ def _get_fused_floor_geometry(shape, start_z, final_z, tolerance=0.001):
 
     FACE_COUNT_THRESHOLD = 350
     if len(shape.Faces) > FACE_COUNT_THRESHOLD:
-        Path.Log.info(
-            f"Shape has >{FACE_COUNT_THRESHOLD} faces. Skipping slow planar floor detection for performance."
+        Path.Log.warning(
+            f"Model has {len(shape.Faces)} faces (>{FACE_COUNT_THRESHOLD}). "
+            "Automatic floor detection disabled for performance. Use 'Clear Planar Only=False'."
         )
         return {}
 
@@ -420,6 +424,8 @@ def zlevel_hybrid_stack(
     sub_face = None
     allPrevComp = None
     tol = 0.0001
+    loose_tol = 0.0002
+    fill_mask_idx = 0  # Fill holes masks list pointer
 
     c_rad = tool_params["c_rad"]
     is_3d = tool_params["is_threeD"]
@@ -466,7 +472,7 @@ def zlevel_hybrid_stack(
         dist_submerged = max(0, model_top - z_slice)
         # Nudge slice height based on whether we are clearing a floor or a wall
         # Standard layers nudge up (+); Floors nudge down (-) to stay inside material
-        slice_bias = 0.0002 if status in ["Mixed", "Extra"] else -0.0002
+        slice_bias = loose_tol if status in ["Mixed", "Extra"] else -loose_tol
 
         # A. Generate sampling plan (Height, Radius pairs)
         unique_steps = _generate_sampling_plan(
@@ -489,19 +495,14 @@ def zlevel_hybrid_stack(
             fusion.add(s)
 
         # D. Process and apply active fill hole masks
+        # Masks are activated top-down: once z_target passes a mask's threshold height,
+        # it becomes a permanent keep-out zone for all layers below.
         if fill_holes_masks:
-            # Create a list of masks that are active for this layer and all subsequent layers.
-            active_masks_for_this_layer = [mask for z, mask in fill_holes_masks if z >= z_target]
-
-            # This prevents the tool from machining inside them when we calculate the cutArea below.
-            for mask in active_masks_for_this_layer:
+            while fill_mask_idx < len(fill_holes_masks) and fill_holes_masks[fill_mask_idx][0] >= z_target-loose_tol:
                 allPrevComp = _update_machining_mask(
-                    wpc, allPrevComp, mask, status="Pure", floor_geo=None
+                    wpc, allPrevComp, fill_holes_masks[fill_mask_idx][1], status="Pure", floor_geo=None
                 )
-            # For the next iteration, keep only the masks that have not yet been activated.
-            fill_holes_masks = [
-                (z, mask) for z, mask in fill_holes_masks if z < z_target
-            ]
+                fill_mask_idx += 1
 
         # E. Boolean resolution
         currentSilhouette = None
@@ -566,11 +567,13 @@ def _generate_layer_slices(
         list: A list of normalized Part.Shape objects representing the slices at Z=0.
     """
     slices = []
+    sections = []
+    tol = 1e-5
     for h, r_theo in unique_steps:
         r_comp = r_theo + stock_to_leave
 
         # Synchronized Slicing: Calculate the precise Z for this sample
-        slice_z = max(model_bottom + 1e-5, min(z_target + h + slice_bias, model_top - 1e-5))
+        slice_z = max(model_bottom + tol, min(z_target + h + slice_bias, model_top - tol))
 
         # Trigger C++ Slicing with the dynamic offset for this sample
         params["Offset"] = r_comp
@@ -587,6 +590,7 @@ def _generate_layer_slices(
         # Move results to the machine plane (Z=0) for consistent fusion
         sub_face.translate(FreeCAD.Vector(0, 0, -sub_face.BoundBox.ZMin))
         slices.append(sub_face)
+        sections = []
 
     return slices
 
@@ -1064,7 +1068,6 @@ def _generate_wire_path(wire, z_target, safe_hght, start_p, feed_params):
         "feedrate_v": v_feed,
         "start": start_p,
         "preamble": False,
-        "verbose": True,
         "retraction": safe_hght,
         "resume_height": safe_hght,
     }
