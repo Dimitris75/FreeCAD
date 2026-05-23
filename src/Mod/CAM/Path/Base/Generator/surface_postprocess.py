@@ -227,6 +227,7 @@ def _optimize_travel(
             )
             if transition_cmds:
                 return transition_cmds
+
     return []
 
 
@@ -599,7 +600,7 @@ def scan_lines_to_gcode(
             continue
 
         lead_in_cmds = []
-        rapid_target = line[0]
+        rapid_target = line[0]  # First Point
 
         # A. Generate Lead-in
         if use_smart_leads and safe_pdc:
@@ -615,12 +616,22 @@ def scan_lines_to_gcode(
             travel_cmds = None
             if optimize_transitions:
                 travel_cmds = _optimize_travel(
-                    last_point, rapid_target, start_z, safe_z, step_down,
-                    horiz_feed, safe_pdc, cutter, force_keep_down
+                    last_point,
+                    rapid_target,
+                    start_z,
+                    safe_z,
+                    step_down,
+                    clearance_z,
+                    horiz_feed,
+                    horiz_rapid,
+                    vert_rapid,
+                    safe_pdc,
+                    cutter,
+                    force_keep_down=False,
                 )
 
             # Fallback Logic
-            if travel_cmds is None:
+            if not travel_cmds:
                 travel_cmds = [
                     Path.Command("G0", {"Z": safe_z, "F": vert_rapid}),
                     Path.Command("G0", {"X": rapid_target[0], "Y": rapid_target[1], "F": horiz_rapid}),
