@@ -453,6 +453,17 @@ class ObjectSurface(PathOp.ObjectOp):
                     "Collinear and co-radial artifact gaps that are smaller than this threshold are closed in the path.",
                 ),
             ),
+            (
+                "App::PropertyBool",
+                "LeadInOut",
+                "Optimization",
+                QT_TRANSLATE_NOOP(
+                    "App::Property",
+                    "Enable smart lead-in and lead-out moves for the Surface Pattern strategy. "
+                    "Attempts a tangent arc entry first, falls back to a straight plunge if "
+                    "the arc zone is obstructed. Disables Keep Tool Down automatically when  is active."
+                ),
+            ),
             # -- Start Point --
             (
                 "App::PropertyVectorDistance",
@@ -576,6 +587,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "MinSampleInterval": 0.20,
             "BoundaryAdjustment": 0.0,
             "AvoidLastX_Faces": 0,
+            "LeadInOut": False,
             "HandleMultipleFeatures": "Collectively",
             "ProfileEdges": "None",
             "GapThreshold": 0.005,
@@ -630,6 +642,7 @@ class ObjectSurface(PathOp.ObjectOp):
         obj.setEditorMode("GapThreshold", A)
         obj.setEditorMode("LayerMode", A)
         obj.setEditorMode("ProfileEdges", A)
+        obj.setEditorMode("LeadInOut", A)
 
         # Adaptive Sampling Logic
         can_adaptive = is_waterline or is_surface_pattern
@@ -1086,6 +1099,7 @@ class ObjectSurface(PathOp.ObjectOp):
         all_final_cmds = []
         sample_interval = obj.SampleInterval.Value
         opt_transitions = getattr(obj, "KeepToolDown", False)
+        use_smart_leads = getattr(obj, "LeadInOut", False)
         is_whole_model_job = False if cutting_faces else True
         force_keep_down = True if obj.CutPattern in ("ZigZag", "CircularZigZag") else False
 
@@ -1146,6 +1160,7 @@ class ObjectSurface(PathOp.ObjectOp):
             group_cmds = surface_postprocess.scan_lines_to_gcode(
                 scan_lines,
                 horiz_feed=self.horizFeed,
+                vert_feed=self.vertFeed,
                 vert_rapid=self.vertRapid,
                 horiz_rapid=self.horizRapid,
                 safe_z=obj.SafeHeight.Value,
@@ -1155,9 +1170,10 @@ class ObjectSurface(PathOp.ObjectOp):
                 final_z=obj.FinalDepth.Value,
                 sample_interval=sample_interval,
                 depth_offset=obj.DepthOffset.Value,
+                use_smart_leads=use_smart_leads,
                 optimize_transitions=opt_transitions,
-                safe_stl=safe_stl if opt_transitions else None,
-                cutter=cutter if opt_transitions else None,
+                safe_stl=safe_stl if opt_transitions or use_smart_leads else None,
+                cutter=cutter if opt_transitions or use_smart_leads else None,
                 force_keep_down=force_keep_down,
             )
             all_final_cmds.extend(group_cmds)
@@ -1586,5 +1602,6 @@ def SetupProperties():
     setup.append("GapThreshold")
     setup.append("UseStartPoint")
     setup.append("StartPoint")
+    setup.append("LeadInOut")
 
     return setup

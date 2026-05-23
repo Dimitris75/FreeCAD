@@ -193,7 +193,7 @@ def _optimize_travel(
 
     For short transitions (≤ 2× cutter diameter), emits a direct G1
     feed move to the next point — the tool stays down without probing.
-    Longer transitions fall back to a full ``safe_z`` retract.
+    Longer transitions returns an empty list.
 
     Long-distance optimization is deferred to a future iteration.
 
@@ -227,12 +227,7 @@ def _optimize_travel(
             )
             if transition_cmds:
                 return transition_cmds
-
-    # Fallback: full retract
-    return [
-        Path.Command("G0", {"Z": safe_z, "F": vert_rapid}),
-        Path.Command("G0", {"X": next_point[0], "Y": next_point[1], "F": horiz_rapid}),
-    ]
+    return []
 
 
 def _dropcutter_transition(start, end, safe_pdc, start_z, safe_z, step_down, horiz_feed, force_keep_down=False):
@@ -291,6 +286,236 @@ def _make_safe_pdc(safe_stl, cutter, final_z, sample_interval):
 
 
 # ---------------------------------------------------------------------------
+# Smart Lead-in / Lead-out
+# ---------------------------------------------------------------------------
+
+
+def _generate_lead_arc(line, safe_pdc, step_down, cutter, lead_feed, is_lead_in=True):
+    """
+    Generates a 90-degree tangent lead-in or lead-out arc at constant Z.
+
+    The arc entry/exit point comes directly from _get_material_side_vector,
+    which already positions it one radius ahead/behind and one radius
+    perpendicular — no duplicate geometry calculations needed here.
+
+    The arc is purely horizontal (constant Z = p_attach[2]) so it is safe
+    on all controllers with no helical interpolation required.
+
+    Args:
+        line (list): Scan line as a list of (x, y, z) tuples. Must have >= 2 points.
+        safe_pdc (ocl.PathDropCutter): Pre-configured drop-cutter for probing.
+        cutter (ocl.Cutter): Active cutter — diameter used for arc radius.
+        lead_feed (float): Feed rate for the arc move (mm/min).
+        is_lead_in (bool): True = lead-in arc; False = lead-out arc.
+
+    Returns:
+        tuple: (list_of_Path.Commands, entry_exit_point_or_None)
+            Lead-in:  commands move FROM entry_point TO p_attach; returns entry_point.
+            Lead-out: commands move FROM p_attach TO exit_point; returns exit_point.
+            On failure: returns ([], None).
+    """
+    if not line or len(line) < 2:
+        return [], None
+
+    radius = cutter.getDiameter() / 2.0
+    lift_lead = min(step_down, radius)
+
+    # 1. Identify the attachment point and reference segment
+    if is_lead_in:
+        p_attach = line[0]
+        seg_start, seg_end = line[0], line[1]
+    else:
+        p_attach = line[-1]
+        seg_start, seg_end = line[-2], line[-1]
+
+    # 2. Probe for a clear side — get away_vec, arc direction, and entry/exit point
+    away_vec, arc_direction_is_cw, entry_exit_2d = _get_material_side_vector(
+        seg_start, seg_end, cutter, safe_pdc, is_lead_in=is_lead_in
+    )
+    if away_vec is None:
+        return [], None  # No clear side — caller falls back to straight plunge
+
+    # 3. Arc entry/exit point at constant Z (no surface projection needed)
+    cut_z = p_attach[2]
+    entry_exit_point = (entry_exit_2d[0], entry_exit_2d[1], cut_z + lift_lead)  # lift_lead also in commands for Lead-out
+
+    # 4. Arc center — one radius away from p_attach in the away_vec direction
+    center_x = p_attach[0] + away_vec[0] * radius
+    center_y = p_attach[1] + away_vec[1] * radius
+
+    # 5. G2 = CW, G3 = CCW — standard G-code convention
+    arc_cmd_str = "G2" if arc_direction_is_cw else "G3"
+
+    commands = []
+
+    if is_lead_in:
+        # Move FROM entry_exit_point TO p_attach.
+        # I, J = offsets from arc start (entry_exit_point) to center.
+        i_offset = center_x - entry_exit_point[0]
+        j_offset = center_y - entry_exit_point[1]
+        commands.append(Path.Command(
+            arc_cmd_str,
+            {"X": p_attach[0], "Y": p_attach[1], "Z": cut_z,
+             "I": i_offset, "J": j_offset, "F": lead_feed}
+        ))
+        return commands, entry_exit_point
+
+    else:  # Lead-out
+        # Move FROM p_attach TO entry_exit_point.
+        # I, J = offsets from arc start (p_attach) to center.
+        i_offset = center_x - p_attach[0]
+        j_offset = center_y - p_attach[1]
+        commands.append(Path.Command(
+            arc_cmd_str,
+            {"X": entry_exit_point[0], "Y": entry_exit_point[1], "Z": cut_z + lift_lead,
+             "I": i_offset, "J": j_offset, "F": lead_feed}
+        ))
+        return commands, entry_exit_point
+
+
+def _get_material_side_vector(p_segment_start, p_segment_end, cutter, safe_pdc, is_lead_in):
+    """
+    Probes left and right of a path segment to find a clear "air" side for
+    a lead-in or lead-out arc, and returns the chosen probe point as the
+    arc entry/exit point — avoiding any duplicate geometry calculations in
+    _generate_lead_arc.
+
+    Uses a short-circuit probing strategy to minimize OCL calls:
+      1. Probe left endpoint — fail → skip to right side
+      2. Probe left midpoint — fail → try right side
+      3. If both left checks pass → commit to left (best case: 2 probes total)
+      4. Right side follows the same two-step pattern
+      5. If all checks fail → return (None, None, None), caller falls back
+         to a straight plunge
+
+    For each side, the two probe points are:
+      - Arc endpoint: one radius ahead/behind and one radius perpendicular
+        from the attachment point — the exact arc entry/exit coordinate.
+      - Arc midpoint: the geometrically furthest point of the 90° arc sweep,
+        at 45° between the endpoint and the attachment point on the circle.
+        This is the most exposed point during the arc move.
+
+    Args:
+        p_segment_start (tuple): (x, y, z) start of the reference segment.
+        p_segment_end (tuple): (x, y, z) end of the reference segment.
+        cutter (ocl.Cutter): Active cutter — diameter used to scale offsets.
+        safe_pdc (ocl.PathDropCutter): Pre-configured, reusable drop-cutter.
+        is_lead_in (bool): True = probe before segment start; False = probe after end.
+
+    Returns:
+        tuple: (away_vec, arc_direction_is_cw, entry_exit_2d)
+            away_vec (tuple): Normalized 2D vector pointing toward "air".
+            arc_direction_is_cw (bool): True = G2, False = G3.
+            entry_exit_2d (tuple): (x, y) of the arc entry or exit point.
+        Or (None, None, None) if no clear side is found.
+    """
+    # 1. Compute the 2D direction vector of the segment
+    dx = p_segment_end[0] - p_segment_start[0]
+    dy = p_segment_end[1] - p_segment_start[1]
+    mag = math.hypot(dx, dy)
+    if mag < 1e-6:
+        return None, None, None  # Segment too short — no meaningful direction
+
+    dir_x, dir_y = dx / mag, dy / mag
+
+    radius = cutter.getDiameter() / 2.0
+    cut_z = p_segment_start[2] if is_lead_in else p_segment_end[2]
+    reference_z = cut_z + 1.0
+    clearance_threshold = cut_z - 0.01
+
+    # 2. Shift the probe base one full radius along the cut direction so the
+    # sample points sit inside the actual arc footprint, not on the edge.
+    if is_lead_in:
+        p_attach = p_segment_start
+        probe_base_x = p_segment_start[0] - dir_x * radius
+        probe_base_y = p_segment_start[1] - dir_y * radius
+    else:
+        p_attach = p_segment_end
+        probe_base_x = p_segment_end[0] + dir_x * radius
+        probe_base_y = p_segment_end[1] + dir_y * radius
+
+    # 3. Perpendicular unit vectors (left and right of travel direction)
+    perp_l_x, perp_l_y = -dir_y, dir_x  # 90° CCW
+    perp_r_x, perp_r_y = dir_y, -dir_x  # 90° CW
+
+    # 4. Arc endpoints — one radius perpendicular from the probe base.
+    # These are the exact arc entry/exit coordinates reused in _generate_lead_arc.
+    p_left_2d = (probe_base_x + perp_l_x * radius,
+                probe_base_y + perp_l_y * radius)
+    p_right_2d = (probe_base_x + perp_r_x * radius,
+                probe_base_y + perp_r_y * radius)
+
+    # 5. Helper: true geometric midpoint of the 90° arc between p_arc_end
+    # and p_attach, at 45° around the circle from each endpoint.
+    def _arc_midpoint(p_arc_end, perp_x, perp_y):
+        center_x = p_attach[0] + perp_x * radius
+        center_y = p_attach[1] + perp_y * radius
+        to_mid_x = ((p_arc_end[0] + p_attach[0]) / 2.0) - center_x
+        to_mid_y = ((p_arc_end[1] + p_attach[1]) / 2.0) - center_y
+        to_mid_mag = math.hypot(to_mid_x, to_mid_y)
+        if to_mid_mag < 1e-9:
+            return p_arc_end  # Degenerate — fall back to endpoint
+        return (
+            center_x + (to_mid_x / to_mid_mag) * radius,
+            center_y + (to_mid_y / to_mid_mag) * radius,
+        )
+
+    # 6. Short-circuit probing — commit to a side as soon as both its
+    # checks pass, skipping the opposite side entirely.
+    def _side_clear(p_end_2d, perp_x, perp_y):
+        """Probe endpoint then midpoint. Returns True only if both are clear."""
+        z_end = _probe_surface_z(p_end_2d, reference_z, safe_pdc)
+        z_end = z_end if z_end is not None else -1e9
+        if z_end >= clearance_threshold:
+            return False  # Endpoint obstructed — skip midpoint probe
+        z_mid = _probe_surface_z(_arc_midpoint(p_end_2d, perp_x, perp_y), reference_z, safe_pdc)
+        z_mid = z_mid if z_mid is not None else -1e9
+        return z_mid < clearance_threshold
+
+    # Try left first, then right — commit on first fully clear side
+    if _side_clear(p_left_2d, perp_l_x, perp_l_y):
+        away_vec, entry_exit_2d = (perp_l_x, perp_l_y), p_left_2d
+    elif _side_clear(p_right_2d, perp_r_x, perp_r_y):
+        away_vec, entry_exit_2d = (perp_r_x, perp_r_y), p_right_2d
+    else:
+        return None, None, None  # Both sides obstructed — fall back to straight plunge
+
+    # 7. Derive arc direction via 2D cross product of (cut_dir × away_vec).
+    # Negative cross = away_vec is to the right of travel = CW arc (G2).
+    cross = dir_x * away_vec[1] - dir_y * away_vec[0]
+    arc_direction_is_cw = cross < 0
+
+    return away_vec, arc_direction_is_cw, entry_exit_2d
+
+
+def _probe_surface_z(point_2d, reference_z, safe_pdc):
+    """
+    Returns the OCL drop-cutter Z height at a given 2D XY position.
+
+    Uses a tiny non-degenerate line segment (1e-4 mm XY offset) so that
+    PathDropCutter always has a valid segment to sample from. A zero-length
+    line (p == p) causes OCL to return no points or behave unpredictably.
+
+    Args:
+        point_2d (tuple): The (x, y) coordinate to probe.
+        reference_z (float): Drop-start height; should be safely above the surface.
+        safe_pdc (ocl.PathDropCutter): Pre-configured, reusable drop-cutter instance.
+
+    Returns:
+        float: The probed Z height, or None if OCL returns no points.
+    """
+    ocl = _get_ocl()
+    path = ocl.Path()
+    p_start = ocl.Point(point_2d[0], point_2d[1], reference_z)
+    p_end = ocl.Point(point_2d[0] + 1e-4, point_2d[1], reference_z)
+    path.append(ocl.Line(p_start, p_end))
+    safe_pdc.setPath(path)
+    safe_pdc.run()
+    cl_points = safe_pdc.getCLPoints()
+    return cl_points[0].z if cl_points else None
+
+
+# ---------------------------------------------------------------------------
 # G-code generation from drop-cutter data
 # ---------------------------------------------------------------------------
 
@@ -298,6 +523,7 @@ def _make_safe_pdc(safe_stl, cutter, final_z, sample_interval):
 def scan_lines_to_gcode(
     scan_lines,
     horiz_feed,
+    vert_feed,
     vert_rapid,
     horiz_rapid,
     safe_z,
@@ -307,12 +533,15 @@ def scan_lines_to_gcode(
     start_z,
     final_z,
     depth_offset=0.0,
+    use_smart_leads=False,
     optimize_transitions=False,
     safe_stl=None,
     cutter=None,
     force_keep_down=False,
 ):
-    """Convert multiple scan lines of CL-points to G-code with transitions.
+    """
+    Convert multiple scan lines of CL-points to G-code with transitions,
+    optional smart lead-in/out, and optional keep-down optimization.
 
     Each scan line is a list of ``(x, y, z)`` tuples.  Travel moves are
     inserted between scan lines.
@@ -329,6 +558,8 @@ def scan_lines_to_gcode(
         start_z: Start Depth.
         final_z: Final depth.
         depth_offset: Optional Z offset.
+        use_smart_leads: If True and not optimize_transitions, uses smart
+                         Lead-in/out algorithm.
         optimize_transitions: If True, short transitions (≤ 2× cutter
                               diameter) use a direct G1 feed move instead
                               of retracting.  Longer transitions fall back
@@ -345,7 +576,17 @@ def scan_lines_to_gcode(
 
     # Create the PDC once and reuse it for all transitions
     safe_pdc = None
-    if optimize_transitions and safe_stl is not None and cutter is not None:
+
+    lead_feed = horiz_feed * 0.75
+
+    if use_smart_leads and optimize_transitions:
+        Path.Log.warning(
+            "LeadInOut and KeepToolDown are mutually exclusive. "
+            "KeepToolDown has been disabled to allow smart lead-in/out moves."
+        )
+        optimize_transitions = False
+
+    if (optimize_transitions or use_smart_leads) and safe_stl is not None and cutter is not None:
         safe_pdc = _make_safe_pdc(safe_stl, cutter, final_z, sample_interval)
 
     commands = []
@@ -353,51 +594,62 @@ def scan_lines_to_gcode(
 
     last_point = None
 
-    for line_idx, line in enumerate(scan_lines):
+    for line in scan_lines:
         if not line:
             continue
 
-        first_point = line[0]
+        lead_in_cmds = []
+        rapid_target = line[0]
 
-        # Travel to start of this scan line
+        # A. Generate Lead-in
+        if use_smart_leads and safe_pdc:
+            lead_in_cmds, lead_start = _generate_lead_arc(
+                line, safe_pdc, step_down, cutter, lead_feed, is_lead_in=True
+            )
+            if lead_start:
+                rapid_target = lead_start
+                # Note: Other strategies can be added here.
+
+        # B. Handle Transition
         if last_point is not None:
+            travel_cmds = None
             if optimize_transitions:
                 travel_cmds = _optimize_travel(
-                    last_point,
-                    first_point,
-                    start_z,
-                    safe_z,
-                    step_down,
-                    clearance_z,
-                    horiz_feed,
-                    horiz_rapid,
-                    vert_rapid,
-                    safe_pdc,
-                    cutter,
-                    force_keep_down=False,
+                    last_point, rapid_target, start_z, safe_z, step_down,
+                    horiz_feed, safe_pdc, cutter, force_keep_down
                 )
-            else:
+
+            # Fallback Logic
+            if travel_cmds is None:
                 travel_cmds = [
                     Path.Command("G0", {"Z": safe_z, "F": vert_rapid}),
-                    Path.Command(
-                        "G0",
-                        {"X": first_point[0], "Y": first_point[1], "F": horiz_rapid},
-                    ),
+                    Path.Command("G0", {"X": rapid_target[0], "Y": rapid_target[1], "F": horiz_rapid}),
                 ]
             commands.extend(travel_cmds)
-        else:
+        else: # First move of operation
             commands.append(
-                Path.Command(
-                    "G0",
-                    {"X": first_point[0], "Y": first_point[1], "F": horiz_rapid},
-                )
+                Path.Command("G0", {"X": rapid_target[0], "Y": rapid_target[1], "F": horiz_rapid})
             )
 
-        # Cut along this scan line
+        # C. Plunge to start of lead/cut
+        commands.append(Path.Command("G1", {"Z": rapid_target[2], "F": vert_feed}))
+
+        # D. Add Lead-in G-code
+        commands.extend(lead_in_cmds)
+
+        # E. Cut along the scan line
         for pt in line:
             z = pt[2] + depth_offset
             commands.append(Path.Command("G1", {"X": pt[0], "Y": pt[1], "Z": z, "F": horiz_feed}))
 
-        last_point = line[-1]
+        # F. Generate Lead-out
+        if use_smart_leads and safe_pdc:
+            lead_out_cmds, lead_end = _generate_lead_arc(
+                line, safe_pdc, step_down, cutter, lead_feed, is_lead_in=False
+            )
+            commands.extend(lead_out_cmds)
+            last_point = lead_end if lead_end else line[-1]
+        else:
+            last_point = line[-1]
 
     return commands
