@@ -1100,6 +1100,7 @@ class ObjectSurface(PathOp.ObjectOp):
         sample_interval = obj.SampleInterval.Value
         opt_transitions = getattr(obj, "KeepToolDown", False)
         use_smart_leads = getattr(obj, "LeadInOut", False)
+        needs_stl = True if opt_transitions or use_smart_leads else False
         is_whole_model_job = False if cutting_faces else True
         force_keep_down = True if obj.CutPattern in ("ZigZag", "CircularZigZag") else False
 
@@ -1172,8 +1173,8 @@ class ObjectSurface(PathOp.ObjectOp):
                 depth_offset=obj.DepthOffset.Value,
                 use_smart_leads=use_smart_leads,
                 optimize_transitions=opt_transitions,
-                safe_stl=safe_stl if opt_transitions or use_smart_leads else None,
-                cutter=cutter if opt_transitions or use_smart_leads else None,
+                safe_stl=safe_stl if needs_stl else None,
+                cutter=cutter if needs_stl else None,
                 force_keep_down=force_keep_down,
             )
             all_final_cmds.extend(group_cmds)

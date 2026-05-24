@@ -291,7 +291,85 @@ def _make_safe_pdc(safe_stl, cutter, final_z, sample_interval):
 # ---------------------------------------------------------------------------
 
 
-def _generate_lead_arc(line, safe_pdc, step_down, cutter, lead_feed, is_lead_in=True):
+def _attempt_lead_arc(line, safe_pdc, step_down, cutter, lead_feed, is_lead_in):
+    """
+    Attempts multiple arc lead-in or lead-out strategies in order of preference,
+    returning the first successful result.
+
+    Strategies attempted (in order):
+        1. Forward tangent arc — enters tangent to the cut direction.
+           Best surface finish, most natural entry.
+        2. Reverse tangent arc — enters from the opposite direction.
+           Catches entries where the forward side is blocked but the
+           back is open (common on lines starting at a far boundary).
+
+    All strategies reuse _get_material_side_vector and _generate_lead_arc
+    with parameter variations — no additional probing infrastructure needed.
+
+    Args:
+        line (list): Scan line as a list of (x, y, z) tuples. Must have >= 2 points.
+        safe_pdc (ocl.PathDropCutter): Pre-configured, reusable drop-cutter.
+        cutter (ocl.Cutter): Active cutter.
+        lead_feed (float): Feed rate for the arc move (mm/min).
+
+    Returns:
+        tuple: (list_of_Path.Commands, entry_point) on success,
+               or ([], None) if all strategies fail.
+    """
+    if not line or len(line) < 2:
+        return [], None
+
+    if is_lead_in:
+        p_attach = line[0]
+        p_next   = line[1]
+    else:
+        p_attach = line[-1]
+        p_prev   = line[-2]
+
+    radius = cutter.getDiameter() / 2.0
+
+    # Strategy 1: Forward tangent arc (Lead-in and Lead-out)
+    # Standard entry/exit — tangent to the cut direction at full radius.
+    cmds, lead = _generate_lead_arc(
+        line, safe_pdc, step_down, cutter, lead_feed, is_lead_in
+    )
+    if lead:
+        Path.Log.debug("LeadIn/LeadOut: forward tangent arc")
+        return cmds, lead
+
+    # Strategy 2: Reverse tangent arc (Lead-in only), Retreat to previous point (Lead-out only)
+    # Flip the reference segment so probing looks behind the entry point.
+    # Construct a synthetic reversed line: same points, direction inverted.
+    if is_lead_in:
+        reversed_line = [
+            p_attach,
+            (p_attach[0] - (p_next[0] - p_attach[0]),
+            p_attach[1] - (p_next[1] - p_attach[1]),
+            p_attach[2]),
+        ] + line[1:]
+
+        cmds, lead = _generate_lead_arc(
+            reversed_line, safe_pdc, step_down, cutter, lead_feed, is_lead_in
+        )
+        if lead:
+            Path.Log.debug("LeadIn: reverse tangent arc")
+            return cmds, lead
+    else:
+        lead = (p_prev[0], p_prev[1], p_attach[2] + radius)
+        Path.Log.debug("LeadOut: retreat to previous point")
+        return [
+            Path.Command("G1", {"X": lead[0], "Y": lead[1],
+                                "Z": lead[2], "F": lead_feed})
+        ], lead
+
+    # Note: Other strategies can be added here.
+
+    # All strategies failed
+    Path.Log.debug("LeadIn/LeadOut: all arc strategies failed — falling back to helix or plunge")
+    return [], None
+
+
+def _generate_lead_arc(line, safe_pdc, step_down, cutter, lead_feed, is_lead_in):
     """
     Generates a 90-degree tangent lead-in or lead-out arc at constant Z.
 
@@ -319,7 +397,7 @@ def _generate_lead_arc(line, safe_pdc, step_down, cutter, lead_feed, is_lead_in=
         return [], None
 
     radius = cutter.getDiameter() / 2.0
-    lift_lead = min(step_down, radius)
+    lift_lead_z = min(step_down, radius)
 
     # 1. Identify the attachment point and reference segment
     if is_lead_in:
@@ -331,14 +409,14 @@ def _generate_lead_arc(line, safe_pdc, step_down, cutter, lead_feed, is_lead_in=
 
     # 2. Probe for a clear side — get away_vec, arc direction, and entry/exit point
     away_vec, arc_direction_is_cw, entry_exit_2d = _get_material_side_vector(
-        seg_start, seg_end, cutter, safe_pdc, is_lead_in=is_lead_in
+        seg_start, seg_end, cutter, safe_pdc, lift_lead_z, is_lead_in=is_lead_in
     )
     if away_vec is None:
         return [], None  # No clear side — caller falls back to straight plunge
 
     # 3. Arc entry/exit point at constant Z (no surface projection needed)
     cut_z = p_attach[2]
-    entry_exit_point = (entry_exit_2d[0], entry_exit_2d[1], cut_z + lift_lead)  # lift_lead also in commands for Lead-out
+    entry_exit_point = (entry_exit_2d[0], entry_exit_2d[1], cut_z + lift_lead_z)  # lift_lead also in commands for Lead-out
 
     # 4. Arc center — one radius away from p_attach in the away_vec direction
     center_x = p_attach[0] + away_vec[0] * radius
@@ -368,13 +446,13 @@ def _generate_lead_arc(line, safe_pdc, step_down, cutter, lead_feed, is_lead_in=
         j_offset = center_y - p_attach[1]
         commands.append(Path.Command(
             arc_cmd_str,
-            {"X": entry_exit_point[0], "Y": entry_exit_point[1], "Z": cut_z + lift_lead,
+            {"X": entry_exit_point[0], "Y": entry_exit_point[1], "Z": cut_z + lift_lead_z,
              "I": i_offset, "J": j_offset, "F": lead_feed}
         ))
         return commands, entry_exit_point
 
 
-def _get_material_side_vector(p_segment_start, p_segment_end, cutter, safe_pdc, is_lead_in):
+def _get_material_side_vector(p_segment_start, p_segment_end, cutter, safe_pdc, lift_lead_z, is_lead_in):
     """
     Probes left and right of a path segment to find a clear "air" side for
     a lead-in or lead-out arc, and returns the chosen probe point as the
@@ -421,8 +499,8 @@ def _get_material_side_vector(p_segment_start, p_segment_end, cutter, safe_pdc, 
 
     radius = cutter.getDiameter() / 2.0
     cut_z = p_segment_start[2] if is_lead_in else p_segment_end[2]
-    reference_z = cut_z + 1.0
-    clearance_threshold = cut_z - 0.01
+    reference_z = cut_z + lift_lead_z + 1.0
+    clearance_threshold = cut_z + 0.001
 
     # 2. Shift the probe base one full radius along the cut direction so the
     # sample points sit inside the actual arc footprint, not on the edge.
@@ -467,11 +545,11 @@ def _get_material_side_vector(p_segment_start, p_segment_end, cutter, safe_pdc, 
         """Probe endpoint then midpoint. Returns True only if both are clear."""
         z_end = _probe_surface_z(p_end_2d, reference_z, safe_pdc)
         z_end = z_end if z_end is not None else -1e9
-        if z_end >= clearance_threshold:
+        if z_end >= clearance_threshold + lift_lead_z:
             return False  # Endpoint obstructed — skip midpoint probe
         z_mid = _probe_surface_z(_arc_midpoint(p_end_2d, perp_x, perp_y), reference_z, safe_pdc)
         z_mid = z_mid if z_mid is not None else -1e9
-        return z_mid < clearance_threshold
+        return z_mid < clearance_threshold + (lift_lead_z / 2)
 
     # Try left first, then right — commit on first fully clear side
     if _side_clear(p_left_2d, perp_l_x, perp_l_y):
@@ -578,14 +656,21 @@ def scan_lines_to_gcode(
     # Create the PDC once and reuse it for all transitions
     safe_pdc = None
 
-    lead_feed = horiz_feed * 0.75
+    lead_feed = horiz_feed * 0.65
 
-    if use_smart_leads and optimize_transitions:
+    if use_smart_leads:
         Path.Log.warning(
-            "LeadInOut and KeepToolDown are mutually exclusive. "
-            "KeepToolDown has been disabled to allow smart lead-in/out moves."
+            "Smart Lead-In/Out is enabled. "
+            "The strategy makes a best effort to avoid collisions using OCL probing, "
+            "but it is not guaranteed to be collision-free in all cases. "
+            "Always inspect the generated path visually before running on the machine."
         )
-        optimize_transitions = False
+        if optimize_transitions:
+            Path.Log.warning(
+                "LeadInOut and KeepToolDown are mutually exclusive. "
+                "KeepToolDown has been disabled to allow smart lead-in/out moves."
+            )
+            optimize_transitions = False
 
     if (optimize_transitions or use_smart_leads) and safe_stl is not None and cutter is not None:
         safe_pdc = _make_safe_pdc(safe_stl, cutter, final_z, sample_interval)
@@ -604,12 +689,11 @@ def scan_lines_to_gcode(
 
         # A. Generate Lead-in
         if use_smart_leads and safe_pdc:
-            lead_in_cmds, lead_start = _generate_lead_arc(
+            lead_in_cmds, lead_start = _attempt_lead_arc(
                 line, safe_pdc, step_down, cutter, lead_feed, is_lead_in=True
             )
             if lead_start:
                 rapid_target = lead_start
-                # Note: Other strategies can be added here.
 
         # B. Handle Transition
         if last_point is not None:
@@ -637,7 +721,7 @@ def scan_lines_to_gcode(
                     Path.Command("G0", {"X": rapid_target[0], "Y": rapid_target[1], "F": horiz_rapid}),
                 ]
             commands.extend(travel_cmds)
-        else: # First move of operation
+        else:  # First move of operation
             commands.append(
                 Path.Command("G0", {"X": rapid_target[0], "Y": rapid_target[1], "F": horiz_rapid})
             )
@@ -655,7 +739,7 @@ def scan_lines_to_gcode(
 
         # F. Generate Lead-out
         if use_smart_leads and safe_pdc:
-            lead_out_cmds, lead_end = _generate_lead_arc(
+            lead_out_cmds, lead_end = _attempt_lead_arc(
                 line, safe_pdc, step_down, cutter, lead_feed, is_lead_in=False
             )
             commands.extend(lead_out_cmds)
