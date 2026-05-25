@@ -227,6 +227,33 @@ class ObjectSurface(PathOp.ObjectOp):
                     "Mesh simplification level (1-7): 1=Highest accuracy, 7=Fastest processing. Higher values reduce triangle count for faster computation but lower accuracy.",
                 ),
             ),
+            (
+                "App::PropertyDistance",
+                "SampleInterval",
+                "Performance Optimization",
+                QT_TRANSLATE_NOOP(
+                    "App::Property",
+                    "Set the sampling resolution. Smaller values quickly increase processing time.",
+                ),
+            ),
+            (
+                "App::PropertyBool",
+                "AdaptiveSampling",
+                "Performance Optimization",
+                QT_TRANSLATE_NOOP(
+                    "App::Property",
+                    "Dynamically adjusts sampling density in high-curvature areas.",
+                ),
+            ),
+            (
+                "App::PropertyDistance",
+                "MinSampleInterval",
+                "Performance Optimization",
+                QT_TRANSLATE_NOOP(
+                    "App::Property",
+                    "Set the minimum sampling resolution for Adaptive Sampling.",
+                ),
+            ),
             # -- Selected Geometry Settings --
             (
                 "App::PropertyInteger",
@@ -335,33 +362,6 @@ class ObjectSurface(PathOp.ObjectOp):
                 ),
             ),
             (
-                "App::PropertyDistance",
-                "SampleInterval",
-                "Clearing Options",
-                QT_TRANSLATE_NOOP(
-                    "App::Property",
-                    "Set the sampling resolution. Smaller values quickly increase processing time.",
-                ),
-            ),
-            (
-                "App::PropertyBool",
-                "AdaptiveSampling",
-                "Clearing Options",
-                QT_TRANSLATE_NOOP(
-                    "App::Property",
-                    "Dynamically adjusts sampling density in high-curvature areas.",
-                ),
-            ),
-            (
-                "App::PropertyDistance",
-                "MinSampleInterval",
-                "Clearing Options",
-                QT_TRANSLATE_NOOP(
-                    "App::Property",
-                    "Set the minimum sampling resolution for Adaptive Sampling.",
-                ),
-            ),
-            (
                 "App::PropertyFloat",
                 "StepOver",
                 "Clearing Options",
@@ -453,15 +453,34 @@ class ObjectSurface(PathOp.ObjectOp):
                     "Collinear and co-radial artifact gaps that are smaller than this threshold are closed in the path.",
                 ),
             ),
+            # -- LeadInOut --
             (
                 "App::PropertyBool",
                 "LeadInOut",
-                "Optimization",
+                "LeadIn/LeadOut",
                 QT_TRANSLATE_NOOP(
                     "App::Property",
                     "Enable smart lead-in and lead-out moves for the Surface Pattern strategy. "
-                    "Attempts a tangent arc entry first, falls back to a straight plunge if "
-                    "the arc zone is obstructed. Disables Keep Tool Down automatically when  is active."
+                    "Disables Keep Tool Down automatically when  is active."
+                ),
+            ),
+            (
+                "App::PropertyPercent",
+                "LeadFeed",
+                "LeadIn/LeadOut",
+                QT_TRANSLATE_NOOP(
+                    "App::Property",
+                    "Lead-in and lead-out feed rate as a percentage of the horizontal feed rate. "
+                    "100% means full feed rate.",
+                ),
+            ),
+            (
+                "App::PropertyDistance",
+                "LeadLiftDistance",
+                "LeadIn/LeadOut",
+                QT_TRANSLATE_NOOP(
+                    "App::Property",
+                    "Vertical lift distance applied to the lead-in / lead-out."
                 ),
             ),
             # -- Start Point --
@@ -587,7 +606,6 @@ class ObjectSurface(PathOp.ObjectOp):
             "MinSampleInterval": 0.20,
             "BoundaryAdjustment": 0.0,
             "AvoidLastX_Faces": 0,
-            "LeadInOut": False,
             "HandleMultipleFeatures": "Collectively",
             "ProfileEdges": "None",
             "GapThreshold": 0.005,
@@ -595,6 +613,9 @@ class ObjectSurface(PathOp.ObjectOp):
             "LinearDeflection": 0.001,
             "MeshSimplification": 1,  # Default to highest accuracy (no simplification)
             "SamplingAccuracy": "4",
+            "LeadInOut": False,
+            "LeadFeed": 75,
+            "LeadLiftDistance": 1.0,
         }
 
         warn = True
@@ -643,6 +664,8 @@ class ObjectSurface(PathOp.ObjectOp):
         obj.setEditorMode("LayerMode", A)
         obj.setEditorMode("ProfileEdges", A)
         obj.setEditorMode("LeadInOut", A)
+        obj.setEditorMode("LeadFeed", A)
+        obj.setEditorMode("LeadLiftDistance", A)
 
         # Adaptive Sampling Logic
         can_adaptive = is_waterline or is_surface_pattern
@@ -858,6 +881,16 @@ class ObjectSurface(PathOp.ObjectOp):
         # Limit StockToLeave to positive values
         if obj.StockToLeave < 0:
             obj.StockToLeave = 0
+
+        # Limit LeadFeed to natural number percentage
+        if obj.LeadFeed > 100.0:
+            obj.LeadFeed = 100.0
+        if obj.LeadFeed < 1.0:
+            obj.LeadFeed = 1.0
+
+        # Limit LeadLiftDistance to positive values
+        if obj.LeadLiftDistance < 0:
+            obj.LeadLiftDistance = 0
 
     def opUpdateDepths(self, obj):
         if hasattr(obj, "Base") and obj.Base:
@@ -1098,10 +1131,12 @@ class ObjectSurface(PathOp.ObjectOp):
 
         all_final_cmds = []
         sample_interval = obj.SampleInterval.Value
-        opt_transitions = getattr(obj, "KeepToolDown", False)
         use_smart_leads = getattr(obj, "LeadInOut", False)
-        needs_stl = True if opt_transitions or use_smart_leads else False
+        lead_feed_percent = obj.LeadFeed
+        lift_lead_z = obj.LeadLiftDistance.Value
+        opt_transitions = getattr(obj, "KeepToolDown", False)
         is_whole_model_job = False if cutting_faces else True
+        needs_stl = True if opt_transitions or use_smart_leads else False
         force_keep_down = True if obj.CutPattern in ("ZigZag", "CircularZigZag") else False
 
         # Ensure we have cutting faces (Fallback to whole model if none selected)
@@ -1160,22 +1195,24 @@ class ObjectSurface(PathOp.ObjectOp):
 
             group_cmds = surface_postprocess.scan_lines_to_gcode(
                 scan_lines,
+                sample_interval=sample_interval,
                 horiz_feed=self.horizFeed,
                 vert_feed=self.vertFeed,
                 vert_rapid=self.vertRapid,
                 horiz_rapid=self.horizRapid,
                 safe_z=obj.SafeHeight.Value,
-                step_down=obj.StepDown.Value,
                 clearance_z=obj.ClearanceHeight.Value,
                 start_z=obj.StartDepth.Value,
                 final_z=obj.FinalDepth.Value,
-                sample_interval=sample_interval,
+                step_down=obj.StepDown.Value,
                 depth_offset=obj.DepthOffset.Value,
-                use_smart_leads=use_smart_leads,
                 optimize_transitions=opt_transitions,
                 safe_stl=safe_stl if needs_stl else None,
                 cutter=cutter if needs_stl else None,
                 force_keep_down=force_keep_down,
+                use_smart_leads=use_smart_leads,
+                lead_feed_percent=lead_feed_percent,
+                lift_lead_z=lift_lead_z,
             )
             all_final_cmds.extend(group_cmds)
 
@@ -1291,10 +1328,10 @@ class ObjectSurface(PathOp.ObjectOp):
         # 2. Data preparation
         wpc = Part.makeCircle(1.0, FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(0, 0, 1))
 
-        clear_planar_only = getattr(obj, "ClearPlanarOnly", True)
-        ignore_outer = getattr(obj, "IgnoreOuter", False)
         fill_selected_holes = getattr(obj, "FillSelectedHoles", False)
+        clear_planar_only = getattr(obj, "ClearPlanarOnly", True)
         accuracy_val = getattr(obj, "SamplingAccuracy", "4")
+        ignore_outer = getattr(obj, "IgnoreOuter", False)
         step_over = (obj.StepOver / 100.0) * (radius * 2)
         stock_to_leave = obj.StockToLeave.Value
         depth_offset = obj.DepthOffset.Value
@@ -1604,5 +1641,7 @@ def SetupProperties():
     setup.append("UseStartPoint")
     setup.append("StartPoint")
     setup.append("LeadInOut")
+    setup.append("LeadFeed")
+    setup.append("LeadLiftDistance")
 
     return setup
