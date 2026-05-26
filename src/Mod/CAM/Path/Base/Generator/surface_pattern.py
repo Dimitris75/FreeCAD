@@ -288,7 +288,7 @@ def generate_offset_scan_lines(
 
     offset_lines = []
     current_offset = 0.0
-    min_path_length = math.pi * tool_diam
+    min_path_length = (math.pi * tool_diam) - 0.1
 
     while True:
         # Using a negative offset mathematically shrinks the geometry inwards
