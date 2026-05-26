@@ -840,6 +840,8 @@ def zlevel_hybrid_to_gcode(
 
     # 1. Initialization
     commands = []
+    tool_diam = radius * 2
+    min_path_length = (math.pi * tool_diam) - 0.1
 
     # Extract feeds and speeds
     v_rapid = feed_params.get("vertRapid", 0.0)
@@ -870,7 +872,7 @@ def zlevel_hybrid_to_gcode(
         if start_w_idx < len(working_area.Wires):
             for w_idx in range(start_w_idx, len(working_area.Wires)):
                 wire = working_area.Wires[w_idx]
-                if not wire.isClosed():
+                if not wire.isClosed() or wire.Length < min_path_length:
                     continue
 
                 # Geometry cleanup
@@ -920,6 +922,7 @@ def zlevel_hybrid_to_gcode(
                 radius,
                 feed_params,
                 safe_hght,
+                min_path_length,
             )
             commands.extend(pattern_cmds)
 
@@ -942,6 +945,7 @@ def _generatePattern(
     radius,
     feed_params,
     safe_hght,
+    min_path_length,
 ):
     """Generates high-speed infill patterns using the native C++ Path.Area engine.
 
@@ -967,8 +971,6 @@ def _generatePattern(
     Path.Log.debug(f"surface_zlevel._generatePattern: Generating {cut_pattern} pattern at Z={z_target}")
     commands = []
     should_reverse = True
-    tool_diam = radius * 2
-    min_path_length = (math.pi * tool_diam) - 0.1
 
     # 1. Validation Guards
     if not cutArea or cutArea.isNull():
