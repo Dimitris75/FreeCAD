@@ -1335,6 +1335,7 @@ class ObjectSurface(PathOp.ObjectOp):
         step_over = (obj.StepOver / 100.0) * (radius * 2)
         stock_to_leave = obj.StockToLeave.Value
         depth_offset = obj.DepthOffset.Value
+        shape_copy = shape.copy()
         fill_holes_masks = []
 
         zlevel_tool_params = {
@@ -1377,12 +1378,12 @@ class ObjectSurface(PathOp.ObjectOp):
 
         # 5. Depth categorization
         cat_steps = surface_zlevel.categorize_floor_steps(
-            shape, obj.StartDepth.Value, obj.FinalDepth.Value, obj.StepDown.Value, clear_planar_only
+            shape_copy, obj.StartDepth.Value, obj.FinalDepth.Value, obj.StepDown.Value, clear_planar_only
         )
 
         # 6. Generate Geometry Stack
         wl_data = surface_zlevel.zlevel_hybrid_stack(
-            shape,
+            shape_copy,
             cat_steps,
             border_face,
             trim_face,

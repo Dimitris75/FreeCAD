@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 # ***************************************************************************
-# *   Copyright (c) 2026 Dimitris75 <dimitriospana75@gmail.com>               *
+# *   Copyright (c) 2026 Dimitris75 <dimitriospana75@gmail.com>             *
 # *                                                                         *
 # *   This program is free software; you can redistribute it and/or modify  *
 # *   it under the terms of the GNU Lesser General Public License (LGPL)    *
@@ -71,7 +71,7 @@ def _get_selected_faces(base_property):
                     extracted_faces.append(shape)
             except Exception as e:
                 Path.Log.debug(
-                    f"_get_selected_faces: Bypassed invalid sub-element '{sub}' on '{base.Label}': {str(e)}\n"
+                    f"_get_selected_faces: Bypassed invalid sub-element '{sub}' on '{base.Label}': {str(e)}"
                 )
     return extracted_faces
 
@@ -97,7 +97,7 @@ def fill_selected(base_property):
     selected_faces = _get_selected_faces(base_property)
 
     if not selected_faces:
-        Path.Log.warning("No faces found in the Base Geometry selection.\n")
+        Path.Log.warning("No faces found in the Base Geometry selection.")
         return []
 
     fill_holes_masks = []
@@ -108,7 +108,7 @@ def fill_selected(base_property):
         # Complex multi-step boundaries or multi-wire exterior faces are skipped here.
         if not face.Wires or len(face.Wires) != 1 or not face.Wires[0].isClosed():
             Path.Log.debug(
-                "surface_zlevel.fill_selected: Face skipped. Does not match the requirement for a standard hole wall.\n"
+                "surface_zlevel.fill_selected: Face skipped. Does not match the requirement for a standard hole wall."
             )
             continue
 
@@ -126,7 +126,7 @@ def fill_selected(base_property):
                 flat_edges.extend(flat_edge.Edges)
             except Exception as e:
                 Path.Log.debug(
-                    f"surface_zlevel.fill_selected: Critical error flattening edge geometry: {str(e)}\n"
+                    f"surface_zlevel.fill_selected: Critical error flattening edge geometry: {str(e)}"
                 )
                 continue
 
@@ -153,7 +153,7 @@ def fill_selected(base_property):
         return []
 
     Path.Log.debug(
-        f"surface_zlevel.fill_selected: Generated {len(fill_holes_masks)} lightweight horizontal mask definitions.\n"
+        f"surface_zlevel.fill_selected: Generated {len(fill_holes_masks)} lightweight horizontal mask definitions."
     )
 
     sorted_list = sorted(fill_holes_masks, key=lambda x: x[0], reverse=True)
@@ -434,17 +434,13 @@ def zlevel_hybrid_stack(
     # 2. Pre-load C++ engine
     area_engine = Path.Area()
     area_engine.setPlane(wpc)
-
-    # Ensure we work on a clean copy
-    proc_shape = shape.copy()
-    area_engine.add(proc_shape)
-
+    area_engine.add(shape)
     # Configure C++ engine parameters
     params = area_engine.getParams()
     params["SectionTolerance"] = 0.0001
 
     # 3. Identify critical snapping depths (Top and floors)
-    model_bottom, model_top = proc_shape.BoundBox.ZMin, proc_shape.BoundBox.ZMax
+    model_bottom, model_top = shape.BoundBox.ZMin, shape.BoundBox.ZMax
     critical_heights = {
         round(h, 6) for h, status, _ in categorizedSteps if status in ["Mixed", "Extra"]
     }
@@ -481,7 +477,7 @@ def zlevel_hybrid_stack(
 
         # B. Generate all 2D slices for this layer
         layer_slices = _generate_layer_slices(
-            area_engine, params, unique_steps, z_target, slice_bias,
+            shape, area_engine, params, unique_steps, z_target, slice_bias,
             stock_to_leave, model_top, model_bottom
         )
 
@@ -971,6 +967,8 @@ def _generatePattern(
     Path.Log.debug(f"surface_zlevel._generatePattern: Generating {cut_pattern} pattern at Z={z_target}")
     commands = []
     should_reverse = True
+    tool_diam = radius * 2
+    min_path_length = (math.pi * tool_diam) - 0.1
 
     # 1. Validation Guards
     if not cutArea or cutArea.isNull():
@@ -1031,7 +1029,7 @@ def _generatePattern(
 
     # 6. G-Code Generation Loop
     for wire in res_area.Wires:
-        if not wire.isClosed() and pattern_mode == 2:  # Offsets should be closed
+        if not wire.isClosed() and pattern_mode == 2 or wire.Length < min_path_length:  # Offsets should be closed
             continue
 
         start_p = wire.Vertexes[0].Point
