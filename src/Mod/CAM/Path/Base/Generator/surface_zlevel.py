@@ -47,6 +47,47 @@ else:
 # ---------------------------------------------------------------------------
 
 
+def _fuse_coplanar_masks(fill_holes_masks):
+    """
+    Groups fill-hole masks by Z height and fuses any faces sharing the
+    same height into a single shape.
+
+    Args:
+        fill_holes_masks (list): List of (max_z, Part.Face) tuples.
+
+    Returns:
+        list: List of (max_z, Part.Shape) tuples with co-planar faces fused,
+              sorted by Z descending.
+    """
+    from itertools import groupby
+
+    sorted_list = sorted(fill_holes_masks, key=lambda x: x[0], reverse=True)
+    fused_list  = []
+
+    for max_z, group in groupby(sorted_list, key=lambda x: x[0]):
+        faces = [item[1] for item in group]
+
+        if len(faces) == 1:
+            fused_list.append((max_z, faces[0]))
+            continue
+        try:
+            fused = Part.makeCompound(faces)
+            if hasattr(fused, "removeSplitter"):
+                fused = fused.removeSplitter()
+            fused_list.append((max_z, fused))
+            Path.Log.debug(
+                f"_fuse_coplanar_masks: Fused {len(faces)} masks at Z={max_z:.4f}."
+            )
+        except Exception as e:
+            Path.Log.warning(
+                f" Failed to compound {len(faces)} fill selected holes "
+                f"at Z={max_z:.4f}: {e}. Using first face only."
+            )
+            fused_list.append((max_z, faces[0]))
+
+    return fused_list
+
+
 def _get_selected_faces(base_property):
     """
     Parses the Path operation's 'Base' property to extract all selected Part.Face objects.
@@ -156,8 +197,7 @@ def fill_selected(base_property):
         f"surface_zlevel.fill_selected: Generated {len(fill_holes_masks)} lightweight horizontal mask definitions."
     )
 
-    sorted_list = sorted(fill_holes_masks, key=lambda x: x[0], reverse=True)
-    return sorted_list
+    return _fuse_coplanar_masks(fill_holes_masks)
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +534,7 @@ def zlevel_hybrid_stack(
         # Masks are activated top-down: once z_target passes a mask's threshold height,
         # it becomes a permanent keep-out zone for all layers below.
         if fill_holes_masks:
-            while fill_mask_idx < len(fill_holes_masks) and fill_holes_masks[fill_mask_idx][0] >= z_target-loose_tol:
+            while fill_mask_idx < len(fill_holes_masks) and fill_holes_masks[fill_mask_idx][0] >= z_target - loose_tol:
                 allPrevComp = _update_machining_mask(
                     wpc, allPrevComp, fill_holes_masks[fill_mask_idx][1], status="Pure", floor_geo=None
                 )

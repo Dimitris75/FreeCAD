@@ -1336,7 +1336,7 @@ class ObjectSurface(PathOp.ObjectOp):
         stock_to_leave = obj.StockToLeave.Value
         depth_offset = obj.DepthOffset.Value
         shape_copy = shape.copy()
-        fill_holes_masks = []
+        fill_hole_masks = []
 
         zlevel_tool_params = {
             "radius": radius,
