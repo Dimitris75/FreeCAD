@@ -47,6 +47,94 @@ else:
 # ---------------------------------------------------------------------------
 
 
+def _apply_fill_hole_masks(
+    wpc,
+    fill_holes_masks,
+    fill_mask_idx,
+    currentSilhouette,
+    status,
+    floor_geo,
+    allPrevComp,
+    z_target,
+    loose_tol,
+):
+    """
+    Processes and applies active fill-hole masks for the current layer.
+
+    Masks are activated top-down: once z_target passes a mask's threshold height
+    it becomes active. Discard all activated masks from the list at the end.
+
+    The mask is then applied differently depending on the layer status:
+
+    - "Pure": mask added to allPrevComp as a permanent keep-out zone.
+      The tool will not enter the hole on this or any layer below.
+
+    - "Mixed" / "Extra": mask fused into floor_geo so the floor pass
+      machines over the hole cap rather than leaving an uncut void.
+      The mask is NOT added to allPrevComp in this case.
+
+    Args:
+        wpc (Part.Circle): Workplane for Path.Area engine.
+        fill_holes_masks (list): Sorted list of (max_z, Part.Face) tuples.
+        fill_mask_idx (int): Current index into fill_holes_masks.
+        currentSilhouette (Part.Shape): Model silhouette at current depth.
+        status (str): Current layer status — "Pure", "Mixed", or "Extra".
+        floor_geo (Part.Shape): Floor geometry for this layer, or None.
+        allPrevComp (Part.Shape): Cumulative mask of previously cleared areas.
+        z_target (float): Current layer Z height.
+        loose_tol (float): Tolerance for mask activation threshold.
+
+    Returns:
+        tuple: (fill_mask_idx, fill_holes_masks, floor_geo, allPrevComp) — updated values
+               for all four mutable state variables.
+    """
+
+    if status in ("Mixed", "Extra"):
+        merge_engine = Path.Area()
+        merge_engine.setPlane(wpc)
+
+    while (fill_mask_idx < len(fill_holes_masks) and
+           fill_holes_masks[fill_mask_idx][0] >= z_target - loose_tol):
+
+        mask = fill_holes_masks[fill_mask_idx][1]
+
+        if status in ("Mixed", "Extra") and floor_geo is not None:
+            # Fuse hole cap into floor_geo — floor pass machines over it
+            try:
+                merge_engine.add(floor_geo)
+                merge_engine.add(mask, op=0)
+                merged = merge_engine.getShape()
+                if merged and not merged.isNull():
+                    floor_geo = merged
+                    Path.Log.debug(
+                        f"_apply_fill_hole_masks: Merged hole mask into floor_geo "
+                        f"at Z={round(z_target, 2)}."
+                    )
+                else:
+                    raise ValueError("Path.Area union returned null shape")
+            except Exception as e:
+                Path.Log.warning(
+                    f"Failed to fuse hole mask into floor geometry at Z={round(z_target, 2)}: {e}. "
+                    "Falling back to keep-out mask."
+                )
+                allPrevComp = _update_machining_mask(
+                    wpc, allPrevComp, mask, status="Pure", floor_geo=None
+                )
+        else:
+            # Pure step — block hole as a permanent keep-out zone
+            allPrevComp = _update_machining_mask(
+                wpc, allPrevComp, mask, status="Pure", floor_geo=None
+            )
+
+        fill_mask_idx += 1
+
+    # Discard all consumed masks — everything before fill_mask_idx has been processed
+    fill_holes_masks = fill_holes_masks[fill_mask_idx:]
+    fill_mask_idx = 0
+
+    return fill_mask_idx, fill_holes_masks, floor_geo, allPrevComp
+
+
 def _fuse_coplanar_masks(fill_holes_masks):
     """
     Groups fill-hole masks by Z height and fuses any faces sharing the
@@ -138,7 +226,7 @@ def fill_selected(base_property):
     selected_faces = _get_selected_faces(base_property)
 
     if not selected_faces:
-        Path.Log.warning("No faces found in the Base Geometry selection.")
+        Path.Log.warning("No faces found in the Base Geometry selection. Canceling fill selected holes")
         return []
 
     fill_holes_masks = []
@@ -317,9 +405,11 @@ def categorize_floor_steps(shape, start_z, final_z, step_down, clear_planar_only
         if match_z is not None:
             if clear_planar_only:
                 # We are in "Clear Planar Only" mode. Split the "Mixed" step
-                # into two separate virtual passes for the main loop to process.
-                final_depth_logic.append((z_std + tolerance, "Pure", None))  # Set higher to be processed first
-                final_depth_logic.append((z_std, "Extra", fused_geometry[match_z]))
+                # into two separate virtual passes, "Pure"/"Extra", to avoid
+                # clearing areas around floor_geo in the main loop process.
+                # Set "Extra" higher to be processed first (need it for fill selected holes).
+                final_depth_logic.append((z_std + tolerance, "Extra", fused_geometry[match_z]))
+                final_depth_logic.append((z_std, "Pure", None))
             else:
                 final_depth_logic.append((z_std, "Mixed", fused_geometry[match_z]))
             accounted_floors.add(match_z)
@@ -530,17 +620,7 @@ def zlevel_hybrid_stack(
         for s in layer_slices:
             fusion.add(s)
 
-        # D. Process and apply active fill hole masks
-        # Masks are activated top-down: once z_target passes a mask's threshold height,
-        # it becomes a permanent keep-out zone for all layers below.
-        if fill_holes_masks:
-            while fill_mask_idx < len(fill_holes_masks) and fill_holes_masks[fill_mask_idx][0] >= z_target - loose_tol:
-                allPrevComp = _update_machining_mask(
-                    wpc, allPrevComp, fill_holes_masks[fill_mask_idx][1], status="Pure", floor_geo=None
-                )
-                fill_mask_idx += 1
-
-        # E. Boolean resolution
+        # D. Boolean resolution
         currentSilhouette = None
         try:
             # currentSilhouette is the union of all 3D contact points at this depth
@@ -548,6 +628,13 @@ def zlevel_hybrid_stack(
         except Exception as e:
             Path.Log.error(f"Silhouette fusion failed at Z={round(z_target, 3)}. Error: {str(e)}")
             continue
+
+        # E. Process and apply active fill hole masks
+        if fill_holes_masks:
+            fill_mask_idx, fill_holes_masks, floor_geo, allPrevComp = _apply_fill_hole_masks(
+                wpc, fill_holes_masks, fill_mask_idx, currentSilhouette,
+                status, floor_geo, allPrevComp, z_target, loose_tol
+            )
 
         # F: Calculate the final cutting area using the new helper
         cutArea = _calculate_cut_area(
@@ -881,7 +968,7 @@ def zlevel_hybrid_to_gcode(
     # 1. Initialization
     commands = []
     tool_diam = radius * 2
-    min_path_length = (math.pi * tool_diam) - 0.1
+    min_path_length = tool_diam
 
     # Extract feeds and speeds
     v_rapid = feed_params.get("vertRapid", 0.0)
@@ -906,7 +993,7 @@ def zlevel_hybrid_to_gcode(
         working_area = cutArea.reversed() if reverse_pattern else cutArea
 
         # Determine start index (0 = machine stock edge, 1 = ignore stock edge)
-        start_w_idx = 1 if ignore_outer else 0
+        start_w_idx = 1 if ignore_outer and not status in ["Extra"] else 0
 
         # A: Perimeters (Waterline Walls)
         if start_w_idx < len(working_area.Wires):
