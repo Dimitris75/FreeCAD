@@ -150,7 +150,7 @@ def _fuse_coplanar_masks(fill_holes_masks):
     from itertools import groupby
 
     sorted_list = sorted(fill_holes_masks, key=lambda x: x[0], reverse=True)
-    fused_list  = []
+    fused_list = []
 
     for max_z, group in groupby(sorted_list, key=lambda x: x[0]):
         faces = [item[1] for item in group]
@@ -207,82 +207,130 @@ def _get_selected_faces(base_property):
 
 def fill_selected(base_property):
     """
-    Creates flat, 2D "lids" or "caps" for selected hole/pocket wall faces.
+    Creates flat 2D caps for user-selected hole or pocket wall faces.
 
-    This function iterates through user-selected faces. For each valid face (assumed
-    to be the wall of a hole), it finds the highest Z-coordinate of its boundary wire,
-    creates a flat face at that Z-level, and returns it. These "lids" are used as
-    keep-out masks in the main algorithm.
+    For each valid selected face, finds the highest Z-coordinate of its
+    boundary wire, creates a flat face at that Z-level, and returns it
+    as a keep-out mask for the main algorithm.
+
+    Touching faces are processed collectively via create_boundary_face.
+    Isolated faces are processed individually — single-wire faces produce
+    one cap, multi-wire faces produce one cap per inner wire (holes).
 
     Args:
-        base_property (list): The operation's `obj.Base` list.
+        base_property (list): The operation's obj.Base list.
 
     Returns:
-        list: A list of tuples, where each tuple is `(max_z, mask_face_at_z0)`.
-              `max_z` is the original Z-max-height of the selected face.
-              `mask_face_at_z0` is the Part.Face object translated to Z=0 for masking.
+        list: Tuples of (max_z, mask_face_at_z0), sorted by Z descending
+              with co-planar masks fused. Empty list on failure.
     """
-    # 1. Extract selected faces using the helper function
-    selected_faces = _get_selected_faces(base_property)
+    from . import surface_common
 
+    # 1. Extract and categorize selected faces
+    selected_faces = _get_selected_faces(base_property)
     if not selected_faces:
-        Path.Log.warning("No faces found in the Base Geometry selection. Canceling fill selected holes")
+        Path.Log.warning(
+            "No faces found in Base Geometry — canceling fill selected holes."
+        )
+        return []
+
+    touching_faces, isolated_faces = surface_common._separate_touching_faces([selected_faces])
+
+    if not touching_faces and not isolated_faces:
+        Path.Log.warning(
+            "Failed to categorize selected faces — canceling fill selected holes."
+        )
         return []
 
     fill_holes_masks = []
-    flat_edges, sorted_edges, mask_face = None, None, None
 
-    # 2. Process each selected face to generate flat horizontal masks
-    for face in selected_faces:
-        # Complex multi-step boundaries or multi-wire exterior faces are skipped here.
-        if not face.Wires or len(face.Wires) != 1 or not face.Wires[0].isClosed():
-            Path.Log.debug(
-                "surface_zlevel.fill_selected: Face skipped. Does not match the requirement for a standard hole wall."
-            )
-            continue
-
-        # Get the highest uniform Z-level boundary of the entire wire loop
-        hole_wire = face.Wires[0]
-        max_z = hole_wire.BoundBox.ZMax
+    # 2. Helper: flatten a wire to a given Z and return a closed Part.Face
+    def _make_flat_cap(wire, cap_z):
+        """
+        Discretizes a wire, flattens all edges to cap_z, and returns a
+        closed Part.Face translated to Z=0 for use as a 2D mask.
+        Returns None on failure.
+        """
         flat_edges = []
-
-        # Discretize and flatten ALL edges of the wire loop to guarantee a closed mask
-        for edge in hole_wire.Edges:
+        for edge in wire.Edges:
             try:
-                points = edge.discretize(Distance=0.10)
-                flat_points = [FreeCAD.Vector(p.x, p.y, max_z) for p in points]
-                flat_edge = Part.makePolygon(flat_points)
+                points = edge.discretize(Distance=0.1)
+                flat_pts = [FreeCAD.Vector(p.x, p.y, cap_z) for p in points]
+                flat_edge = Part.makePolygon(flat_pts)
                 flat_edges.extend(flat_edge.Edges)
             except Exception as e:
                 Path.Log.debug(
-                    f"surface_zlevel.fill_selected: Critical error flattening edge geometry: {str(e)}"
+                    f"surface_zlevel.fill_selected: Edge flatten failed: {e}"
                 )
                 continue
 
         if not flat_edges:
-            continue
+            return None
 
         try:
-            # Reassemble individual flat edges by sorting them vertex-to-vertex first
             sorted_edges = Part.__sortEdges__(flat_edges)
-
             flat_wire = Part.Wire(sorted_edges)
-
-            mask_face = Part.Face(flat_wire)
-
-            # Append the calculated Z height along with the light 2D surface mas
-            mask_face.translate(FreeCAD.Vector(0, 0, -mask_face.BoundBox.ZMin))
-            fill_holes_masks.append((max_z, mask_face))
+            cap_face = Part.Face(flat_wire)
+            cap_face.translate(FreeCAD.Vector(0, 0, -cap_face.BoundBox.ZMin))
+            return cap_face
         except Exception as e:
-            Path.Log.warning(f"An unexpected error occurred while creating a fill-hole cap: {e}")
+            Path.Log.warning(
+                f"Failed to build cap face Fill selected holes: {e}"
+            )
+            return None
+
+    # 3. Process touching faces collectively
+    if touching_faces:
+        max_z = touching_faces[0].Wires[0].BoundBox.ZMax
+        cap_face = surface_common.create_boundary_face(touching_faces, offset=0.0)
+
+        if not cap_face or cap_face.isNull():
+            Path.Log.warning(
+                "surface_zlevel.fill_selected: Failed to build cap for touching faces."
+            )
+        else:
+            cap_face.translate(FreeCAD.Vector(0, 0, -cap_face.BoundBox.ZMin))
+            fill_holes_masks.append((max_z, cap_face))
+
+    # 4. Process isolated faces individually
+    for face in isolated_faces:
+        if not face.Wires:
+            Path.Log.debug(
+                "surface_zlevel.fill_selected: Skipping face with no wires."
+            )
             continue
 
+        max_z = face.Wires[0].BoundBox.ZMax
+
+        if len(face.Wires) == 1:
+            # Single closed wire — one cap for the whole face
+            if not face.Wires[0].isClosed():
+                Path.Log.debug(
+                    "surface_zlevel.fill_selected: Skipping face — wire not closed."
+                )
+                continue
+
+            cap_face = _make_flat_cap(face.Wires[0], max_z)
+            if cap_face:
+                fill_holes_masks.append((max_z, cap_face))
+
+        else:
+            # Multi-wire face — inner wires are holes, outer wire is the boundary.
+            # Sort by area ascending and skip the largest (outer) wire.
+            inner_wires = sorted(face.Wires, key=lambda w: Part.Face(w).Area)[:-1]
+            for wire in inner_wires:
+                if not wire.isClosed():
+                    continue
+                cap_face = _make_flat_cap(wire, max_z)
+                if cap_face:
+                    fill_holes_masks.append((max_z, cap_face))
+
     if not fill_holes_masks:
-        Path.Log.warning("Failed to fill selected holes.")
+        Path.Log.warning("Failed to generate caps for selected holes.")
         return []
 
     Path.Log.debug(
-        f"surface_zlevel.fill_selected: Generated {len(fill_holes_masks)} lightweight horizontal mask definitions."
+        f"surface_zlevel.fill_selected: Generated {len(fill_holes_masks)} mask(s)."
     )
 
     return _fuse_coplanar_masks(fill_holes_masks)
@@ -407,7 +455,7 @@ def categorize_floor_steps(shape, start_z, final_z, step_down, clear_planar_only
                 # We are in "Clear Planar Only" mode. Split the "Mixed" step
                 # into two separate virtual passes, "Pure"/"Extra", to avoid
                 # clearing areas around floor_geo in the main loop process.
-                # Set "Extra" higher to be processed first (need it for fill selected holes).
+                # Set "Extra" higher to be processed first (required by fill selected holes).
                 final_depth_logic.append((z_std + tolerance, "Extra", fused_geometry[match_z]))
                 final_depth_logic.append((z_std, "Pure", None))
             else:
