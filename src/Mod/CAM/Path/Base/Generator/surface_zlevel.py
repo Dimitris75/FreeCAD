@@ -244,55 +244,18 @@ def fill_selected(base_property):
 
     fill_holes_masks = []
 
-    # 2. Helper: flatten a wire to a given Z and return a closed Part.Face
-    def _make_flat_cap(wire, cap_z):
-        """
-        Discretizes a wire, flattens all edges to cap_z, and returns a
-        closed Part.Face translated to Z=0 for use as a 2D mask.
-        Returns None on failure.
-        """
-        flat_edges = []
-        for edge in wire.Edges:
-            try:
-                points = edge.discretize(Distance=0.1)
-                flat_pts = [FreeCAD.Vector(p.x, p.y, cap_z) for p in points]
-                flat_edge = Part.makePolygon(flat_pts)
-                flat_edges.extend(flat_edge.Edges)
-            except Exception as e:
-                Path.Log.debug(
-                    f"surface_zlevel.fill_selected: Edge flatten failed: {e}"
-                )
-                continue
-
-        if not flat_edges:
-            return None
-
-        try:
-            sorted_edges = Part.__sortEdges__(flat_edges)
-            flat_wire = Part.Wire(sorted_edges)
-            cap_face = Part.Face(flat_wire)
-            cap_face.translate(FreeCAD.Vector(0, 0, -cap_face.BoundBox.ZMin))
-            return cap_face
-        except Exception as e:
-            Path.Log.warning(
-                f"Failed to build cap face Fill selected holes: {e}"
-            )
-            return None
-
-    # 3. Process touching faces collectively
+    # 2. Process touching faces collectively
     if touching_faces:
         max_z = touching_faces[0].Wires[0].BoundBox.ZMax
         cap_face = surface_common.create_boundary_face(touching_faces, offset=0.0)
 
         if not cap_face or cap_face.isNull():
-            Path.Log.warning(
-                "surface_zlevel.fill_selected: Failed to build cap for touching faces."
-            )
+            Path.Log.warning("Failed to build cap for selected faces.")
         else:
             cap_face.translate(FreeCAD.Vector(0, 0, -cap_face.BoundBox.ZMin))
             fill_holes_masks.append((max_z, cap_face))
 
-    # 4. Process isolated faces individually
+    # 3. Process isolated faces individually
     for face in isolated_faces:
         if not face.Wires:
             Path.Log.debug(
@@ -310,8 +273,11 @@ def fill_selected(base_property):
                 )
                 continue
 
-            cap_face = _make_flat_cap(face.Wires[0], max_z)
-            if cap_face:
+            cap_face = surface_common.create_boundary_face([face], offset=0.0)
+            if not cap_face or cap_face.isNull():
+                Path.Log.warning("Failed to build cap for selected face")
+            else:
+                cap_face.translate(FreeCAD.Vector(0, 0, -cap_face.BoundBox.ZMin))
                 fill_holes_masks.append((max_z, cap_face))
 
         else:
