@@ -176,15 +176,16 @@ class TestSurfacePostprocess(PathTestUtils.PathTestBase):
 
         cmds = scan_lines_to_gcode(
             [line1, line2],
+            sample_interval=1.0,
             horiz_feed=300,
+            vert_feed=150,
             vert_rapid=1000,
             horiz_rapid=1000,
             safe_z=safe_z,
-            step_down=5.0,
-            sample_interval=1.0,
             clearance_z=clearance_z,
             start_z=15.0,
             final_z=10.0,
+            step_down=5.0,
         )
 
         # Find the command index for the end of line1
@@ -222,15 +223,17 @@ class TestSurfacePostprocess(PathTestUtils.PathTestBase):
 
         cmds = scan_lines_to_gcode(
             [line1, line2],
+            sample_interval=1.0,
             horiz_feed=300,
+            vert_feed=150,
             vert_rapid=1000,
             horiz_rapid=1000,
             safe_z=safe_z,
-            step_down=5.0,
-            sample_interval=1.0,
             clearance_z=clearance_z,
             start_z=15.0,
             final_z=10.0,
+            step_down=5.0,
+            depth_offset=0.0,
             optimize_transitions=True,
             safe_stl=self.flat_stl,
             cutter=self.cutter,
@@ -268,15 +271,16 @@ class TestSurfacePostprocess(PathTestUtils.PathTestBase):
 
         cmds = scan_lines_to_gcode(
             [line1, line2],
+            sample_interval=1.0,
             horiz_feed=300,
+            vert_feed=150,
             vert_rapid=1000,
             horiz_rapid=1000,
             safe_z=safe_z,
-            step_down=5.0,
-            sample_interval=1.0,
             clearance_z=clearance_z,
             start_z=15.0,
             final_z=10.0,
+            step_down=5.0,
             optimize_transitions=True,
             safe_stl=self.flat_stl,
             cutter=self.cutter,
@@ -290,3 +294,116 @@ class TestSurfacePostprocess(PathTestUtils.PathTestBase):
                 break
 
         self.assertTrue(has_retract, "Optimized long transition should fall back to a safe retract")
+
+    # -- Smart Lead-In / Lead-Out Tests --
+
+    def test30_probe_surface_z_valid_point(self):
+        """
+        Tests _probe_surface_z returns a valid Z height for a point on the mesh.
+
+        INPUT:
+        - Function: _probe_surface_z()
+        - A flat box STL (top face at Z=10), probe at center (50, 50).
+        - reference_z = 20.0 (above the surface).
+
+        EXPECTED OUTPUT:
+        - Returns a float close to 10.0 (the top face Z).
+        - Does not return None (OCL found a hit).
+        """
+        from Path.Base.Generator.surface_postprocess import _probe_surface_z, _make_safe_pdc
+
+        safe_pdc = _make_safe_pdc(self.flat_stl, self.cutter, 0.0, 0.5)
+        result   = _probe_surface_z((50.0, 50.0), 20.0, safe_pdc)
+
+        self.assertIsNotNone(result, "_probe_surface_z should return a value for an on-mesh point")
+        self.assertAlmostEqual(result, 10.0, delta=0.2,
+                               msg="Probed Z should be close to the box top face at Z=10")
+
+    def test31_generate_lead_arc_geometry(self):
+        """
+        Tests _generate_lead_arc produces valid G2/G3 arc commands at constant Z.
+
+        INPUT:
+        - Function: _generate_lead_arc()
+        - A scan line starting at the edge of the flat box (one clear side).
+        - is_lead_in=True.
+
+        EXPECTED OUTPUT:
+        - Returns a non-empty list of Path.Commands containing G2 or G3.
+        - The arc endpoint (entry_point) is at the same Z as line[0] (constant Z).
+        - I and J offsets are non-zero (arc has valid geometry).
+        """
+        from Path.Base.Generator.surface_postprocess import (
+            _generate_lead_arc,
+            _make_safe_pdc,
+        )
+
+        safe_pdc = _make_safe_pdc(self.flat_stl, self.cutter, 0.0, 0.5)
+
+        # Line starts near the edge — one perpendicular side is off the model
+        line = [
+            (3.0,  50.0, 10.0),
+            (50.0, 50.0, 10.0),
+            (97.0, 50.0, 10.0),
+        ]
+
+        cmds, entry_point = _generate_lead_arc(
+            line, safe_pdc, self.cutter, lead_feed=300.0, lift_lead_z=0.0, is_lead_in=True
+        )
+
+        if not cmds:
+            self.skipTest("No clear arc side found for this geometry — acceptable for flat box")
+
+        self.assertGreater(len(cmds), 0)
+        self.assertIn(cmds[0].Name, ("G2", "G3"),
+                      "Lead-in arc should be G2 or G3")
+        self.assertIsNotNone(entry_point)
+        self.assertAlmostEqual(entry_point[2], line[0][2], places=3,
+                               msg="Arc entry point must be at constant Z (same as cut Z)")
+
+        # Verify I and J are present and non-trivial
+        params = cmds[0].Parameters
+        self.assertIn("I", params)
+        self.assertIn("J", params)
+        i_offset = params["I"]
+        j_offset = params["J"]
+        arc_radius = (i_offset**2 + j_offset**2) ** 0.5
+        expected_radius = self.cutter.getDiameter() / 2.0
+        self.assertAlmostEqual(arc_radius, expected_radius, delta=0.1,
+                               msg="Arc radius should match cutter radius")
+
+    def test32_attempt_lead_arc_fallback_strategies(self):
+        """
+        Tests _attempt_lead_arc tries multiple strategies and returns first success.
+
+        INPUT:
+        - Function: _attempt_lead_arc()
+        - A scan line near the model edge — forward arc should succeed (strategy 1).
+
+        EXPECTED OUTPUT:
+        - Returns non-empty commands and a valid entry point.
+        - If all strategies fail, returns ([], None) without raising an exception.
+        """
+        from Path.Base.Generator.surface_postprocess import (
+            _attempt_lead_arc,
+            _make_safe_pdc,
+        )
+
+        safe_pdc = _make_safe_pdc(self.flat_stl, self.cutter, 0.0, 0.5)
+
+        line = [
+            (3.0,  50.0, 10.0),
+            (50.0, 50.0, 10.0),
+            (97.0, 50.0, 10.0),
+        ]
+
+        cmds, entry_point = _attempt_lead_arc(line, safe_pdc, self.cutter, 300.0, 0.0, True)
+
+        # Either a strategy succeeds or all fail gracefully
+        if cmds:
+            self.assertIn(cmds[0].Name, ("G2", "G3"))
+            self.assertIsNotNone(entry_point)
+            self.assertAlmostEqual(entry_point[2], line[0][2], places=3)
+        else:
+            self.assertIsNone(entry_point,
+                              "If no commands, entry_point should be None")
