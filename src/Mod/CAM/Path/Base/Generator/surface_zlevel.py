@@ -302,6 +302,41 @@ def fill_selected(base_property):
     return _fuse_coplanar_masks(fill_holes_masks)
 
 
+def _make_flat_cap(wire, cap_z):
+    """
+    Discretizes a wire, flattens all edges to cap_z, and returns a
+    closed Part.Face translated to Z=0 for use as a 2D mask.
+    Returns None on failure.
+    """
+    flat_edges = []
+    for edge in wire.Edges:
+        try:
+            points    = edge.discretize(Distance=0.1)
+            flat_pts  = [FreeCAD.Vector(p.x, p.y, cap_z) for p in points]
+            flat_edge = Part.makePolygon(flat_pts)
+            flat_edges.extend(flat_edge.Edges)
+        except Exception as e:
+            Path.Log.debug(
+                f"surface_zlevel.fill_selected: Edge flatten failed: {e}"
+            )
+            continue
+
+    if not flat_edges:
+        return None
+
+    try:
+        sorted_edges = Part.__sortEdges__(flat_edges)
+        flat_wire    = Part.Wire(sorted_edges)
+        cap_face     = Part.Face(flat_wire)
+        cap_face.translate(FreeCAD.Vector(0, 0, -cap_face.BoundBox.ZMin))
+        return cap_face
+    except Exception as e:
+        Path.Log.warning(
+            f"surface_zlevel.fill_selected: Failed to build cap face: {e}"
+        )
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Boundary preparation
 # ---------------------------------------------------------------------------
