@@ -341,124 +341,156 @@ def generate_pattern_mask(
 def build_optimized_boundary(faces, offset, tolerance=0.005):
     """
     Acts as a middleman to optimize boundary creation.
-    Separates faces into touching and isolated groups. Passes touching faces
-    as a single batch, and isolated faces one by one to prevent TechDraw/ClipperLib artifacts.
+
+    Separates faces into connected groups and isolated faces. Each connected
+    group is processed as a single batch — faces that touch transitively are
+    guaranteed to be in the same batch, preventing TechDraw/ClipperLib
+    artifacts from disjoint geometry. Isolated faces are processed one by one.
+
+    Args:
+        faces (list): List of Part.Face objects or nested list of faces.
+        offset (float): Offset to apply to each boundary.
+        tolerance (float): Maximum distance to be considered touching.
+
+    Returns:
+        Part.Shape: The combined boundary shape, or None on failure.
     """
     if not faces:
         return None
 
-    # Get our separated lists
-    touching_faces, isolated_faces = _separate_touching_faces(faces, tolerance)
+    touching_groups, isolated_faces = _separate_touching_faces(faces, tolerance)
 
     Path.Log.debug(
-        f"Boundary Optimization: Processing {len(touching_faces)} touching faces and {len(isolated_faces)} isolated faces."
+        f"build_optimized_boundary: {len(touching_groups)} touching group(s), "
+        f"{len(isolated_faces)} isolated face(s)."
     )
 
     generated_boundaries = []
 
-    # 1. Process all touching faces at once
-    if touching_faces:
-        # Wrapped in a list so create_boundary_face treats them as one group
-        touching_bnd = create_boundary_face(touching_faces, offset, tolerance)
-        if touching_bnd and not touching_bnd.isNull():
-            generated_boundaries.append(touching_bnd)
+    # Process each connected group as a single batch
+    for group in touching_groups:
+        bnd = create_boundary_face(group, offset, tolerance)
+        if bnd and not bnd.isNull():
+            generated_boundaries.append(bnd)
 
-    # 2. Process isolated faces one by one
-    if isolated_faces:
-        for face in isolated_faces:
-            # Wrapped in a double list so create_boundary_face treats it as a single group of 1 face
-            isolated_bnd = create_boundary_face([face], offset, tolerance)
-            if isolated_bnd and not isolated_bnd.isNull():
-                generated_boundaries.append(isolated_bnd)
+    # Process isolated faces one by one
+    for face in isolated_faces:
+        bnd = create_boundary_face([face], offset, tolerance)
+        if bnd and not bnd.isNull():
+            generated_boundaries.append(bnd)
 
     if not generated_boundaries:
         return None
 
-    # 3. Combine all successfully generated boundaries into one final mask
-    if len(generated_boundaries) > 1:
+    if len(generated_boundaries) == 1:
+        return generated_boundaries[0]
+
+    try:
         final_boundary = generated_boundaries[0].fuse(generated_boundaries[1:])
-        # Clean up any seams left over from fusing
         if hasattr(final_boundary, "removeSplitter"):
             final_boundary = final_boundary.removeSplitter()
-    else:
-        final_boundary = generated_boundaries[0]
-
-    return final_boundary
+        return final_boundary
+    except Exception as e:
+        Path.Log.warning(
+            f"build_optimized_boundary: Failed to fuse boundaries: {e}. "
+            "Returning first boundary only."
+        )
+        return generated_boundaries[0]
 
 
 def _separate_touching_faces(faces, tolerance=0.005):
     """
-    Separate Touching vs. Isolated Faces
+    Separates a list of faces into groups of touching faces and a list of
+    isolated faces, based on XY bounding box overlap and physical distance.
 
-    TechDraw.findShapeOutline and PathUtils.getOffsetArea often fail or produce
-    artifacts when processing faces that are disjoint (far apart from each other).
+    Uses a union-find (disjoint set) algorithm to correctly group transitively
+    connected faces — if A touches B and B touches C, all three end up in the
+    same group even if A and C don't directly touch.
 
-    This function evaluates a list of faces and separates them into two groups:
-    1. touching_faces: Faces that physically touch at least one other face.
-    2. isolated_faces: Faces that are completely alone and touch nothing.
-
-    By separating them, isolated faces can be processed individually and
-    compounded safely at the end, completely bypassing OpenCASCADE's
-    sensitivity to disjoint bodies.
+    The bb_overlap pre-check tests both X and Y independently and only rejects
+    when BOTH axes fail to overlap — a face touching only in Y is correctly
+    identified as overlapping.
 
     Args:
-        faces (list): A list of Part.Face objects (or a nested list of faces).
-        tolerance (float): Maximum distance to be considered "touching".
+        faces (list): A list of Part.Face objects or nested list of faces.
+        tolerance (float): Maximum distance to be considered touching.
 
     Returns:
-        tuple: (touching_faces, isolated_faces) as lists of Part.Face objects.
+        tuple: (touching_groups, isolated_faces)
+            touching_groups (list of lists): Each inner list is a group of
+                mutually connected faces. Groups with a single face that
+                touches another group are included here.
+            isolated_faces (list): Faces that touch no other face.
     """
-    touching_faces = []
-    isolated_faces = []
-
     if not faces:
-        return touching_faces, isolated_faces
+        return [], []
 
-    # 1. Flatten the input list (safely handles both[Face, Face] and [[Face], [Face]])
+    # Flatten input — handles both [Face, Face] and [[Face], [Face]]
     flat_faces = []
     for item in faces:
-        flat_faces.extend(item)
+        if isinstance(item, list):
+            flat_faces.extend(item)
+        else:
+            flat_faces.append(item)
 
     if not flat_faces:
-        return touching_faces, isolated_faces
+        return [], []
 
-    # Dictionary to keep track of which flat_faces indices have touched another face
-    touches = {i: False for i in range(len(flat_faces))}
+    n = len(flat_faces)
 
-    # Helper function for a safe, fast Bounding Box intersection check
+    # XY-only bounding box overlap — Z deliberately excluded
     def bb_overlap(bb1, bb2, tol):
         if bb1.XMax < bb2.XMin - tol or bb1.XMin > bb2.XMax + tol:
             return False
         if bb1.YMax < bb2.YMin - tol or bb1.YMin > bb2.YMax + tol:
             return False
-        if bb1.ZMax < bb2.ZMin - tol or bb1.ZMin > bb2.ZMax + tol:
-            return False
-        return True
+        return True  # Both axes overlap — faces may be touching
 
-    # 2. Compare every face against every other face
-    for i in range(len(flat_faces)):
-        face_i = flat_faces[i]
-        bb_i = face_i.BoundBox
+    # Union-Find implementation for transitive grouping
+    parent = list(range(n))
 
-        for j in range(i + 1, len(flat_faces)):
-            face_j = flat_faces[j]
-            bb_j = face_j.BoundBox
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]  # Path compression
+            i = parent[i]
+        return i
 
-            # Fast pre-check: Do their bounding boxes overlap?
-            if bb_overlap(bb_i, bb_j, tolerance):
+    def union(i, j):
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[ri] = rj
 
-                # Precise check: Are the physical geometries actually touching?
-                dist = face_i.distToShape(face_j)[0]
+    # Pre-compute bounding boxes once
+    bboxes = [f.BoundBox for f in flat_faces]
 
+    # Compare every pair — union touching faces into the same group
+    for i in range(n):
+        for j in range(i + 1, n):
+            if not bb_overlap(bboxes[i], bboxes[j], tolerance):
+                continue
+            try:
+                dist = flat_faces[i].distToShape(flat_faces[j])[0]
                 if dist <= tolerance:
-                    touches[i] = True
-                    touches[j] = True
+                    union(i, j)
+            except Exception as e:
+                Path.Log.debug(
+                    f"_separate_touching_faces: distToShape failed for "
+                    f"faces {i},{j}: {e}"
+                )
 
-    # 3. Separate the results based on our tracking dictionary
-    for i, face in enumerate(flat_faces):
-        if touches[i]:
-            touching_faces.append(face)
+    # Collect groups by root
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for i in range(n):
+        groups[find(i)].append(flat_faces[i])
+
+    touching_groups = []
+    isolated_faces  = []
+
+    for group in groups.values():
+        if len(group) == 1:
+            isolated_faces.append(group[0])
         else:
-            isolated_faces.append(face)
+            touching_groups.append(group)
 
-    return touching_faces, isolated_faces
+    return touching_groups, isolated_faces

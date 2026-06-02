@@ -213,7 +213,7 @@ def fill_selected(base_property):
     boundary wire, creates a flat face at that Z-level, and returns it
     as a keep-out mask for the main algorithm.
 
-    Touching faces are processed collectively via create_boundary_face.
+    Touching group faces are processed collectively via create_boundary_face.
     Isolated faces are processed individually — single-wire faces produce
     one cap, multi-wire faces produce one cap per inner wire (holes).
 
@@ -234,9 +234,9 @@ def fill_selected(base_property):
         )
         return []
 
-    touching_faces, isolated_faces = surface_common._separate_touching_faces([selected_faces])
+    touching_groups, isolated_faces = surface_common._separate_touching_faces([selected_faces])
 
-    if not touching_faces and not isolated_faces:
+    if not touching_groups and not isolated_faces:
         Path.Log.warning(
             "Failed to categorize selected faces — canceling fill selected holes."
         )
@@ -244,16 +244,16 @@ def fill_selected(base_property):
 
     fill_holes_masks = []
 
-    # 2. Process touching faces collectively
-    if touching_faces:
-        max_z = touching_faces[0].Wires[0].BoundBox.ZMax
-        cap_face = surface_common.create_boundary_face(touching_faces, offset=0.0)
-
-        if not cap_face or cap_face.isNull():
-            Path.Log.warning("Failed to build cap for selected faces.")
-        else:
-            cap_face.translate(FreeCAD.Vector(0, 0, -cap_face.BoundBox.ZMin))
-            fill_holes_masks.append((max_z, cap_face))
+    # 2. Process touching group faces collectively
+    for group in touching_groups:
+        hole_wire = group[0].Wires[0]
+        max_z = hole_wire.BoundBox.ZMax
+        mask_face = surface_common.create_boundary_face(group, offset=0.0)
+        if not mask_face or mask_face.isNull():
+            Path.Log.warning("Failed to process touching face group")
+            continue
+        mask_face.translate(FreeCAD.Vector(0, 0, -mask_face.BoundBox.ZMin))
+        fill_holes_masks.append((max_z, mask_face))
 
     # 3. Process isolated faces individually
     for face in isolated_faces:
@@ -311,8 +311,8 @@ def _make_flat_cap(wire, cap_z):
     flat_edges = []
     for edge in wire.Edges:
         try:
-            points    = edge.discretize(Distance=0.1)
-            flat_pts  = [FreeCAD.Vector(p.x, p.y, cap_z) for p in points]
+            points = edge.discretize(Distance=0.1)
+            flat_pts = [FreeCAD.Vector(p.x, p.y, cap_z) for p in points]
             flat_edge = Part.makePolygon(flat_pts)
             flat_edges.extend(flat_edge.Edges)
         except Exception as e:
@@ -326,8 +326,8 @@ def _make_flat_cap(wire, cap_z):
 
     try:
         sorted_edges = Part.__sortEdges__(flat_edges)
-        flat_wire    = Part.Wire(sorted_edges)
-        cap_face     = Part.Face(flat_wire)
+        flat_wire = Part.Wire(sorted_edges)
+        cap_face = Part.Face(flat_wire)
         cap_face.translate(FreeCAD.Vector(0, 0, -cap_face.BoundBox.ZMin))
         return cap_face
     except Exception as e:
