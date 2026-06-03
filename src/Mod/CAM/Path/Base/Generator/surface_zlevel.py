@@ -656,7 +656,7 @@ def zlevel_hybrid_stack(
 
         # B. Generate all 2D slices for this layer
         layer_slices = _generate_layer_slices(
-            shape, area_engine, params, unique_steps, z_target, slice_bias,
+            area_engine, params, unique_steps, z_target, slice_bias,
             stock_to_leave, model_top, model_bottom
         )
 
