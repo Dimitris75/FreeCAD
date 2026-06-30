@@ -615,7 +615,7 @@ def zlevel_hybrid_stack(
     area_engine.setPlane(wpc)
     area_engine.add(shape)
     # Configure C++ engine parameters
-    params = area_engine.getParams()
+    params = area_engine.getDefaultParams()
     params["SectionTolerance"] = 0.0001
 
     # 3. Identify critical snapping depths (Top and floors)
@@ -660,14 +660,15 @@ def zlevel_hybrid_stack(
             stock_to_leave, model_top, model_bottom
         )
 
-        if not layer_slices:
+        if not layer_slices or not len(layer_slices) > 0:
             continue
 
         # C. Fuse all generated slices into a single silhouette for this layer
         fusion = Path.Area()
         fusion.setPlane(wpc)
         for s in layer_slices:
-            fusion.add(s)
+            if not s.isNull():
+                fusion.add(s)
 
         # D. Boolean resolution
         currentSilhouette = None

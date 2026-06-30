@@ -1383,7 +1383,7 @@ class ObjectSurface(PathOp.ObjectOp):
 
         # 6. Generate Geometry Stack
         wl_data = surface_zlevel.zlevel_hybrid_stack(
-            shape_copy,
+            shape,
             cat_steps,
             border_face,
             trim_face,
@@ -1472,8 +1472,7 @@ class ObjectSurface(PathOp.ObjectOp):
         valid_shapes = []
         for b in base_objs:
             if b.Shape and not b.Shape.isNull():
-                valid_shapes.append(b.Shape)
-
+                valid_shapes.append(b.Shape.copy())
         if len(valid_shapes) > 1:
             try:
                 # Melt overlapping models into one clean continuous object
