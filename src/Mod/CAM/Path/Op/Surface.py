@@ -1458,7 +1458,7 @@ class ObjectSurface(PathOp.ObjectOp):
 
         use_cpp = strategy == "SurfacePattern"
         needs_face_selection = strategy == "SurfacePattern"
-        needs_safe_stl = getattr(obj, "KeepToolDown", False)
+        needs_safe_stl = getattr(obj, "KeepToolDown", False) or getattr(obj, "LeadInOut", False)
         needs_stl = strategy in ["SurfacePattern", "Waterline"]
         needs_ocl_cutter = strategy in ["SurfacePattern", "Waterline"]
         needs_boundary = strategy in ["SurfacePattern", "ZLevelHybrid"]

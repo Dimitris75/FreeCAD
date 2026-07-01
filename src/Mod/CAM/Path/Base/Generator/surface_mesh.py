@@ -462,7 +462,7 @@ def _shape_to_safe_stl(
         )
 
         if not boundary_face:
-            Path.Log.error("Failed to generate Safe STL. Transitions may not be collision-safe.")
+            Path.Log.error("Failed to generate Safe STL. Transitions or Smart LeadIn/LeadOut may not be collision-safe.")
             return None
 
         height = abs(start_depth - bb.ZMin) + 0.1  # Plus 0.1 for safety
