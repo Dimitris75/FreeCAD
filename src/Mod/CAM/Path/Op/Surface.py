@@ -224,7 +224,8 @@ class ObjectSurface(PathOp.ObjectOp):
                 "Performance Optimization",
                 QT_TRANSLATE_NOOP(
                     "App::Property",
-                    "Mesh simplification level (1-7): 1=Highest accuracy, 7=Fastest processing. Higher values reduce triangle count for faster computation but lower accuracy.",
+                    "Mesh simplification level (1-7): 1=Highest accuracy, 7=Fastest processing. "
+                    "Higher values reduce triangle count for faster computation but lower accuracy.",
                 ),
             ),
             (
@@ -262,6 +263,16 @@ class ObjectSurface(PathOp.ObjectOp):
                 QT_TRANSLATE_NOOP(
                     "App::Property",
                     "Avoid cutting the last 'N' faces in the Base Geometry list of selected faces.",
+                ),
+            ),
+            (
+                "App::PropertyBool",
+                "AvoidFacesOverlap",
+                "Selected Geometry Settings",
+                QT_TRANSLATE_NOOP(
+                    "App::Property",
+                    "Connects to the BoundaryAdjustment scale and allows the tool to overlap into the avoided area "
+                    "(For positive values only).",
                 ),
             ),
             (
@@ -606,6 +617,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "MinSampleInterval": 0.20,
             "BoundaryAdjustment": 0.0,
             "AvoidLastX_Faces": 0,
+            "AvoidFacesOverlap": False,
             "HandleMultipleFeatures": "Collectively",
             "ProfileEdges": "None",
             "GapThreshold": 0.005,
@@ -654,6 +666,7 @@ class ObjectSurface(PathOp.ObjectOp):
 
         # SurfacePattern specific contexts
         obj.setEditorMode("AvoidLastX_Faces", A)
+        obj.setEditorMode("AvoidFacesOverlap", A)
         obj.setEditorMode("HandleMultipleFeatures", A)
         obj.setEditorMode("StartPoint", A)
         obj.setEditorMode("UseStartPoint", A)
@@ -968,7 +981,7 @@ class ObjectSurface(PathOp.ObjectOp):
         }
 
     def _generate_scan_lines(
-        self, obj, job, tool_diam, bb, bb_face, cutting_faces, avoid_faces, is_whole_model_job
+        self, obj, job, tool_diam, bb, bb_face, cutting_faces, avoid_faces, avoid_overlap, is_whole_model_job
     ):
         """Generates the raw 2D scan line geometry for a given machining area."""
 
@@ -990,6 +1003,7 @@ class ObjectSurface(PathOp.ObjectOp):
             avoid_faces,
             tool_diam / 2.0,
             boundary_adj,
+            avoid_overlap,
             obj.LinearDeflection.Value,
         )
 
@@ -1103,8 +1117,9 @@ class ObjectSurface(PathOp.ObjectOp):
         cutter,
         tool_diam,
         bb_face,
-        cutting_faces=None,
+        avoid_overlap,
         avoid_faces=None,
+        cutting_faces=None,
     ):
         """
         Executes the Surface Pattern (projection) strategy.
@@ -1124,6 +1139,7 @@ class ObjectSurface(PathOp.ObjectOp):
             cutting_faces (list, optional): A list of Part.Face objects if the user
                                              has made a specific selection. Defaults to None.
             avoid_faces (list, optional): A list of Part.Face objects. Defaults to None.
+            avoid_overlap (float): A negative offset value if Avoid Faces Overlap is enabled or the tool radius.
 
         Returns:
             list: A list of Path.Command objects representing the final G-code.
@@ -1160,7 +1176,7 @@ class ObjectSurface(PathOp.ObjectOp):
 
             # A. Generate all 2D scan lines for this group
             raw_scan_lines = self._generate_scan_lines(
-                obj, job, tool_diam, group_bb, bb_face, face_group, avoid_faces, is_whole_model_job
+                obj, job, tool_diam, group_bb, bb_face, face_group, avoid_faces, avoid_overlap, is_whole_model_job
             )
             if not raw_scan_lines:
                 continue
@@ -1452,6 +1468,8 @@ class ObjectSurface(PathOp.ObjectOp):
         tool_params = self._extractToolParams(obj)
         tool_diam = tool_params.get("diameter", 0.0)
         tool_radius = tool_diam / 2
+        boundary_adjustment = obj.BoundaryAdjustment.Value
+        avoid_overlap = tool_radius
         is_adaptive = getattr(obj, "AdaptiveSampling", False)
         cutter, stl, safe_stl = None, None, None
         cutting_faces, avoid_faces, bb_face, shape = None, None, None, None
@@ -1462,6 +1480,7 @@ class ObjectSurface(PathOp.ObjectOp):
         needs_stl = strategy in ["SurfacePattern", "Waterline"]
         needs_ocl_cutter = strategy in ["SurfacePattern", "Waterline"]
         needs_boundary = strategy in ["SurfacePattern", "ZLevelHybrid"]
+        needs_avoid_overlap = getattr(obj, "AvoidFacesOverlap", False) and strategy == "SurfacePattern"
 
         # Geometry preperation
         base_objs = JOB.Model.Group
@@ -1505,6 +1524,10 @@ class ObjectSurface(PathOp.ObjectOp):
                 base_prop, avoid_count
             )
 
+        # Avoid Faces Overlap
+        if needs_avoid_overlap and boundary_adjustment > 0:
+            avoid_overlap = -(boundary_adjustment - tool_radius)
+
         # Create OCL cutter from tool parameters
         if needs_ocl_cutter:
             cutter = surface_common.make_ocl_cutter(
@@ -1538,8 +1561,9 @@ class ObjectSurface(PathOp.ObjectOp):
                 model_shape=model_shape,
                 base_objs=base_objs,
                 avoid_faces=avoid_faces,
-                tool_radius=tool_diam / 2.0,
+                tool_diam=tool_diam,
                 needs_safe_stl=needs_safe_stl,
+                avoid_overlap=avoid_overlap,
                 start_depth=obj.StartDepth.Value,
                 final_depth=obj.FinalDepth.Value,
                 linear_deflection=obj.LinearDeflection.Value,
@@ -1587,7 +1611,7 @@ class ObjectSurface(PathOp.ObjectOp):
         cmds = []
         if strategy == "SurfacePattern":
             cmds = self._executeSurfacePattern(
-                obj, JOB, stl, safe_stl, cutter, tool_diam, bb_face, cutting_faces, avoid_faces
+                obj, JOB, stl, safe_stl, cutter, tool_diam, bb_face, avoid_overlap, avoid_faces, cutting_faces
             )
         elif strategy == "Waterline":
             cmds = self._executeWaterline(obj, JOB, stl, cutter, tool_diam, is_adaptive=is_adaptive)
@@ -1636,6 +1660,8 @@ def SetupProperties():
     setup.append("BoundaryAdjustment")
     setup.append("PatternCenterAt")
     setup.append("PatternCenterCustom")
+    setup.append("AvoidLastX_Faces")
+    setup.append("AvoidFacesOverlap")
     setup.append("KeepToolDown")
     setup.append("GapThreshold")
     setup.append("UseStartPoint")

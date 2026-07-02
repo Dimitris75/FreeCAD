@@ -273,7 +273,7 @@ def create_boundary_face(model_faces, offset, tolerance=0.005):
 
 
 def generate_pattern_mask(
-    is_whole_model_job, bb_face, cutting_faces, avoid_faces, tool_radius, boundary_adj, tolerance
+    is_whole_model_job, bb_face, cutting_faces, avoid_faces, tool_radius, boundary_adj, avoid_overlap, tolerance
 ):
     """
     Generates a universal 2D boundary face, punching out
@@ -292,6 +292,7 @@ def generate_pattern_mask(
         avoid_faces (list): A list of Part.Face objects to be cut out from the main boundary.
         tool_radius (float): The radius of the active cutter.
         boundary_adj (float): An explicit user-provided offset override.
+        avoid_overlap (float): A negative offset value if Avoid Faces Overlap is enabled or the tool radius.
         tolerance (float): The deflection tolerance for discretizing curves smoothly.
 
     Returns:
@@ -319,9 +320,10 @@ def generate_pattern_mask(
     if not avoid_faces:
         return main_boundary
 
-    # For avoid zones, we want to keep the tool center away, so we expand the boundary
+    # For avoid zones, we apply a negative offset if avoid faces overlap is enabled. Otherwise, the tool radius.
     epsilon = tolerance + 0.001  # Allow some extra room to avoid "path spikes" on vertical walls
-    avoid_boundary = build_optimized_boundary([avoid_faces], tool_radius + epsilon, tolerance)
+    # avoid_overlap applied on surface_mesh._shape_to_safe_stl also
+    avoid_boundary = build_optimized_boundary([avoid_faces], avoid_overlap + epsilon, tolerance)
 
     if not avoid_boundary:
         Path.Log.warning("Failed to generate boundary for avoid_faces.")

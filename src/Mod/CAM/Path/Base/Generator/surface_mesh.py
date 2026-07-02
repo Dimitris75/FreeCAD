@@ -411,8 +411,9 @@ def _mesh_to_stl(mesh_obj):
 def _shape_to_safe_stl(
     model_shape,
     avoid_faces,
-    tool_radius,
+    tool_diam,
     start_depth,
+    avoid_overlap,
     linear_deflection,
     angular_deflection,
 ):
@@ -426,8 +427,9 @@ def _shape_to_safe_stl(
     Args:
         model_shape (Part.Shape): The complete, un-clipped model geometry.
         avoid_faces (list): A list of Part.Face objects to be avoided.
-        tool_radius (float): The radius of the active tool.
+        tool_diam (float): The diameter of the active tool.
         start_depth (float): The upper Z-bound of the operation.
+        avoid_overlap (float): A negative offset value if Avoid Faces Overlap is enabled or the tool radius.
         linear_deflection (float): The base linear deflection for calculating a coarse mesh.
         angular_deflection (float): The base angular deflection for calculating a coarse mesh.
 
@@ -441,7 +443,7 @@ def _shape_to_safe_stl(
 
     # Add the "Invisible Floor" base plate
     bb = model_shape.BoundBox
-    plate_padding = tool_radius * 2
+    plate_padding = tool_diam
     base_plate = Part.makeBox(
         bb.XLength + plate_padding * 2,
         bb.YLength + plate_padding * 2,
@@ -457,8 +459,9 @@ def _shape_to_safe_stl(
         )
         from . import surface_common
 
+        # avoid_overlap applied on surface_common.generate_pattern_mask also
         boundary_face = surface_common.build_optimized_boundary(
-            [avoid_faces], tool_radius, linear_deflection
+            [avoid_faces], avoid_overlap, linear_deflection
         )
 
         if not boundary_face:
@@ -495,8 +498,9 @@ def generate_stl(
     model_shape,
     base_objs,
     avoid_faces,
-    tool_radius,
+    tool_diam,
     needs_safe_stl,
+    avoid_overlap,
     start_depth,
     final_depth,
     linear_deflection,
@@ -516,8 +520,9 @@ def generate_stl(
         base_objs (list): The source geometric objects from the Job (can be Part or Mesh).
         selected_faces (list): A list of Part.Face objects to be machined.
         avoid_faces (list): A list of Part.Face objects to be avoided.
-        tool_radius (float): The radius of the active tool.
+        tool_diam (float): The diameter of the active tool.
         needs_safe_stl (bool): Flag indicating if the safety model is required.
+        avoid_overlap (float): A negative offset value if Avoid Faces Overlap is enabled or the tool radius.
         start_depth (float): The upper Z-bound of the operation.
         final_depth (float): The lower Z-bound of the operation.
         linear_deflection (float): The user-set linear deflection for the primary mesh.
@@ -602,8 +607,9 @@ def generate_stl(
             safe_stl = _shape_to_safe_stl(
                 model_shape,
                 avoid_faces,
-                tool_radius,
+                tool_diam,
                 start_depth,
+                avoid_overlap,
                 linear_deflection,
                 angular_deflection,
             )
