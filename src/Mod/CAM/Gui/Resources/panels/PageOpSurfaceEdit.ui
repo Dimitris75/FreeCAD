@@ -374,6 +374,16 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
       <item row="4" column="1">
        <widget class="QSpinBox" name="avoidLastX_Faces"/>
       </item>
+      <item row="5" column="0">
+       <widget class="QCheckBox" name="avoidFacesOverlap">
+        <property name="toolTip">
+         <string>Connects to the BoundaryAdjustment scale and allows the tool to overlap into the avoided area.</string>
+        </property>
+        <property name="text">
+         <string>Avoid faces overlap</string>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>
@@ -476,6 +486,26 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
         </property>
        </widget>
       </item>
+      <item row="4" column="0">
+       <widget class="QCheckBox" name="ignoreOuter">
+        <property name="toolTip">
+         <string>Ignore outer waterlines.</string>
+        </property>
+        <property name="text">
+         <string>Ignore Outer</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1">
+       <widget class="QCheckBox" name="fillSelectedHoles">
+        <property name="toolTip">
+         <string>Selected vertical face(s) in the 'Base Geometry' will be filled/capped.</string>
+        </property>
+        <property name="text">
+         <string>Fill Selected Holes</string>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>
@@ -567,11 +597,14 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
   <tabstop>boundaryAdjustment</tabstop>
   <tabstop>stockToLeave</tabstop>
   <tabstop>depthOffset</tabstop>
+  <tabstop>avoidLastX_Faces</tabstop>
+  <tabstop>avoidFacesOverlap</tabstop>
   <tabstop>clearingOptionsGroup</tabstop>
   <tabstop>stepOver</tabstop>
   <tabstop>profileEdges</tabstop>
   <tabstop>optimizationGroup</tabstop>
   <tabstop>ignoreOuter</tabstop>
+  <tabstop>fillSelectedHoles</tabstop>
   <tabstop>clearPlanarOnly</tabstop>
   <tabstop>cutPatternReversed</tabstop>
   <tabstop>cutPatternAngle</tabstop>

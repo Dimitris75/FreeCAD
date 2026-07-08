@@ -98,6 +98,9 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         PathGuiUtil.updateInputField(obj, "MinSampleInterval", self.form.minSampleInterval)
         PathGuiUtil.updateInputField(obj, "CutPatternAngle", self.form.cutPatternAngle)
 
+        if obj.AvoidFacesOverlap != self.form.avoidFacesOverlap.isChecked():
+            obj.AvoidFacesOverlap = self.form.avoidFacesOverlap.isChecked()
+
         if obj.StepOver != self.form.stepOver.value():
             obj.StepOver = self.form.stepOver.value()
 
@@ -121,6 +124,9 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
 
         if obj.IgnoreOuter != self.form.ignoreOuter.isChecked():
             obj.IgnoreOuter = self.form.ignoreOuter.isChecked()
+
+        if obj.FillSelectedHoles != self.form.fillSelectedHoles.isChecked():
+            obj.FillSelectedHoles = self.form.fillSelectedHoles.isChecked()
 
     def setFields(self, obj):
         """setFields(obj) ... transfers obj's property values to UI"""
@@ -192,6 +198,16 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         else:
             self.form.ignoreOuter.setCheckState(QtCore.Qt.Unchecked)
 
+        if obj.FillSelectedHoles:
+            self.form.fillSelectedHoles.setCheckState(QtCore.Qt.Checked)
+        else:
+            self.form.fillSelectedHoles.setCheckState(QtCore.Qt.Unchecked)
+
+        if obj.AvoidFacesOverlap:
+            self.form.avoidFacesOverlap.setCheckState(QtCore.Qt.Checked)
+        else:
+            self.form.avoidFacesOverlap.setCheckState(QtCore.Qt.Unchecked)
+
         self._syncAccuracyLabel()
 
         self.updateVisibility()
@@ -225,6 +241,8 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             signals.append(self.form.clearPlanarOnly.checkStateChanged)
             signals.append(self.form.cutPatternReversed.checkStateChanged)
             signals.append(self.form.ignoreOuter.checkStateChanged)
+            signals.append(self.form.fillSelectedHoles.checkStateChanged)
+            signals.append(self.form.avoidFacesOverlap.checkStateChanged)
         else:  # Qt version < 6.7.0
             signals.append(self.form.useStartPoint.stateChanged)
             signals.append(self.form.adaptiveSampling.stateChanged)
@@ -233,6 +251,8 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             signals.append(self.form.clearPlanarOnly.stateChanged)
             signals.append(self.form.cutPatternReversed.stateChanged)
             signals.append(self.form.ignoreOuter.stateChanged)
+            signals.append(self.form.fillSelectedHoles.stateChanged)
+            signals.append(self.form.avoidFacesOverlap.stateChanged)
 
         return signals
 
@@ -381,6 +401,10 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         # Z-Level specific checkboxes
         self.form.clearPlanarOnly.setVisible(is_zlevel)
         self.form.ignoreOuter.setVisible(is_zlevel)
+        self.form.fillSelectedHoles.setVisible(is_zlevel)
+
+        # Surface Pattern specific checkboxes
+        self.form.avoidFacesOverlap.setVisible(is_surface_pattern)
 
     def _updateOptimizationWidgets(self, strategy):
         """Manages widgets in the 'Optimization' group."""
