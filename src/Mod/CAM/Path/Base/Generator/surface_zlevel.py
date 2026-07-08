@@ -430,11 +430,14 @@ def categorize_floor_steps(shape, start_z, final_z, step_down, clear_planar_only
     """
     # 1. Generate standard Z-heights list top-down
     z_heights = []
+
     floor_match_tol = 0.0005
     curr_z = start_z - step_down
+
     while curr_z > (final_z + tolerance):
         z_heights.append(round(curr_z, 5))
         curr_z -= step_down
+
     z_heights.append(round(final_z, 5))
 
     # 2. Get physical floors from model geometry
@@ -524,6 +527,7 @@ def _get_fused_floor_geometry(shape, start_z, final_z, tolerance=0.001):
         return {}
 
     floor_accumulator = {}
+
     abs_top = shape.BoundBox.ZMax
     z_min, z_max = min(start_z, final_z), max(start_z, final_z)
 
@@ -540,6 +544,7 @@ def _get_fused_floor_geometry(shape, start_z, final_z, tolerance=0.001):
                     floor_accumulator[z].append(f_copy)
 
     fused = {}
+
     for z, faces in floor_accumulator.items():
         res = faces[0]
         if len(faces) > 1:
@@ -600,13 +605,13 @@ def zlevel_hybrid_stack(
 
     # 1. Initialization
     stack = []
+
     sub_face = None
     allPrevComp = None
     tol = 0.0001
     loose_tol = 0.0002
     fill_mask_idx = 0  # Fill holes masks list pointer
 
-    c_rad = tool_params["c_rad"]
     is_3d = tool_params["is_threeD"]
     num_slices = int(accuracy_val) if is_3d else 1
 
@@ -742,6 +747,7 @@ def _generate_layer_slices(
     slices = []
     sections = []
     tol = 1e-5
+
     for h, r_theo in unique_steps:
         r_comp = r_theo + stock_to_leave
 
@@ -990,6 +996,9 @@ def zlevel_hybrid_to_gcode(
     clear_planar_only,
     step_over,
     radius,
+    is_adaptive,
+    adaptive_params,
+    bb_face,
 ):
     """Converts the geometry stack into G-code Path Commands.
 
@@ -1009,6 +1018,11 @@ def zlevel_hybrid_to_gcode(
             Mixed or Extra.
         step_over: The horizontal step-over distance for clearing patterns (mm).
         radius: The tool radius (mm).
+        is_adaptive: True if the CutPattern is Adaptive
+        adaptive_params: Dict containing 'op_type', adaptive_accuracy', 'stock_to_leave',
+            'force_insideout', 'finishing_profile', 'lift_distance', 'keep_tool_down',
+            'helix_angle', 'helix_diameter', 'helix_min_diameter'
+        bb_face: A Part.Face representing the stock or boundary footprint.
 
     Returns:
         A list of Path.Command objects (G-code).
@@ -1017,6 +1031,7 @@ def zlevel_hybrid_to_gcode(
 
     # 1. Initialization
     commands = []
+
     tool_diam = radius * 2
     min_path_length = tool_diam
 
@@ -1026,6 +1041,7 @@ def zlevel_hybrid_to_gcode(
     # Extract heights
     safe_hght = height_params.get("safe_hght", 3.0)
     clear_hght = height_params.get("clearance_hght", 5.0)
+    prev_z = height_params.get("start_hght", safe_hght) + 0.1  # Plus 0.1 for safety
 
     # Extract pattern logic
     cut_climb = pattern_options.get("cut_climb", True)
@@ -1045,7 +1061,28 @@ def zlevel_hybrid_to_gcode(
         # Determine start index (0 = machine stock edge, 1 = ignore stock edge)
         start_w_idx = 1 if ignore_outer and not status in ["Extra"] else 0
 
-        # A: Perimeters (Waterline Walls)
+        # A: Adaptive Cut Pattern
+        if is_adaptive:
+            from . import adaptive_common as _adaptive
+            pattern_cmds = _adaptive.generate(
+                adaptive_params,
+                feed_params,
+                radius,
+                step_over,
+                z_target,
+                safe_hght,
+                prev_z,
+                cutArea,
+                bb_face,
+                cut_area_offset=radius,
+                bb_face_offset=0.0,
+            )
+            commands.extend(pattern_cmds)
+            if status not in ["Extra"]:
+                prev_z = z_target + 0.1  # Plus 0.1 for safety
+            continue
+
+        # B: Perimeters (Waterline Walls)
         if start_w_idx < len(working_area.Wires):
             for w_idx in range(start_w_idx, len(working_area.Wires)):
                 wire = working_area.Wires[w_idx]
@@ -1072,7 +1109,7 @@ def zlevel_hybrid_to_gcode(
                     _generate_wire_path(wire, z_target, safe_hght, start_p, feed_params)
                 )
 
-        # B: Cut pattern
+        # C: Cut pattern
         should_clear = False
         if pattern_name != "None":
             if clear_planar_only:
@@ -1101,6 +1138,7 @@ def zlevel_hybrid_to_gcode(
                 safe_hght,
                 min_path_length,
             )
+
             commands.extend(pattern_cmds)
 
     # 3. Finalize Operation
@@ -1146,6 +1184,7 @@ def _generatePattern(
         A list of Path.Command objects representing the clearing G-code.
     """
     Path.Log.debug(f"surface_zlevel._generatePattern: Generating {cut_pattern} pattern at Z={z_target}")
+
     commands = []
     should_reverse = True
 

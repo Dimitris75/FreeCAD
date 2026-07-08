@@ -308,7 +308,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 "BoundBox",
                 "Clearing Options",
                 QT_TRANSLATE_NOOP(
-                    "App::Property", "Select the overall boundary for the operation."
+                    "App::Property", "Select the overall boundary for the operation.",
                 ),
             ),
             (
@@ -334,7 +334,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 "CutPatternZLevel",
                 "Clearing Options",
                 QT_TRANSLATE_NOOP(
-                    "App::Property", "Set the geometric clearing pattern to use for the operation."
+                    "App::Property", "Set the geometric clearing pattern to use for the operation.",
                 ),
             ),
             (
@@ -342,7 +342,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 "CutPatternAngle",
                 "Clearing Options",
                 QT_TRANSLATE_NOOP(
-                    "App::Property", "The yaw angle used for certain clearing patterns"
+                    "App::Property", "The yaw angle used for certain clearing patterns",
                 ),
             ),
             (
@@ -404,7 +404,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 "SamplingAccuracy",
                 "Clearing Options",
                 QT_TRANSLATE_NOOP(
-                    "App::Property", "Number of sub-slices for 3D tool compensation."
+                    "App::Property", "Number of sub-slices for 3D tool compensation.",
                 ),
             ),
             (
@@ -412,7 +412,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 "StockToLeave",
                 "Clearing Options",
                 QT_TRANSLATE_NOOP(
-                    "App::Property", "Material to leave on the part in the XY plane."
+                    "App::Property", "Material to leave on the part in the XY plane.",
                 ),
             ),
             (
@@ -420,8 +420,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 "ClearPlanarOnly",
                 "Clearing Options",
                 QT_TRANSLATE_NOOP(
-                    "App::Property",
-                    "If true, clears only detected horizontal floors.",
+                    "App::Property", "If true, clears only detected horizontal floors.",
                 ),
             ),
             (
@@ -451,8 +450,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 "KeepToolDown",
                 "Optimization",
                 QT_TRANSLATE_NOOP(
-                    "App::Property",
-                    "Keep tool down during short transitions instead of retracting to safe height.",
+                    "App::Property", "Keep tool down during short transitions instead of retracting to safe height.",
                 ),
             ),
             (
@@ -470,9 +468,8 @@ class ObjectSurface(PathOp.ObjectOp):
                 "LeadInOut",
                 "LeadIn/LeadOut",
                 QT_TRANSLATE_NOOP(
-                    "App::Property",
-                    "Enable smart lead-in and lead-out moves for the Surface Pattern strategy. "
-                    "Disables Keep Tool Down automatically when  is active."
+                    "App::Property", "Enable smart lead-in and lead-out moves for the Surface Pattern strategy. "
+                    "Disables Keep Tool Down automatically when  is active.",
                 ),
             ),
             (
@@ -480,8 +477,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 "LeadFeed",
                 "LeadIn/LeadOut",
                 QT_TRANSLATE_NOOP(
-                    "App::Property",
-                    "Lead-in and lead-out feed rate as a percentage of the horizontal feed rate. "
+                    "App::Property", "Lead-in and lead-out feed rate as a percentage of the horizontal feed rate. "
                     "100% means full feed rate.",
                 ),
             ),
@@ -490,8 +486,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 "LeadLiftDistance",
                 "LeadIn/LeadOut",
                 QT_TRANSLATE_NOOP(
-                    "App::Property",
-                    "Vertical lift distance applied to the lead-in / lead-out."
+                    "App::Property", "Vertical lift distance applied to the lead-in / lead-out.",
                 ),
             ),
             # -- Start Point --
@@ -500,8 +495,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 "StartPoint",
                 "Start Point",
                 QT_TRANSLATE_NOOP(
-                    "App::Property",
-                    "The custom start point for the path of this operation",
+                    "App::Property", "The custom start point for the path of this operation",
                 ),
             ),
             (
@@ -509,6 +503,65 @@ class ObjectSurface(PathOp.ObjectOp):
                 "UseStartPoint",
                 "Start Point",
                 QT_TRANSLATE_NOOP("App::Property", "Make True, if specifying a Start Point"),
+            ),
+            # -- Adaptive Z-Level cut pattern--
+            (
+                "App::PropertyEnumeration",
+                "AdaptiveAccuracy",
+                "AdaptivePatternSettings",
+                QT_TRANSLATE_NOOP(
+                    "App::Property", "Influences calculation performance vs stability and accuracy."
+                    "\nLarger values will calculate faster; Smaller values will result in more accurate toolpaths.",
+                ),
+            ),
+            (
+                "App::PropertyDistance",
+                "LiftDistance",
+                "AdaptivePatternSettings",
+                QT_TRANSLATE_NOOP(
+                    "App::Property", "Lift distance for rapid moves",
+                ),
+            ),
+            (
+                "App::PropertyDistance",
+                "KeepToolDownRatio",
+                "AdaptivePatternSettings",
+                QT_TRANSLATE_NOOP(
+                    "App::Property", "Max length of keep tool down path compared to direct distance between points",
+                ),
+            ),
+            (
+                "App::PropertyBool",
+                "ForceInsideOut",
+                "AdaptivePatternSettings",
+                QT_TRANSLATE_NOOP(
+                    "App::Property", "Force plunging into material inside and clearing towards the edges",
+                ),
+            ),
+            (
+                "App::PropertyBool",
+                "FinishingProfile",
+                "AdaptivePatternSettings",
+                QT_TRANSLATE_NOOP(
+                    "App::Property", "To take a finishing profile path at the end",
+                ),
+            ),
+            (
+                "App::PropertyAngle",
+                "HelixMaxRampAngle",
+                "AdaptivePatternSettings",
+                QT_TRANSLATE_NOOP(
+                    "App::Property", "The maximum allowable helix ramp entry angle (degrees)"
+                    "\nSet to zero to disable limitation by ramp angle",
+                ),
+            ),
+            (
+                "App::PropertyPercent",
+                "HelixMaxDiameterPercent",
+                "AdaptivePatternSettings",
+                QT_TRANSLATE_NOOP(
+                    "App::Property", "Maximum (and nominal) helix entry diameter, as a percentage of the tool diameter",
+                ),
             ),
         ]
 
@@ -554,6 +607,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 (translate("CAM_Surface", "Line"), "Line"),
                 (translate("CAM_Surface", "ZigZag"), "ZigZag"),
                 (translate("CAM_Surface", "Offset"), "Offset"),
+                (translate("CAM_Surface", "Adaptive"), "Adaptive"),
                 (translate("CAM_Surface", "Grid"), "Grid"),
             ],
             "LayerMode": [
@@ -561,10 +615,10 @@ class ObjectSurface(PathOp.ObjectOp):
                 (translate("CAM_Surface", "Multi-pass"), "Multi-pass"),
             ],
             "SamplingAccuracy": [
-                (translate("path_waterline", "Standard"), "4"),
-                (translate("path_waterline", "High"), "8"),
-                (translate("path_waterline", "Very High"), "16"),
-                (translate("path_waterline", "Ultra"), "32"),
+                (translate("CAM_Surface", "Standard"), "4"),
+                (translate("CAM_Surface", "High"), "8"),
+                (translate("CAM_Surface", "Very High"), "16"),
+                (translate("CAM_Surface", "Ultra"), "32"),
             ],
             "HandleMultipleFeatures": [
                 (translate("CAM_Surface", "Collectively"), "Collectively"),
@@ -575,6 +629,13 @@ class ObjectSurface(PathOp.ObjectOp):
                 (translate("CAM_Surface", "First"), "First"),
                 (translate("CAM_Surface", "Last"), "Last"),
                 (translate("CAM_Surface", "Only"), "Only"),
+            ],
+            "AdaptiveAccuracy": [
+                (translate("CAM_Surface", "Very Low"), "0.15"),
+                (translate("CAM_Surface", "Low"), "0.1"),
+                (translate("CAM_Surface", "Standard"), "0.08"),
+                (translate("CAM_Surface", "High"), "0.05"),
+                (translate("CAM_Surface", "Very High"), "0.02"),
             ],
         }
 
@@ -628,6 +689,13 @@ class ObjectSurface(PathOp.ObjectOp):
             "LeadInOut": False,
             "LeadFeed": 75,
             "LeadLiftDistance": 1.0,
+            "AdaptiveAccuracy": "0.1",
+            "LiftDistance": 0.05,
+            "KeepToolDownRatio": 3.00,
+            "ForceInsideOut": False,
+            "FinishingProfile": True,
+            "HelixMaxRampAngle": 3.00,
+            "HelixMaxDiameterPercent": 75,
         }
 
         warn = True
@@ -656,13 +724,13 @@ class ObjectSurface(PathOp.ObjectOp):
 
         # Logic Groups:
         # A: Surface Pattern specific properties
-        # B: Z-Level Hybrid specific properties
-        # C: SurfacePattern/Mesh-specific properties
-        # D: Pattern-dependent settings (StepOver, etc.)
+        # B-C: Z-Level Hybrid specific properties
+        # D: SurfacePattern/Mesh-specific properties
+        # E-F: Pattern-dependent settings (StepOver, etc.)
         A = show if is_surface_pattern else hide
         B = show if is_zlevel else hide
-        C = hide if is_zlevel else show
-        D, E = hide, hide
+        C, D, E = hide, hide, hide
+        F = hide if is_zlevel else show
 
         # SurfacePattern specific contexts
         obj.setEditorMode("AvoidLastX_Faces", A)
@@ -692,34 +760,41 @@ class ObjectSurface(PathOp.ObjectOp):
         obj.setEditorMode("PatternCenterAt", show if pattern_needs_center else hide)
         obj.setEditorMode("PatternCenterCustom", show if pattern_needs_center else hide)
 
-        # Apply Visibility to Z-Level Group (B)
+        if is_zlevel:
+            z_pattern = getattr(obj, "CutPatternZLevel", "None")
+            C = show if z_pattern == "Adaptive" else hide
+            E = hide if z_pattern in ["None"] else show
+            F = hide if z_pattern in ["None", "Offset", "Adaptive"] else show
+        if is_surface_pattern:
+            E = show
+            F = show if obj.CutPattern in ["Line", "ZigZag"] else hide
+
+        # Apply Visibility to Z-Level Group (B-C)
         obj.setEditorMode("ClearPlanarOnly", B)
         obj.setEditorMode("IgnoreOuter", B)
         obj.setEditorMode("FillSelectedHoles", B)
         obj.setEditorMode("StockToLeave", B)
         obj.setEditorMode("CutPatternZLevel", B)
         obj.setEditorMode("SamplingAccuracy", B)
+        obj.setEditorMode("AdaptiveAccuracy", C)
+        obj.setEditorMode("LiftDistance", C)
+        obj.setEditorMode("KeepToolDownRatio", C)
+        obj.setEditorMode("ForceInsideOut", C)
+        obj.setEditorMode("FinishingProfile", C)
+        obj.setEditorMode("HelixMaxRampAngle", C)
+        obj.setEditorMode("HelixMaxDiameterPercent", C)
 
-        # Apply Visibility to Mesh/OCL Group (C)
-        obj.setEditorMode("AngularDeflection", C)
-        obj.setEditorMode("LinearDeflection", C)
-        obj.setEditorMode("MeshSimplification", C)
-        obj.setEditorMode("OptimizeLinearPaths", C)
-        obj.setEditorMode("SampleInterval", C)
+        # Apply Visibility to Mesh/OCL Group (D)
+        obj.setEditorMode("AngularDeflection", D)
+        obj.setEditorMode("LinearDeflection", D)
+        obj.setEditorMode("MeshSimplification", D)
+        obj.setEditorMode("OptimizeLinearPaths", D)
+        obj.setEditorMode("SampleInterval", D)
 
-        if is_zlevel:
-            z_pattern = getattr(obj, "CutPatternZLevel", "None")
-            D = hide if z_pattern == "None" else show
-            E = hide if z_pattern in ["None", "Offset"] else show
-        if is_surface_pattern:
-            D = show
-            E = show if obj.CutPattern in ["Line", "ZigZag"] else hide
-
-        # Apply Visibility to Common/Contextual Group (D)
-        obj.setEditorMode("StepOver", D)
-        obj.setEditorMode("CutPatternReversed", D)
-        # Apply Visibility to Common/Contextual Group (E)
-        obj.setEditorMode("CutPatternAngle", E)
+        # Apply Visibility to Common/Contextual Group (E-F)
+        obj.setEditorMode("StepOver", E)
+        obj.setEditorMode("CutPatternReversed", E)
+        obj.setEditorMode("CutPatternAngle", F)
 
         # Global Properties
         obj.setEditorMode("CutMode", show)
@@ -904,6 +979,24 @@ class ObjectSurface(PathOp.ObjectOp):
         # Limit LeadLiftDistance to positive values
         if obj.LeadLiftDistance < 0:
             obj.LeadLiftDistance = 0
+
+        # Limit Adaptive Helix max ramp angle
+        if obj.HelixMaxRampAngle < 0.0 or obj.HelixMaxRampAngle >= 90.0:
+            obj.HelixMaxRampAngle = 3.0
+
+        # Limit Adaptive Helix Max Diameter percentage
+        if obj.HelixMaxDiameterPercent > 100.0:
+            obj.HelixMaxDiameterPercent = 100.0
+        if obj.HelixMaxDiameterPercent < 10.0:
+            obj.HelixMaxDiameterPercent = 10.0
+
+        # Limit Adaptive Lift Distance to positive values
+        if obj.LiftDistance < 0:
+            obj.LiftDistance = 0
+
+        # Limit Adaptive Keep Tool Down Ratio to positive values
+        if obj.KeepToolDownRatio < 0:
+            obj.KeepToolDownRatio = 0
 
     def opUpdateDepths(self, obj):
         if hasattr(obj, "Base") and obj.Base:
@@ -1146,11 +1239,13 @@ class ObjectSurface(PathOp.ObjectOp):
         """
 
         all_final_cmds = []
+
         sample_interval = obj.SampleInterval.Value
         use_smart_leads = getattr(obj, "LeadInOut", False)
         lead_feed_percent = obj.LeadFeed
         lift_lead_z = obj.LeadLiftDistance.Value
         opt_transitions = getattr(obj, "KeepToolDown", False)
+
         is_whole_model_job = False if cutting_faces else True
         needs_stl = True if opt_transitions or use_smart_leads else False
         force_keep_down = True if obj.CutPattern in ("ZigZag", "CircularZigZag") else False
@@ -1331,19 +1426,20 @@ class ObjectSurface(PathOp.ObjectOp):
         startTime = time.time()
 
         # 1. Extract ToolBit parameters
-        dia = tool_params.get("diameter", 0.0)
-        radius = dia / 2.0
+        tool_diam = tool_params.get("diameter", 0.0)
+        radius = tool_diam / 2.0
         shape_type = tool_params.get("tool_type", "")
         c_rad = tool_params.get("corner_radius", 0.0)
         is_3d = True if shape_type in ["ballend", "bullnose"] else False
 
-        if dia == 0.0 or (not is_3d and "endmill" not in shape_type):
+        if tool_diam == 0.0 or (not is_3d and "endmill" not in shape_type):
             Path.Log.error(f"Unsupported tool type for Z-Level Hybrid: '{shape_type}'")
             return []
 
         # 2. Data preparation
         wpc = Part.makeCircle(1.0, FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(0, 0, 1))
 
+        is_adaptive = True if getattr(obj, "CutPatternZLevel", "None") == "Adaptive" else False
         fill_selected_holes = getattr(obj, "FillSelectedHoles", False)
         clear_planar_only = getattr(obj, "ClearPlanarOnly", True)
         accuracy_val = getattr(obj, "SamplingAccuracy", "4")
@@ -1371,6 +1467,7 @@ class ObjectSurface(PathOp.ObjectOp):
         height_params = {
             "safe_hght": obj.SafeHeight.Value,
             "clearance_hght": obj.ClearanceHeight.Value,
+            "start_hght": obj.StartDepth.Value
         }
 
         feed_params = {
@@ -1378,6 +1475,18 @@ class ObjectSurface(PathOp.ObjectOp):
             "vertFeed": self.vertFeed,
             "horizRapid": self.horizRapid,
             "vertRapid": self.vertRapid,
+        }
+
+        adaptive_params = {
+            "op_type": "ClearingInside",
+            "adaptive_accuracy": getattr(obj, "AdaptiveAccuracy", 0.1),
+            "lift_distance": getattr(obj, "LiftDistance", 0.05),
+            "keep_tool_down": getattr(obj, "KeepToolDownRatio", 3.0),
+            "force_insideout": getattr(obj, "ForceInsideOut", False),
+            "finishing_profile": getattr(obj, "FinishingProfile", True),
+            "helix_angle": getattr(obj, "HelixMaxRampAngle", 3.0),
+            "helix_diameter": getattr(obj, "HelixMaxDiameterPercent", 75),
+            "helix_min_diameter": tool_diam * 0.10,
         }
 
         # 3. Fill selected holes
@@ -1422,6 +1531,9 @@ class ObjectSurface(PathOp.ObjectOp):
             clear_planar_only,
             step_over,
             radius,
+            is_adaptive,
+            adaptive_params,
+            bb_face,
         )
 
         elapsed = time.time() - startTime
@@ -1465,9 +1577,11 @@ class ObjectSurface(PathOp.ObjectOp):
 
         # Data preparation (Define what each strategy requires)
         strategy = obj.Strategy
+
         tool_params = self._extractToolParams(obj)
         tool_diam = tool_params.get("diameter", 0.0)
         tool_radius = tool_diam / 2
+
         boundary_adjustment = obj.BoundaryAdjustment.Value
         avoid_overlap = tool_radius
         is_adaptive = getattr(obj, "AdaptiveSampling", False)
@@ -1669,5 +1783,12 @@ def SetupProperties():
     setup.append("LeadInOut")
     setup.append("LeadFeed")
     setup.append("LeadLiftDistance")
+    setup.append("AdaptiveAccuracy")
+    setup.append("LiftDistance")
+    setup.append("KeepToolDownRatio")
+    setup.append("ForceInsideOut")
+    setup.append("FinishingProfile")
+    setup.append("HelixMaxRampAngle")
+    setup.append("HelixMaxDiameterPercent")
 
     return setup
