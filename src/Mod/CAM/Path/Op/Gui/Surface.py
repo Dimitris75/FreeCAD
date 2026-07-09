@@ -412,17 +412,17 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
 
     def _updateStrategyWidgets(self, strategy, cut_pattern, cut_pattern_zlevel):
         """Manages widgets in the 'Strategy' group."""
-        is_surface_pattern = strategy == "SurfacePattern"
+        is_surface_scan = strategy == "SurfaceScan"
         is_zlevel = strategy == "ZLevelHybrid"
 
-        self.form.cutPattern.setVisible(is_surface_pattern)
-        self.form.cutPattern_label.setVisible(is_surface_pattern)
+        self.form.cutPattern.setVisible(is_surface_scan)
+        self.form.cutPattern_label.setVisible(is_surface_scan)
 
         self.form.cutPatternZLevel.setVisible(is_zlevel)
         self.form.cutPatternZLevel_label.setVisible(is_zlevel)
 
-        self.form.layerMode.setVisible(is_surface_pattern)
-        self.form.layerMode_label.setVisible(is_surface_pattern)
+        self.form.layerMode.setVisible(is_surface_scan)
+        self.form.layerMode_label.setVisible(is_surface_scan)
 
     def _updatePerformanceWidgets(self, strategy, sample_interval):
         """Manages widgets in the 'Performance and Accuracy' group."""
@@ -435,7 +435,7 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         is_adaptive_useful = sample_interval >= adaptive_threshold
 
         # The checkbox itself is only visible for strategies that can use it
-        can_show_adaptive = strategy == "SurfacePattern" or is_waterline
+        can_show_adaptive = strategy == "SurfaceScan" or is_waterline
         self.form.adaptiveSampling.setVisible(can_show_adaptive)
 
         # It's only ENABLED if it's both visible and useful
@@ -469,38 +469,38 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
 
     def _updateClearingWidgets(self, strategy, cut_pattern, cut_pattern_zlevel):
         """Manages widgets in the 'Clearing Options' group."""
-        is_surface_pattern = strategy == "SurfacePattern"
+        is_surface_scan = strategy == "SurfaceScan"
         is_zlevel = strategy == "ZLevelHybrid"
 
-        self.form.clearingOptionsGroup.setVisible(is_surface_pattern or is_zlevel)
+        self.form.clearingOptionsGroup.setVisible(is_surface_scan or is_zlevel)
 
         # Pattern Angle is enabled for linear patterns in either strategy
-        is_linear_surface = is_surface_pattern and cut_pattern in ["Line", "ZigZag"]
+        is_linear_surface = is_surface_scan and cut_pattern in ["Line", "ZigZag"]
         is_linear_zlevel = is_zlevel and cut_pattern_zlevel in ["Line", "ZigZag", "Grid"]
         self.form.cutPatternAngle.setEnabled(is_linear_surface or is_linear_zlevel)
         self.form.cutPatternAngle_label.setEnabled(is_linear_surface or is_linear_zlevel)
 
         # Step Over and Reverse Cut Pattern are enabled if any pattern is chosen
-        has_surface_pattern = is_surface_pattern and cut_pattern is not None
+        has_surface_scan = is_surface_scan and cut_pattern is not None
         has_zlevel_pattern = is_zlevel and cut_pattern_zlevel != "None"
-        self.form.stepOver.setEnabled(has_surface_pattern or has_zlevel_pattern)
-        self.form.stepOver_label.setEnabled(has_surface_pattern or has_zlevel_pattern)
+        self.form.stepOver.setEnabled(has_surface_scan or has_zlevel_pattern)
+        self.form.stepOver_label.setEnabled(has_surface_scan or has_zlevel_pattern)
 
         # Z-Level specific checkboxes
         self.form.clearPlanarOnly.setVisible(is_zlevel and cut_pattern_zlevel != "None")
         self.form.ignoreOuter.setVisible(is_zlevel)
         self.form.fillSelectedHoles.setVisible(is_zlevel)
 
-        # Surface Pattern specific checkboxes
-        self.form.avoidFacesOverlap.setVisible(is_surface_pattern)
+        # Surface Scan specific checkboxes
+        self.form.avoidFacesOverlap.setVisible(is_surface_scan)
 
     def _updateOptimizationWidgets(self, strategy):
         """Manages widgets in the 'Optimization' group."""
-        is_surface_pattern = strategy == "SurfacePattern"
+        is_surface_scan = strategy == "SurfaceScan"
         is_zlevel = strategy == "ZLevelHybrid"
         self.form.optimizationGroup.setVisible(not is_zlevel)
-        self.form.keepToolDown.setVisible(is_surface_pattern)
-        self.form.useStartPoint.setVisible(is_surface_pattern)
+        self.form.keepToolDown.setVisible(is_surface_scan)
+        self.form.useStartPoint.setVisible(is_surface_scan)
 
     def _updateAdaptivePatternWidgets(self, strategy, cut_pattern_zlevel):
         """Manages widgets in the 'Adaptive Pattern Settings' group."""

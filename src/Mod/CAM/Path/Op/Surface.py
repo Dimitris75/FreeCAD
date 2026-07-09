@@ -70,7 +70,7 @@ class ObjectSurface(PathOp.ObjectOp):
     """Unified 3D surfacing operation.
 
     Strategies:
-    - SurfacePattern: 3D surface finishing via pattern projection
+    - SurfaceScan: 3D surface finishing via pattern projection
     - Waterline: Constant-Z contours via OCL
     - Z-Level Hybrid: Z-Level Waterline contours via shape slicing (no OCL, fallback)
     """
@@ -84,7 +84,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "mesh_simplification": 7,  # Maximum reduction to speed up
             "sample_interval": 1.5,  # Sparse sampling for fast computation
             "min_sample_interval": 0.3,  # Minimum sparse sampling for fast computation
-            "description": "Quick toolpath verification and rough prototypes",
+            "description": "Quick verification and rough prototypes",
         },
         2: {  # Very Fast
             "name": "Very Fast",
@@ -111,7 +111,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "mesh_simplification": 4,  # Moderate reduction
             "sample_interval": 0.25,
             "min_sample_interval": 0.05,
-            "description": "Good compromise—fast with solid results for commercial work",
+            "description": "Good compromise for most commercial work",
         },
         5: {  # Good Accuracy
             "name": "Good",
@@ -120,7 +120,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "mesh_simplification": 3,  # Balanced reduction
             "sample_interval": 0.1,
             "min_sample_interval": 0.05,
-            "description": "Reliable quality for most commercial machines, still quick",
+            "description": "Reliable quality for commercial machines",
         },
         6: {  # High Accuracy
             "name": "High",
@@ -138,7 +138,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "mesh_simplification": 1,  # Minimal reduction
             "sample_interval": 0.05,  # Dense sampling for quality finishes
             "min_sample_interval": 0.05,
-            "description": "High quality for detailed commercial work, moderate processing time",
+            "description": "High quality detailed work, slower processing",
         },
     }
 
@@ -193,7 +193,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 "Strategy",
                 QT_TRANSLATE_NOOP(
                     "App::Property",
-                    "Select the 3D surfacing strategy: Surface Pattern for projection-based finishing, "
+                    "Select the 3D surfacing strategy: Surface Scan for projection-based finishing, "
                     "Waterline for constant-Z contours, "
                     "or Z-Level Hybrid for non-OCL fallback.",
                 ),
@@ -468,7 +468,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 "LeadInOut",
                 "LeadIn/LeadOut",
                 QT_TRANSLATE_NOOP(
-                    "App::Property", "Enable smart lead-in and lead-out moves for the Surface Pattern strategy. "
+                    "App::Property", "Enable smart lead-in and lead-out moves for the Surface Scan strategy. "
                     "Disables Keep Tool Down automatically when  is active.",
                 ),
             ),
@@ -578,7 +578,7 @@ class ObjectSurface(PathOp.ObjectOp):
 
         enums = {
             "Strategy": [
-                (translate("CAM_Surface", "Surface Pattern"), "SurfacePattern"),
+                (translate("CAM_Surface", "Surface Scan"), "SurfaceScan"),
                 (translate("CAM_Surface", "Waterline"), "Waterline"),
                 (translate("CAM_Surface", "Z-Level Hybrid"), "ZLevelHybrid"),
             ],
@@ -654,7 +654,7 @@ class ObjectSurface(PathOp.ObjectOp):
         """opPropertyDefaults(obj, job) ... returns a dictionary of default values
         for the operation's properties."""
         defaults = {
-            "Strategy": "SurfacePattern",
+            "Strategy": "SurfaceScan",
             "AdaptiveSampling": False,
             "OptimizeLinearPaths": True,
             "KeepToolDown": True,
@@ -717,22 +717,22 @@ class ObjectSurface(PathOp.ObjectOp):
         show = 0
         hide = 2
 
-        strategy = getattr(obj, "Strategy", "SurfacePattern")
-        is_surface_pattern = strategy == "SurfacePattern"
+        strategy = getattr(obj, "Strategy", "SurfaceScan")
+        is_surface_scan = strategy == "SurfaceScan"
         is_zlevel = strategy == "ZLevelHybrid"
         is_waterline = strategy == "Waterline"
 
         # Logic Groups:
-        # A: Surface Pattern specific properties
+        # A: Surface Scan specific properties
         # B-C: Z-Level Hybrid specific properties
-        # D: SurfacePattern/Mesh-specific properties
+        # D: SurfaceScan/Mesh-specific properties
         # E-F: Pattern-dependent settings (StepOver, etc.)
-        A = show if is_surface_pattern else hide
+        A = show if is_surface_scan else hide
         B = show if is_zlevel else hide
         C, D, E = hide, hide, hide
         F = hide if is_zlevel else show
 
-        # SurfacePattern specific contexts
+        # SurfaceScan specific contexts
         obj.setEditorMode("AvoidLastX_Faces", A)
         obj.setEditorMode("AvoidFacesOverlap", A)
         obj.setEditorMode("HandleMultipleFeatures", A)
@@ -749,14 +749,14 @@ class ObjectSurface(PathOp.ObjectOp):
         obj.setEditorMode("LeadLiftDistance", A)
 
         # Adaptive Sampling Logic
-        can_adaptive = is_waterline or is_surface_pattern
+        can_adaptive = is_waterline or is_surface_scan
         obj.setEditorMode("AdaptiveSampling", show if can_adaptive else hide)
 
         is_adaptive = getattr(obj, "AdaptiveSampling", False) and can_adaptive
         obj.setEditorMode("MinSampleInterval", show if is_adaptive else hide)
 
-        # Pattern center is relevant for circular/spiral patterns in SurfacePattern
-        pattern_needs_center = is_surface_pattern and not obj.CutPattern in ["Line", "ZigZag"]
+        # Pattern center is relevant for circular/spiral patterns in SurfaceScan
+        pattern_needs_center = is_surface_scan and not obj.CutPattern in ["Line", "ZigZag"]
         obj.setEditorMode("PatternCenterAt", show if pattern_needs_center else hide)
         obj.setEditorMode("PatternCenterCustom", show if pattern_needs_center else hide)
 
@@ -765,7 +765,7 @@ class ObjectSurface(PathOp.ObjectOp):
             C = show if z_pattern == "Adaptive" else hide
             E = hide if z_pattern in ["None"] else show
             F = hide if z_pattern in ["None", "Offset", "Adaptive"] else show
-        if is_surface_pattern:
+        if is_surface_scan:
             E = show
             F = show if obj.CutPattern in ["Line", "ZigZag"] else hide
 
@@ -1201,7 +1201,7 @@ class ObjectSurface(PathOp.ObjectOp):
 
         return scan_lines
 
-    def _executeSurfacePattern(
+    def _executeSurfaceScan(
         self,
         obj,
         job,
@@ -1215,7 +1215,7 @@ class ObjectSurface(PathOp.ObjectOp):
         cutting_faces=None,
     ):
         """
-        Executes the Surface Pattern (projection) strategy.
+        Executes the Surface Scan (projection) strategy.
 
         This is the primary function for generating toolpaths by projecting a 2D pattern
         onto a 3D STL mesh. It follows a highly optimized, multi-stage pipeline:
@@ -1557,7 +1557,7 @@ class ObjectSurface(PathOp.ObjectOp):
             data (STL meshes, OCL cutters, boundary boxes) based on the specific
             requirements of the selected strategy.
         3.  Strategy Dispatch: A simple, clean router that calls the appropriate
-            backend execution function (e.g., _executeSurfacePattern, _executeWaterline)
+            backend execution function (e.g., _executeSurfaceScan, _executeWaterline)
             and passes it the prepared data.
         4.  G-Code Finalization: Assembles the final command list by prepending
             standard headers and startup moves to the commands returned by the
@@ -1589,13 +1589,13 @@ class ObjectSurface(PathOp.ObjectOp):
         cutter, stl, safe_stl = None, None, None
         cutting_faces, avoid_faces, bb_face, shape = None, None, None, None
 
-        use_cpp = strategy == "SurfacePattern"
-        needs_face_selection = strategy == "SurfacePattern"
+        use_cpp = strategy == "SurfaceScan"
+        needs_face_selection = strategy == "SurfaceScan"
         needs_safe_stl = getattr(obj, "KeepToolDown", False) or getattr(obj, "LeadInOut", False)
-        needs_stl = strategy in ["SurfacePattern", "Waterline"]
-        needs_ocl_cutter = strategy in ["SurfacePattern", "Waterline"]
-        needs_boundary = strategy in ["SurfacePattern", "ZLevelHybrid"]
-        needs_avoid_overlap = getattr(obj, "AvoidFacesOverlap", False) and strategy == "SurfacePattern"
+        needs_stl = strategy in ["SurfaceScan", "Waterline"]
+        needs_ocl_cutter = strategy in ["SurfaceScan", "Waterline"]
+        needs_boundary = strategy in ["SurfaceScan", "ZLevelHybrid"]
+        needs_avoid_overlap = getattr(obj, "AvoidFacesOverlap", False) and strategy == "SurfaceScan"
 
         # Geometry preperation
         base_objs = JOB.Model.Group
@@ -1724,8 +1724,8 @@ class ObjectSurface(PathOp.ObjectOp):
 
         # Dispatch to strategy
         cmds = []
-        if strategy == "SurfacePattern":
-            cmds = self._executeSurfacePattern(
+        if strategy == "SurfaceScan":
+            cmds = self._executeSurfaceScan(
                 obj, JOB, stl, safe_stl, cutter, tool_diam, bb_face, avoid_overlap, avoid_faces, cutting_faces
             )
         elif strategy == "Waterline":
