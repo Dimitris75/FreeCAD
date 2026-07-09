@@ -170,8 +170,9 @@ class TestSurfaceMesh(PathTestUtils.PathTestBase):
         safe_stl = _shape_to_safe_stl(
             model_shape=model_shape,
             avoid_faces=avoid_box.Faces,
-            tool_radius=3.0,
+            tool_diam=6.0,
             start_depth=20.0,
+            avoid_overlap=3.0,
             linear_deflection=0.1,
             angular_deflection=0.5,
         )
@@ -206,8 +207,9 @@ class TestSurfaceMesh(PathTestUtils.PathTestBase):
             model_shape=self.box,
             base_objs=[self.box],  # Simulate base object from Job
             avoid_faces=[],
-            tool_radius=3.0,
+            tool_diam=6.0,
             needs_safe_stl=True,
+            avoid_overlap=3.0,
             start_depth=10.0,
             final_depth=0.0,
             linear_deflection=0.1,
