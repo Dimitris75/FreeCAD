@@ -40,6 +40,7 @@ Usage:
             "lift_distance"      : 0.5,
             "keep_tool_down"     : 3.0,
             "helix_angle"        : 3.0,
+            "helix_cone_angle"   : 0.0,
             "helix_diameter"     : 75.0,
             "helix_min_diameter" : 10.0,
         },
@@ -127,6 +128,7 @@ def _generate_helix_entry(
     feed_params,
     helix_min_diameter,
     helix_angle,
+    helix_cone_angle=0.0,
 ):
     """
     Generates a helix ramp entry move for a single Adaptive2d result region.
@@ -151,6 +153,7 @@ def _generate_helix_entry(
         feed_params (dict):   Feed/rapid rates.
         helix_min_diameter (float): Minimum allowable helix diameter in mm.
         helix_angle (float):  Helix ramp angle in degrees.
+        helix_cone_angle: (float): Helix cone angle in degrees.
 
     Returns:
         list: Path.Command objects for the helix entry (or straight plunge).
@@ -190,7 +193,7 @@ def _generate_helix_entry(
                 direction           = "CCW",
                 startAt             = "Inside",
                 finish_circle       = True,
-                cone_angle_rad      = 0.0,
+                cone_angle_rad      = math.radians(helix_cone_angle),
                 dir_angle_rad       = dir_angle_rad,
                 ramp_angle_rad      = ramp_angle_rad,
             )
@@ -299,6 +302,7 @@ def generate(
     lift_distance       = adaptive_params.get("lift_distance",       0.05)
     keep_tool_down      = adaptive_params.get("keep_tool_down",      3.0)
     helix_angle         = adaptive_params.get("helix_angle",         3.0)
+    helix_cone_angle    = adaptive_params.get("helix_cone_angle",    0.0)
     helix_diam_pct      = adaptive_params.get("helix_diameter",      75.0)
     helix_min_diam_pct  = adaptive_params.get("helix_min_diameter",  10.0)
 
@@ -403,6 +407,7 @@ def generate(
                 feed_params        = feed_params,
                 helix_min_diameter = helix_min_diameter,
                 helix_angle        = helix_angle,
+                helix_cone_angle   = helix_cone_angle,
             )
         )
 

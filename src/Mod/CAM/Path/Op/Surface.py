@@ -1460,7 +1460,7 @@ class ObjectSurface(PathOp.ObjectOp):
         pattern_options = {
             "cut_climb": obj.CutMode == "Climb",
             "cut_pattern": getattr(obj, "CutPatternZLevel", "None"),
-            "pattern_angle": getattr(obj, "CutPatternAngle", 45.0),
+            "pattern_angle": getattr(obj, "CutPatternAngle", 0.0),
             "reverse_pattern": getattr(obj, "CutPatternReversed", False),
         }
 
@@ -1485,6 +1485,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "force_insideout": getattr(obj, "ForceInsideOut", False),
             "finishing_profile": getattr(obj, "FinishingProfile", True),
             "helix_angle": getattr(obj, "HelixMaxRampAngle", 3.0),
+            "helix_cone_angle": 0.0,
             "helix_diameter": getattr(obj, "HelixMaxDiameterPercent", 75),
             "helix_min_diameter": tool_diam * 0.10,
         }

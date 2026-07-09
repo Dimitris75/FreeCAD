@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>446</width>
-    <height>994</height>
+    <height>1334</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -63,7 +63,7 @@
       <string>Strategy</string>
      </property>
      <property name="checkable">
-      <bool>true</bool>
+      <bool>false</bool>
      </property>
      <layout class="QGridLayout" name="gridLayout">
       <item row="0" column="0">
@@ -131,10 +131,10 @@
       <string>Performance and Accuracy</string>
      </property>
      <property name="checkable">
-      <bool>true</bool>
+      <bool>false</bool>
      </property>
      <property name="checked">
-      <bool>true</bool>
+      <bool>false</bool>
      </property>
      <layout class="QGridLayout" name="gridLayout_1">
       <item row="0" column="0" colspan="2">
@@ -210,7 +210,7 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
       <item row="1" column="0">
        <widget class="QLabel" name="sampleInterval_label">
         <property name="text">
-         <string>Sample Interval</string>
+         <string>Sample interval</string>
         </property>
        </widget>
       </item>
@@ -233,17 +233,17 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
       <item row="2" column="0">
        <widget class="QCheckBox" name="adaptiveSampling">
         <property name="toolTip">
-         <string>Dynamically adjusts sampling density in high-curvature areas for better finishes.</string>
+         <string>Dynamically adjusts sampling density in high-curvature areas for better finishes</string>
         </property>
         <property name="text">
-         <string>Adaptive Sampling</string>
+         <string>Adaptive sampling</string>
         </property>
        </widget>
       </item>
       <item row="3" column="0">
        <widget class="QLabel" name="minSampleInterval_label">
         <property name="text">
-         <string>Min Sample Interval</string>
+         <string>Min sample interval</string>
         </property>
        </widget>
       </item>
@@ -272,16 +272,16 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
       <string>Boundary Control</string>
      </property>
      <property name="checkable">
-      <bool>true</bool>
+      <bool>false</bool>
      </property>
      <property name="checked">
-      <bool>true</bool>
+      <bool>false</bool>
      </property>
      <layout class="QGridLayout" name="gridLayout_2">
       <item row="0" column="0">
        <widget class="QLabel" name="boundBoxSelect_label">
         <property name="text">
-         <string>Boundary Box</string>
+         <string>Boundary box</string>
         </property>
        </widget>
       </item>
@@ -295,7 +295,7 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
       <item row="1" column="0">
        <widget class="QLabel" name="boundaryAdjustment_label">
         <property name="text">
-         <string>Boundary Adjustment</string>
+         <string>Boundary adjustment</string>
         </property>
        </widget>
       </item>
@@ -318,7 +318,7 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
       <item row="2" column="0">
        <widget class="QLabel" name="stockToLeave_label">
         <property name="text">
-         <string>Stock to Leave (XY)</string>
+         <string>Stock to leave (XY)</string>
         </property>
        </widget>
       </item>
@@ -341,7 +341,7 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
       <item row="3" column="0">
        <widget class="QLabel" name="depthOffset_label">
         <property name="text">
-         <string>Depth Offset (Z)</string>
+         <string>Depth offset (Z)</string>
         </property>
        </widget>
       </item>
@@ -354,7 +354,7 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
          </sizepolicy>
         </property>
         <property name="toolTip">
-         <string>Z-axis offset from the target surface.</string>
+         <string>Z-axis offset from the target surface</string>
         </property>
         <property name="unit" stdset="0">
          <string notr="true">mm</string>
@@ -393,23 +393,26 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
       <string>Clearing Options</string>
      </property>
      <property name="checkable">
-      <bool>true</bool>
+      <bool>false</bool>
      </property>
      <property name="checked">
-      <bool>true</bool>
+      <bool>false</bool>
      </property>
      <layout class="QGridLayout" name="gridLayout_3">
       <item row="0" column="0">
        <widget class="QLabel" name="stepOver_label">
         <property name="text">
-         <string>Step Over</string>
+         <string>Step over</string>
         </property>
        </widget>
       </item>
       <item row="0" column="1">
        <widget class="QSpinBox" name="stepOver">
         <property name="toolTip">
-         <string>The percentage of the tool diameter to move on each pass of the pattern.</string>
+         <string>The percentage of the tool diameter to step over on each pass</string>
+        </property>
+        <property name="suffix">
+         <string>%</string>
         </property>
         <property name="minimum">
          <number>1</number>
@@ -417,12 +420,18 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
         <property name="maximum">
          <number>100</number>
         </property>
+        <property name="singleStep">
+         <number>5</number>
+        </property>
+        <property name="decimals" stdset="0">
+         <number>1</number>
+        </property>
        </widget>
       </item>
       <item row="1" column="0">
        <widget class="QLabel" name="profileEdges_label">
         <property name="text">
-         <string>Profile Edges</string>
+         <string>Profile edges</string>
         </property>
        </widget>
       </item>
@@ -436,7 +445,7 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
       <item row="2" column="0">
        <widget class="QLabel" name="cutPatternAngle_label">
         <property name="text">
-         <string>Pattern Angle</string>
+         <string>Pattern angle</string>
         </property>
        </widget>
       </item>
@@ -449,7 +458,7 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
          </sizepolicy>
         </property>
         <property name="toolTip">
-         <string>Rotation angle for linear patterns (e.g., Line, ZigZag).</string>
+         <string>Rotation angle for linear patterns (e.g., Line, ZigZag)</string>
         </property>
         <property name="unit" stdset="0">
          <string notr="true">deg</string>
@@ -459,37 +468,27 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
       <item row="3" column="0">
        <widget class="QCheckBox" name="cutPatternReversed">
         <property name="toolTip">
-         <string>Reverse the cut order of the stepover paths.</string>
+         <string>Reverses the cut order of the stepover paths</string>
         </property>
         <property name="text">
-         <string>Reverse Cut Pattern</string>
+         <string>Reverse cut pattern</string>
         </property>
        </widget>
       </item>
       <item row="3" column="1">
        <widget class="QCheckBox" name="clearPlanarOnly">
         <property name="toolTip">
-         <string>If true, clears only detected horizontal floors.</string>
+         <string>Clears only detected horizontal floors</string>
         </property>
         <property name="text">
-         <string>Clear Planar Only</string>
+         <string>Clear planar only</string>
         </property>
        </widget>
       </item>
       <item row="4" column="0">
        <widget class="QCheckBox" name="ignoreOuter">
         <property name="toolTip">
-         <string>Ignore outer waterlines.</string>
-        </property>
-        <property name="text">
-         <string>Ignore Outer</string>
-        </property>
-       </widget>
-      </item>
-      <item row="4" column="0">
-       <widget class="QCheckBox" name="ignoreOuter">
-        <property name="toolTip">
-         <string>Ignore outer waterlines.</string>
+         <string>Ignores outer waterlines</string>
         </property>
         <property name="text">
          <string>Ignore Outer</string>
@@ -502,7 +501,7 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
          <string>Selected vertical face(s) in the 'Base Geometry' will be filled/capped.</string>
         </property>
         <property name="text">
-         <string>Fill Selected Holes</string>
+         <string>Fill selected holes</string>
         </property>
        </widget>
       </item>
@@ -518,39 +517,39 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
       <bool>false</bool>
      </property>
      <property name="checkable">
-      <bool>true</bool>
+      <bool>false</bool>
      </property>
      <property name="checked">
-      <bool>true</bool>
+      <bool>false</bool>
      </property>
      <layout class="QGridLayout" name="gridLayout_4">
       <item row="0" column="0">
        <widget class="QCheckBox" name="useStartPoint">
         <property name="toolTip">
-         <string>Set to true if specifying a custom start point</string>
+         <string>Enables a custom toolpath start point</string>
         </property>
         <property name="text">
-         <string>Use Start Point</string>
+         <string>Use start point</string>
         </property>
        </widget>
       </item>
       <item row="0" column="1">
        <widget class="QCheckBox" name="optimizeEnabled">
         <property name="toolTip">
-         <string>Enable optimization of linear paths. Removes unnecessary co-linear points from G-code output.</string>
+         <string>Enables optimization of linear paths. Removes unnecessary co-linear points from G-code output.</string>
         </property>
         <property name="text">
-         <string>Optimize Linear Paths</string>
+         <string>Optimize linear paths</string>
         </property>
        </widget>
       </item>
       <item row="1" column="0">
        <widget class="QCheckBox" name="keepToolDown">
         <property name="toolTip">
-         <string>Keep tool down during transitions instead of retracting to safe height.</string>
+         <string>Keeps the tool down during transitions instead of retracting to safe height</string>
         </property>
         <property name="text">
-         <string>Keep Tool Down</string>
+         <string>Keep tool down</string>
         </property>
        </widget>
       </item>
@@ -569,6 +568,147 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
       </size>
      </property>
     </spacer>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="adaptivePatternGroup">
+     <property name="title">
+      <string>Adaptive Pattern Settings</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_5">
+      <item row="0" column="0">
+       <widget class="QLabel" name="adaptivePatternAccuracy_label">
+        <property name="text">
+         <string>Accuracy</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="adaptivePatternAccuracy">
+        <property name="toolTip">
+         <string>Influences calculation performance vs stability and accuracy. Larger values will calculate faster; Smaller values will result in more accurate toolpaths.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="liftDistance_label">
+        <property name="text">
+         <string>Lift distance</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="Gui::InputField" name="liftDistance">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="toolTip">
+         <string>How much to lift the tool up during the rapid linking moves over cleared regions. If linking path is not clear tool is raised to clearance height.</string>
+        </property>
+        <property name="unit" stdset="0">
+         <string notr="true">mm</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="keepToolDownRatio_label">
+        <property name="text">
+         <string>Keep tool down rario</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="Gui::InputField" name="keepToolDownRatio">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="toolTip">
+         <string>Max length of keep-tool-down linking path compared to direct distance between points. If exceeded link will be done by raising the tool to clearance height.</string>
+        </property>
+        <property name="unit" stdset="0">
+         <string notr="true">mm</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="helixMaxRampAngle_label">
+        <property name="text">
+         <string>Helix max ramp angle</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="Gui::InputField" name="helixMaxRampAngle">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="toolTip">
+         <string>The maximum allowable angle of the helix ramp entry. Set to zero to disable limitation by ramp angle.</string>
+        </property>
+        <property name="unit" stdset="0">
+         <string notr="true">deg</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="helixMaxDiameter_label">
+        <property name="text">
+         <string>Helix max diameter</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1">
+       <widget class="QSpinBox" name="helixMaxDiameter">
+        <property name="toolTip">
+         <string>Maximum (and nominal) helix entry diameter, as a percentage of the tool diameter.</string>
+        </property>
+        <property name="suffix">
+         <string>%</string>
+        </property>
+        <property name="minimum">
+         <number>1</number>
+        </property>
+        <property name="maximum">
+         <number>100</number>
+        </property>
+        <property name="singleStep">
+         <number>5</number>
+        </property>
+        <property name="decimals" stdset="0">
+         <number>1</number>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="0">
+       <widget class="QCheckBox" name="forceInsideOut">
+        <property name="toolTip">
+         <string>Force plunging into material inside and clearing towards the edges.</string>
+        </property>
+        <property name="text">
+         <string>Force inside-out</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="1">
+       <widget class="QCheckBox" name="finishingProfile">
+        <property name="toolTip">
+         <string>To take a finishing profile path at the end.</string>
+        </property>
+        <property name="text">
+         <string>Finishing profile</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
    </item>
   </layout>
  </widget>
@@ -608,6 +748,14 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
   <tabstop>clearPlanarOnly</tabstop>
   <tabstop>cutPatternReversed</tabstop>
   <tabstop>cutPatternAngle</tabstop>
+  <tabstop>adaptivePatternGroup</tabstop>
+  <tabstop>adaptivePatternAccuracy</tabstop>
+  <tabstop>liftDistance</tabstop>
+  <tabstop>keepToolDownRatio</tabstop>
+  <tabstop>helixMaxRampAngle</tabstop>
+  <tabstop>helixMaxDiameter</tabstop>
+  <tabstop>forceInsideOut</tabstop>
+  <tabstop>finishingProfile</tabstop>
  </tabstops>
  <resources/>
  <connections/>

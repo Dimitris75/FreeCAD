@@ -63,6 +63,7 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             ("cutPattern", "CutPattern"),
             ("cutPatternZLevel", "CutPatternZLevel"),
             ("profileEdges", "ProfileEdges"),
+            ("adaptivePatternAccuracy", "AdaptiveAccuracy"),
         ]
         enumTups = PathSurface.ObjectSurface.propertyEnumerations(dataType="raw")
         PathGuiUtil.populateCombobox(form, enumTups, comboToPropertyMap)
@@ -70,57 +71,55 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
 
     def getFields(self, obj):
         """getFields(obj) ... transfers values from UI to obj's properties"""
+        # -- Tool Controller --
         self.updateToolController(obj, self.form.toolController)
         self.updateCoolant(obj, self.form.coolantController)
 
+        # -- Strategy --
         if obj.Strategy != str(self.form.strategySelect.currentData()):
             obj.Strategy = str(self.form.strategySelect.currentData())
-
-        if obj.BoundBox != str(self.form.boundBoxSelect.currentData()):
-            obj.BoundBox = str(self.form.boundBoxSelect.currentData())
-
-        if obj.LayerMode != str(self.form.layerMode.currentData()):
-            obj.LayerMode = str(self.form.layerMode.currentData())
 
         obj.CutPattern = self.form.cutPattern.currentData()
 
         obj.CutPatternZLevel = self.form.cutPatternZLevel.currentData()
 
-        if obj.AvoidLastX_Faces != self.form.avoidLastX_Faces.value():
-            obj.AvoidLastX_Faces = self.form.avoidLastX_Faces.value()
+        if obj.LayerMode != str(self.form.layerMode.currentData()):
+            obj.LayerMode = str(self.form.layerMode.currentData())
 
-        obj.ProfileEdges = self.form.profileEdges.currentData()
-
-        PathGuiUtil.updateInputField(obj, "DepthOffset", self.form.depthOffset)
-        PathGuiUtil.updateInputField(obj, "StockToLeave", self.form.stockToLeave)
-        PathGuiUtil.updateInputField(obj, "BoundaryAdjustment", self.form.boundaryAdjustment)
+        # -- Performance and Accuracy --
         PathGuiUtil.updateInputField(obj, "SampleInterval", self.form.sampleInterval)
         PathGuiUtil.updateInputField(obj, "MinSampleInterval", self.form.minSampleInterval)
-        PathGuiUtil.updateInputField(obj, "CutPatternAngle", self.form.cutPatternAngle)
-
-        if obj.AvoidFacesOverlap != self.form.avoidFacesOverlap.isChecked():
-            obj.AvoidFacesOverlap = self.form.avoidFacesOverlap.isChecked()
-
-        if obj.StepOver != self.form.stepOver.value():
-            obj.StepOver = self.form.stepOver.value()
-
-        if obj.UseStartPoint != self.form.useStartPoint.isChecked():
-            obj.UseStartPoint = self.form.useStartPoint.isChecked()
 
         if obj.AdaptiveSampling != self.form.adaptiveSampling.isChecked():
             obj.AdaptiveSampling = self.form.adaptiveSampling.isChecked()
 
-        if obj.OptimizeLinearPaths != self.form.optimizeEnabled.isChecked():
-            obj.OptimizeLinearPaths = self.form.optimizeEnabled.isChecked()
+        # -- Boundary Control --
+        if obj.BoundBox != str(self.form.boundBoxSelect.currentData()):
+            obj.BoundBox = str(self.form.boundBoxSelect.currentData())
 
-        if obj.KeepToolDown != self.form.keepToolDown.isChecked():
-            obj.KeepToolDown = self.form.keepToolDown.isChecked()
+        PathGuiUtil.updateInputField(obj, "BoundaryAdjustment", self.form.boundaryAdjustment)
+        PathGuiUtil.updateInputField(obj, "StockToLeave", self.form.stockToLeave)
+        PathGuiUtil.updateInputField(obj, "DepthOffset", self.form.depthOffset)
 
-        if obj.ClearPlanarOnly != self.form.clearPlanarOnly.isChecked():
-            obj.ClearPlanarOnly = self.form.clearPlanarOnly.isChecked()
+        if obj.AvoidLastX_Faces != self.form.avoidLastX_Faces.value():
+            obj.AvoidLastX_Faces = self.form.avoidLastX_Faces.value()
+
+        if obj.AvoidFacesOverlap != self.form.avoidFacesOverlap.isChecked():
+            obj.AvoidFacesOverlap = self.form.avoidFacesOverlap.isChecked()
+
+        # -- Clearing Options --
+        if obj.StepOver != self.form.stepOver.value():
+            obj.StepOver = self.form.stepOver.value()
+
+        obj.ProfileEdges = self.form.profileEdges.currentData()
+
+        PathGuiUtil.updateInputField(obj, "CutPatternAngle", self.form.cutPatternAngle)
 
         if obj.CutPatternReversed != self.form.cutPatternReversed.isChecked():
             obj.CutPatternReversed = self.form.cutPatternReversed.isChecked()
+
+        if obj.ClearPlanarOnly != self.form.clearPlanarOnly.isChecked():
+            obj.ClearPlanarOnly = self.form.clearPlanarOnly.isChecked()
 
         if obj.IgnoreOuter != self.form.ignoreOuter.isChecked():
             obj.IgnoreOuter = self.form.ignoreOuter.isChecked()
@@ -128,21 +127,63 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         if obj.FillSelectedHoles != self.form.fillSelectedHoles.isChecked():
             obj.FillSelectedHoles = self.form.fillSelectedHoles.isChecked()
 
+        # -- Optimization --
+        if obj.UseStartPoint != self.form.useStartPoint.isChecked():
+            obj.UseStartPoint = self.form.useStartPoint.isChecked()
+
+        if obj.OptimizeLinearPaths != self.form.optimizeEnabled.isChecked():
+            obj.OptimizeLinearPaths = self.form.optimizeEnabled.isChecked()
+
+        if obj.KeepToolDown != self.form.keepToolDown.isChecked():
+            obj.KeepToolDown = self.form.keepToolDown.isChecked()
+
+        # -- Adaptive Pattern Settings --
+        if obj.AdaptiveAccuracy != str(self.form.adaptivePatternAccuracy.currentData()):
+            obj.AdaptiveAccuracy = str(self.form.adaptivePatternAccuracy.currentData())
+
+        PathGuiUtil.updateInputField(obj, "LiftDistance", self.form.liftDistance)
+        PathGuiUtil.updateInputField(obj, "KeepToolDownRatio", self.form.keepToolDownRatio)
+        PathGuiUtil.updateInputField(obj, "HelixMaxRampAngle", self.form.helixMaxRampAngle)
+
+        if obj.HelixMaxDiameterPercent != self.form.helixMaxDiameter.value():
+            obj.HelixMaxDiameterPercent = self.form.helixMaxDiameter.value()
+
+        if obj.ForceInsideOut != self.form.forceInsideOut.isChecked():
+            obj.ForceInsideOut = self.form.forceInsideOut.isChecked()
+
+        if obj.FinishingProfile != self.form.finishingProfile.isChecked():
+            obj.FinishingProfile = self.form.finishingProfile.isChecked()
+
     def setFields(self, obj):
         """setFields(obj) ... transfers obj's property values to UI"""
+
+        # -- Tool Contorller --
         self.setupToolController(obj, self.form.toolController)
         self.setupCoolant(obj, self.form.coolantController)
+
+        # -- Strategy --
         self.selectInComboBox(obj.Strategy, self.form.strategySelect)
-        self.selectInComboBox(obj.BoundBox, self.form.boundBoxSelect)
-        self.selectInComboBox(obj.LayerMode, self.form.layerMode)
         self.selectInComboBox(obj.CutPattern, self.form.cutPattern)
         self.selectInComboBox(obj.CutPatternZLevel, self.form.cutPatternZLevel)
+        self.selectInComboBox(obj.LayerMode, self.form.layerMode)
 
-        self.form.avoidLastX_Faces.setValue(obj.AvoidLastX_Faces)
-        self.selectInComboBox(obj.ProfileEdges, self.form.profileEdges)
-        self.form.depthOffset.setText(
-            FreeCAD.Units.Quantity(obj.DepthOffset.Value, FreeCAD.Units.Length).UserString
+        # -- Performance and Accuracy --
+        self.form.sampleInterval.setText(
+            FreeCAD.Units.Quantity(obj.SampleInterval.Value, FreeCAD.Units.Length).UserString
         )
+        self.form.minSampleInterval.setText(
+            FreeCAD.Units.Quantity(obj.MinSampleInterval.Value, FreeCAD.Units.Length).UserString
+        )
+
+        if obj.AdaptiveSampling:
+            self.form.adaptiveSampling.setCheckState(QtCore.Qt.Checked)
+        else:
+            self.form.adaptiveSampling.setCheckState(QtCore.Qt.Unchecked)
+
+        self._syncAccuracyLabel()
+
+        # -- Boundary Control --
+        self.selectInComboBox(obj.BoundBox, self.form.boundBoxSelect)
 
         self.form.boundaryAdjustment.setText(
             FreeCAD.Units.Quantity(obj.BoundaryAdjustment.Value, FreeCAD.Units.Length).UserString
@@ -150,48 +191,34 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         self.form.stockToLeave.setText(
             FreeCAD.Units.Quantity(obj.StockToLeave.Value, FreeCAD.Units.Length).UserString
         )
+        self.form.avoidLastX_Faces.setValue(obj.AvoidLastX_Faces)
 
+        if obj.AvoidFacesOverlap:
+            self.form.avoidFacesOverlap.setCheckState(QtCore.Qt.Checked)
+        else:
+            self.form.avoidFacesOverlap.setCheckState(QtCore.Qt.Unchecked)
+
+        self.form.depthOffset.setText(
+            FreeCAD.Units.Quantity(obj.DepthOffset.Value, FreeCAD.Units.Length).UserString
+        )
+
+        # -- Clearing Options --
         self.form.stepOver.setValue(obj.StepOver)
+        self.selectInComboBox(obj.ProfileEdges, self.form.profileEdges)
 
-        self.form.sampleInterval.setText(
-            FreeCAD.Units.Quantity(obj.SampleInterval.Value, FreeCAD.Units.Length).UserString
-        )
-        self.form.minSampleInterval.setText(
-            FreeCAD.Units.Quantity(obj.MinSampleInterval.Value, FreeCAD.Units.Length).UserString
-        )
         self.form.cutPatternAngle.setText(
             FreeCAD.Units.Quantity(obj.CutPatternAngle, FreeCAD.Units.Angle).UserString
         )
-
-        if obj.UseStartPoint:
-            self.form.useStartPoint.setCheckState(QtCore.Qt.Checked)
-        else:
-            self.form.useStartPoint.setCheckState(QtCore.Qt.Unchecked)
-
-        if obj.AdaptiveSampling:
-            self.form.adaptiveSampling.setCheckState(QtCore.Qt.Checked)
-        else:
-            self.form.adaptiveSampling.setCheckState(QtCore.Qt.Unchecked)
-
-        if obj.OptimizeLinearPaths:
-            self.form.optimizeEnabled.setCheckState(QtCore.Qt.Checked)
-        else:
-            self.form.optimizeEnabled.setCheckState(QtCore.Qt.Unchecked)
-
-        if obj.KeepToolDown:
-            self.form.keepToolDown.setCheckState(QtCore.Qt.Checked)
-        else:
-            self.form.keepToolDown.setCheckState(QtCore.Qt.Unchecked)
-
-        if obj.ClearPlanarOnly:
-            self.form.clearPlanarOnly.setCheckState(QtCore.Qt.Checked)
-        else:
-            self.form.clearPlanarOnly.setCheckState(QtCore.Qt.Unchecked)
 
         if obj.CutPatternReversed:
             self.form.cutPatternReversed.setCheckState(QtCore.Qt.Checked)
         else:
             self.form.cutPatternReversed.setCheckState(QtCore.Qt.Unchecked)
+
+        if obj.ClearPlanarOnly:
+            self.form.clearPlanarOnly.setCheckState(QtCore.Qt.Checked)
+        else:
+            self.form.clearPlanarOnly.setCheckState(QtCore.Qt.Unchecked)
 
         if obj.IgnoreOuter:
             self.form.ignoreOuter.setCheckState(QtCore.Qt.Checked)
@@ -203,56 +230,118 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         else:
             self.form.fillSelectedHoles.setCheckState(QtCore.Qt.Unchecked)
 
-        if obj.AvoidFacesOverlap:
-            self.form.avoidFacesOverlap.setCheckState(QtCore.Qt.Checked)
+        # -- Optimization --
+        if obj.UseStartPoint:
+            self.form.useStartPoint.setCheckState(QtCore.Qt.Checked)
         else:
-            self.form.avoidFacesOverlap.setCheckState(QtCore.Qt.Unchecked)
+            self.form.useStartPoint.setCheckState(QtCore.Qt.Unchecked)
 
-        self._syncAccuracyLabel()
+        if obj.OptimizeLinearPaths:
+            self.form.optimizeEnabled.setCheckState(QtCore.Qt.Checked)
+        else:
+            self.form.optimizeEnabled.setCheckState(QtCore.Qt.Unchecked)
 
+        if obj.KeepToolDown:
+            self.form.keepToolDown.setCheckState(QtCore.Qt.Checked)
+        else:
+            self.form.keepToolDown.setCheckState(QtCore.Qt.Unchecked)
+
+        # -- Adaptive Pattern Settings --
+        self.selectInComboBox(obj.AdaptiveAccuracy, self.form.adaptivePatternAccuracy)
+
+        self.form.liftDistance.setText(
+            FreeCAD.Units.Quantity(obj.LiftDistance.Value, FreeCAD.Units.Length).UserString
+        )
+        self.form.keepToolDownRatio.setText(
+            FreeCAD.Units.Quantity(obj.KeepToolDownRatio.Value, FreeCAD.Units.Length).UserString
+        )
+
+        self.form.helixMaxRampAngle.setText(
+            FreeCAD.Units.Quantity(obj.HelixMaxRampAngle, FreeCAD.Units.Angle).UserString
+        )
+        self.form.helixMaxDiameter.setValue(obj.HelixMaxDiameterPercent)
+
+        if obj.ForceInsideOut:
+            self.form.forceInsideOut.setCheckState(QtCore.Qt.Checked)
+        else:
+            self.form.forceInsideOut.setCheckState(QtCore.Qt.Unchecked)
+
+        if obj.FinishingProfile:
+            self.form.finishingProfile.setCheckState(QtCore.Qt.Checked)
+        else:
+            self.form.finishingProfile.setCheckState(QtCore.Qt.Unchecked)
+
+        # -- Update Visibility --
         self.updateVisibility()
 
     def getSignalsForUpdate(self, obj):
         """getSignalsForUpdate(obj) ... return list of signals for updating obj"""
         signals = []
+        # -- Tool Contorller --
         signals.append(self.form.toolController.currentIndexChanged)
         signals.append(self.form.coolantController.currentIndexChanged)
+        # -- Strategy --
         signals.append(self.form.strategySelect.currentIndexChanged)
-        signals.append(self.form.boundBoxSelect.currentIndexChanged)
-        signals.append(self.form.layerMode.currentIndexChanged)
         signals.append(self.form.cutPattern.currentIndexChanged)
         signals.append(self.form.cutPatternZLevel.currentIndexChanged)
-        signals.append(self.form.avoidLastX_Faces.editingFinished)
-        signals.append(self.form.profileEdges.currentIndexChanged)
-        signals.append(self.form.depthOffset.editingFinished)
-        signals.append(self.form.boundaryAdjustment.editingFinished)
-        signals.append(self.form.stockToLeave.editingFinished)
-        signals.append(self.form.stepOver.editingFinished)
-        signals.append(self.form.cutPatternAngle.editingFinished)
+        signals.append(self.form.layerMode.currentIndexChanged)
+        # -- Performance and Accuracy --
+        signals.append(self.form.accuracySlider.valueChanged)
         signals.append(self.form.sampleInterval.editingFinished)
         signals.append(self.form.minSampleInterval.editingFinished)
-        signals.append(self.form.accuracySlider.valueChanged)
+        # -- Boundary Control --
+        signals.append(self.form.boundBoxSelect.currentIndexChanged)
+        signals.append(self.form.boundaryAdjustment.editingFinished)
+        signals.append(self.form.stockToLeave.editingFinished)
+        signals.append(self.form.depthOffset.editingFinished)
+        signals.append(self.form.avoidLastX_Faces.editingFinished)
+        # -- Clearing Options --
+        signals.append(self.form.stepOver.editingFinished)
+        signals.append(self.form.profileEdges.currentIndexChanged)
+        signals.append(self.form.cutPatternAngle.editingFinished)
+        # -- Adaptive Pattern Settings
+        signals.append(self.form.adaptivePatternAccuracy.currentIndexChanged)
+        signals.append(self.form.liftDistance.editingFinished)
+        signals.append(self.form.keepToolDownRatio.editingFinished)
+        signals.append(self.form.helixMaxRampAngle.editingFinished)
+        signals.append(self.form.helixMaxDiameter.editingFinished)
+
 
         if hasattr(self.form.useStartPoint, "checkStateChanged"):  # Qt version >= 6.7.0
-            signals.append(self.form.useStartPoint.checkStateChanged)
+            # -- Performance and Accuracy
             signals.append(self.form.adaptiveSampling.checkStateChanged)
-            signals.append(self.form.optimizeEnabled.checkStateChanged)
-            signals.append(self.form.keepToolDown.checkStateChanged)
-            signals.append(self.form.clearPlanarOnly.checkStateChanged)
+            # -- Boundary Control --
+            signals.append(self.form.avoidFacesOverlap.checkStateChanged)
+            # -- Clearing Options --
             signals.append(self.form.cutPatternReversed.checkStateChanged)
+            signals.append(self.form.clearPlanarOnly.checkStateChanged)
             signals.append(self.form.ignoreOuter.checkStateChanged)
             signals.append(self.form.fillSelectedHoles.checkStateChanged)
-            signals.append(self.form.avoidFacesOverlap.checkStateChanged)
+            # -- Optimization --
+            signals.append(self.form.useStartPoint.checkStateChanged)
+            signals.append(self.form.keepToolDown.checkStateChanged)
+            signals.append(self.form.optimizeEnabled.checkStateChanged)
+            # -- Adaptive Pattern Settings --
+            signals.append(self.form.forceInsideOut.checkStateChanged)
+            signals.append(self.form.finishingProfile.checkStateChanged)
+
         else:  # Qt version < 6.7.0
-            signals.append(self.form.useStartPoint.stateChanged)
+            # -- Performance and Accuracy
             signals.append(self.form.adaptiveSampling.stateChanged)
-            signals.append(self.form.optimizeEnabled.stateChanged)
-            signals.append(self.form.keepToolDown.stateChanged)
-            signals.append(self.form.clearPlanarOnly.stateChanged)
+            # -- Boundary Control --
+            signals.append(self.form.avoidFacesOverlap.stateChanged)
+            # -- Clearing Options --
             signals.append(self.form.cutPatternReversed.stateChanged)
+            signals.append(self.form.clearPlanarOnly.stateChanged)
             signals.append(self.form.ignoreOuter.stateChanged)
             signals.append(self.form.fillSelectedHoles.stateChanged)
-            signals.append(self.form.avoidFacesOverlap.stateChanged)
+            # -- Optimization --
+            signals.append(self.form.useStartPoint.stateChanged)
+            signals.append(self.form.keepToolDown.stateChanged)
+            signals.append(self.form.optimizeEnabled.stateChanged)
+            # -- Adaptive Pattern Settings --
+            signals.append(self.form.forceInsideOut.stateChanged)
+            signals.append(self.form.finishingProfile.stateChanged)
 
         return signals
 
@@ -319,6 +408,7 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         self._updateBoundaryWidgets(strategy)
         self._updateClearingWidgets(strategy, cut_pattern, cut_pattern_zlevel)
         self._updateOptimizationWidgets(strategy)
+        self._updateAdaptivePatternWidgets(strategy, cut_pattern_zlevel)
 
     def _updateStrategyWidgets(self, strategy, cut_pattern, cut_pattern_zlevel):
         """Manages widgets in the 'Strategy' group."""
@@ -376,8 +466,6 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         self.form.avoidLastX_Faces_label.setVisible(not is_zlevel)
         self.form.profileEdges.setVisible(not is_zlevel)
         self.form.profileEdges_label.setVisible(not is_zlevel)
-        self.form.cutPatternAngle.setVisible(not is_zlevel)
-        self.form.cutPatternAngle_label.setVisible(not is_zlevel)
 
     def _updateClearingWidgets(self, strategy, cut_pattern, cut_pattern_zlevel):
         """Manages widgets in the 'Clearing Options' group."""
@@ -392,14 +480,14 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         self.form.cutPatternAngle.setEnabled(is_linear_surface or is_linear_zlevel)
         self.form.cutPatternAngle_label.setEnabled(is_linear_surface or is_linear_zlevel)
 
-        # Step Over is enabled if any pattern is chosen
+        # Step Over and Reverse Cut Pattern are enabled if any pattern is chosen
         has_surface_pattern = is_surface_pattern and cut_pattern is not None
         has_zlevel_pattern = is_zlevel and cut_pattern_zlevel != "None"
         self.form.stepOver.setEnabled(has_surface_pattern or has_zlevel_pattern)
         self.form.stepOver_label.setEnabled(has_surface_pattern or has_zlevel_pattern)
 
         # Z-Level specific checkboxes
-        self.form.clearPlanarOnly.setVisible(is_zlevel)
+        self.form.clearPlanarOnly.setVisible(is_zlevel and cut_pattern_zlevel != "None")
         self.form.ignoreOuter.setVisible(is_zlevel)
         self.form.fillSelectedHoles.setVisible(is_zlevel)
 
@@ -408,13 +496,25 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
 
     def _updateOptimizationWidgets(self, strategy):
         """Manages widgets in the 'Optimization' group."""
+        is_surface_pattern = strategy == "SurfacePattern"
         is_zlevel = strategy == "ZLevelHybrid"
         self.form.optimizationGroup.setVisible(not is_zlevel)
+        self.form.keepToolDown.setVisible(is_surface_pattern)
+        self.form.useStartPoint.setVisible(is_surface_pattern)
+
+    def _updateAdaptivePatternWidgets(self, strategy, cut_pattern_zlevel):
+        """Manages widgets in the 'Adaptive Pattern Settings' group."""
+        is_adaptive_pattern = strategy == "ZLevelHybrid" and cut_pattern_zlevel == "Adaptive"
+        self.form.adaptivePatternGroup.setVisible(is_adaptive_pattern)
+        self.form.clearPlanarOnly.setEnabled(not is_adaptive_pattern)
+        self.form.ignoreOuter.setEnabled(not is_adaptive_pattern)
+        self.form.cutPatternReversed.setEnabled(not is_adaptive_pattern)
 
     def registerSignalHandlers(self, obj):
         self.form.strategySelect.currentIndexChanged.connect(self.updateVisibility)
         self.form.cutPattern.currentIndexChanged.connect(self.updateVisibility)
         self.form.cutPatternZLevel.currentIndexChanged.connect(self.updateVisibility)
+        self.form.adaptivePatternAccuracy.currentIndexChanged.connect(self.updateVisibility)
 
         if hasattr(self.form.adaptiveSampling, "checkStateChanged"):
             self.form.adaptiveSampling.checkStateChanged.connect(self.updateVisibility)
@@ -432,7 +532,7 @@ Command = PathOpGui.SetupOperation(
     TaskPanelOpPage,
     "CAM_3DSurface",
     QT_TRANSLATE_NOOP("CAM_Surface", "3D Surface"),
-    QT_TRANSLATE_NOOP("CAM_Surface", "Create a 3D Surface Operation from a model"),
+    QT_TRANSLATE_NOOP("CAM_Surface", "Creates a 3D Surface operation from a model"),
     PathSurface.SetupProperties,
 )
 
