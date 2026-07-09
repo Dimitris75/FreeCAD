@@ -107,7 +107,7 @@ class TestSurfaceOp(PathTestWithAssets):
 
         EXPECTED OUTPUT:
         - Operation object should be created successfully
-        - Should have a Strategy property with default value "SurfacePattern"
+        - Should have a Strategy property with default value "SurfaceScan"
         - Confirms the operation is properly registered and initialized
         """
         job = self._createJobWithBox()
@@ -130,7 +130,7 @@ class TestSurfaceOp(PathTestWithAssets):
 
         EXPECTED OUTPUT:
         - Should contain "Strategy" enumeration
-        - Strategy should include: SurfacePattern, Waterline, ZLevelHybrid
+        - Strategy should include: SurfaceScan, Waterline, ZLevelHybrid
         - These are the four supported 3D surfacing strategies
         """
         enums = PathSurface.ObjectSurface.propertyEnumerations()
@@ -138,7 +138,7 @@ class TestSurfaceOp(PathTestWithAssets):
 
         self.assertIn("Strategy", enum_dict)
         strategies = enum_dict["Strategy"]
-        self.assertIn("SurfacePattern", strategies)
+        self.assertIn("SurfaceScan", strategies)
         self.assertIn("Waterline", strategies)
         self.assertIn("ZLevelHybrid", strategies)
 
@@ -154,7 +154,7 @@ class TestSurfaceOp(PathTestWithAssets):
         EXPECTED OUTPUT:
         - Should contain "CutPattern" enumeration
         - CutPattern should include: Line, ZigZag, Circular, CircularZigZag, Spiral, Offset
-        - These are the scan patterns available for SurfacePattern strategy
+        - These are the scan patterns available for SurfaceScan strategy
         """
         enums = PathSurface.ObjectSurface.propertyEnumerations()
         enum_dict = {name: values for name, values in enums}
@@ -217,23 +217,23 @@ class TestSurfaceOp(PathTestWithAssets):
         self.assertTrue(features & PathOp.FeatureCoolant)
         self.assertTrue(features & PathOp.FeatureBaseFaces)
 
-    # -- SurfacePattern execution tests --
+    # -- SurfaceScan execution tests --
 
     @unittest.skipUnless(_ocl_available, "OpenCamLib not available")
     def test10(self):
         """
-        Executes the SurfacePattern strategy on a simple box and verifies G-code output.
+        Executes the SurfaceScan strategy on a simple box and verifies G-code output.
 
         INPUT:
         - Function: ObjectSurface.opExecute()
-        - Parameters: Strategy=SurfacePattern, CutPattern=Line on a 100x100x10mm box
+        - Parameters: Strategy=SurfaceScan, CutPattern=Line on a 100x100x10mm box
         - Input data: Simple rectangular solid with 5mm endmill
 
         EXPECTED OUTPUT:
         - Operation should execute without errors
         - Should produce G-code commands (non-empty path)
         - Path should contain both G0 (rapid) and G1 (cut) moves
-        - Verifies the full SurfacePattern pipeline works end-to-end
+        - Verifies the full SurfaceScan pipeline works end-to-end
         """
         job = self._createJobWithBox()
 
@@ -241,7 +241,7 @@ class TestSurfaceOp(PathTestWithAssets):
         proxy = PathSurface.ObjectSurface(op, "Surface")
         proxy.initOperation(op)
 
-        op.Strategy = "SurfacePattern"
+        op.Strategy = "SurfaceScan"
         op.CutPattern = "Line"
         op.StepOver = 50.0
         op.SampleInterval = 5.0
@@ -258,7 +258,7 @@ class TestSurfaceOp(PathTestWithAssets):
         # Verify output
         self.assertTrue(
             len(op.Path.Commands) > 0,
-            "SurfacePattern should produce G-code commands",
+            "SurfaceScan should produce G-code commands",
         )
 
         # Check for both rapid and cut moves
@@ -268,18 +268,18 @@ class TestSurfaceOp(PathTestWithAssets):
 
     def test11(self):
         """
-        Executes the SurfacePattern (Adaptive) strategy on a simple box and verifies G-code output.
+        Executes the SurfaceScan (Adaptive) strategy on a simple box and verifies G-code output.
 
         INPUT:
         - Function: ObjectSurface.opExecute()
-        - Parameters: Strategy=SurfacePattern, CutPattern=Line on a 100x100x10mm box
+        - Parameters: Strategy=SurfaceScan, CutPattern=Line on a 100x100x10mm box
         - Input data: Simple rectangular solid with 5mm endmill
 
         EXPECTED OUTPUT:
         - Operation should execute without errors
         - Should produce G-code commands (non-empty path)
         - Path should contain both G0 (rapid) and G1 (cut) moves
-        - Verifies the full SurfacePattern pipeline works end-to-end
+        - Verifies the full SurfaceScan pipeline works end-to-end
         """
         job = self._createJobWithBox()
 
@@ -287,7 +287,7 @@ class TestSurfaceOp(PathTestWithAssets):
         proxy = PathSurface.ObjectSurface(op, "Surface")
         proxy.initOperation(op)
 
-        op.Strategy = "SurfacePattern"
+        op.Strategy = "SurfaceScan"
         op.CutPattern = "Line"
         op.StepOver = 50.0
         op.AdaptiveSampling = True
@@ -306,7 +306,7 @@ class TestSurfaceOp(PathTestWithAssets):
         # Verify output
         self.assertTrue(
             len(op.Path.Commands) > 0,
-            "SurfacePattern should produce G-code commands",
+            "SurfaceScan should produce G-code commands",
         )
 
         # Check for both rapid and cut moves
@@ -317,11 +317,11 @@ class TestSurfaceOp(PathTestWithAssets):
     @unittest.skipUnless(_ocl_available, "OpenCamLib not available")
     def test12(self):
         """
-        Executes the SurfacePattern strategy with ZigZag pattern on a box.
+        Executes the SurfaceScan strategy with ZigZag pattern on a box.
 
         INPUT:
         - Function: ObjectSurface.opExecute()
-        - Parameters: Strategy=SurfacePattern, CutPattern=ZigZag on a 100x100x10mm box
+        - Parameters: Strategy=SurfaceScan, CutPattern=ZigZag on a 100x100x10mm box
         - Input data: Simple rectangular solid with 5mm endmill
 
         EXPECTED OUTPUT:
@@ -335,7 +335,7 @@ class TestSurfaceOp(PathTestWithAssets):
         proxy = PathSurface.ObjectSurface(op, "Surface")
         proxy.initOperation(op)
 
-        op.Strategy = "SurfacePattern"
+        op.Strategy = "SurfaceScan"
         op.CutPattern = "ZigZag"
         op.StepOver = 50.0
         op.SampleInterval = 5.0
@@ -350,7 +350,7 @@ class TestSurfaceOp(PathTestWithAssets):
 
         self.assertTrue(
             len(op.Path.Commands) > 0,
-            "SurfacePattern ZigZag should produce G-code commands",
+            "SurfaceScan ZigZag should produce G-code commands",
         )
 
     # -- Waterline execution tests --
@@ -472,12 +472,12 @@ class TestSurfaceOp(PathTestWithAssets):
 
     def test40(self):
         """
-        Verifies that SurfacePattern strategy shows scan pattern properties.
+        Verifies that SurfaceScan strategy shows scan pattern properties.
 
         INPUT:
         - Function: ObjectSurface.setEditorProperties()
-        - Parameters: Strategy=SurfacePattern
-        - Input data: Surface operation with SurfacePattern strategy selected
+        - Parameters: Strategy=SurfaceScan
+        - Input data: Surface operation with SurfaceScan strategy selected
 
         EXPECTED OUTPUT:
         - CutPattern should be visible (editor mode 0)
@@ -491,7 +491,7 @@ class TestSurfaceOp(PathTestWithAssets):
         proxy = PathSurface.ObjectSurface(op, "Surface")
         proxy.initOperation(op)
 
-        op.Strategy = "SurfacePattern"
+        op.Strategy = "SurfaceScan"
         proxy.setEditorProperties(op)
 
         self.assertEqual(op.getEditorMode("CutPattern"), [])  # visible
