@@ -261,6 +261,9 @@ class TestSurfaceZLevel(PathTestUtils.PathTestBase):
             clear_planar_only=False,
             step_over=4.0,
             radius=tool["radius"],
+            is_adaptive=False,
+            adaptive_params={},
+            bb_face=self.border_face,
         )
 
         self.assertGreater(len(cmds), 0, "G-code generation produced no commands")
