@@ -244,13 +244,21 @@ class TestSurfaceCommon(PathTestUtils.PathTestBase):
 
         touching, isolated = _separate_touching_faces(input_list)
 
+        # touching is a list of groups — expect one group containing all 6 box faces
         self.assertEqual(
             len(touching),
-            len(box1.Faces),
-            "Expected all 6 faces from the box to be in the touching list",
+            1,
+            "Expected one touching group containing all box faces",
         )
         self.assertEqual(
-            len(isolated), 1, "Expected the single distant face to be in the isolated list"
+            len(touching[0]),
+            len(box1.Faces),
+            "Expected all 6 faces from the box to be in the single touching group",
+        )
+        self.assertEqual(
+            len(isolated),
+            1,
+            "Expected the single distant face to be in the isolated list",
         )
 
     def test11_create_boundary(self):
@@ -321,6 +329,7 @@ class TestSurfaceCommon(PathTestUtils.PathTestBase):
             avoid_faces=avoid_shape.Faces,
             tool_radius=3.0,
             boundary_adj=0.0,
+            avoid_overlap=0.0,
             tolerance=0.01,
         )
 
