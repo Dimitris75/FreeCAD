@@ -561,30 +561,35 @@ def generate_stl(
             return None, None
 
         # Pre-clip the full model shape to the final depth
+        CLIP_BUFFER = 0.5
         bbox = model_shape.BoundBox
-        padding = 1.0
 
-        try:
-            clipper_box = Part.makeBox(
-                bbox.XLength + padding * 2,
-                bbox.YLength + padding * 2,
-                bbox.ZMax - final_depth + padding,
-                FreeCAD.Vector(bbox.XMin - padding, bbox.YMin - padding, final_depth),
-            )
+        if final_depth > bbox.ZMin + CLIP_BUFFER:
+            padding = 1.0
 
-            clipped_shape = model_shape.common(clipper_box)
-        except Exception as e:
-            # Catch any other OpenCASCADE topology errors gracefully
-            clipped_shape = model_shape
-            Path.Log.warning(
-                f"Failed to create clipping boundary. Check your Job Origin and Depths. "
-                f"Using original full model. (Error: {e})"
-            )
+            try:
+                clipper_box = Part.makeBox(
+                    bbox.XLength + padding * 2,
+                    bbox.YLength + padding * 2,
+                    bbox.ZMax - (final_depth - CLIP_BUFFER) + padding,
+                    FreeCAD.Vector(bbox.XMin - padding, bbox.YMin - padding, final_depth - CLIP_BUFFER),
+                )
 
-        if clipped_shape.isNull():
-            Path.Log.warning(
-                "Pre-clipping the machining shape resulted in an empty shape. Using original full model."
-            )
+                clipped_shape = model_shape.common(clipper_box)
+            except Exception as e:
+                # Catch any other OpenCASCADE topology errors gracefully
+                clipped_shape = model_shape
+                Path.Log.warning(
+                    f"Failed to create clipping boundary. Check your Job Origin and Depths. "
+                    f"Using original full model. (Error: {e})"
+                )
+
+            if clipped_shape.isNull():
+                Path.Log.warning(
+                    "Pre-clipping the machining shape resulted in an empty shape. Using original full model."
+                )
+                clipped_shape = model_shape
+        else:
             clipped_shape = model_shape
 
         # Generate the primary STL

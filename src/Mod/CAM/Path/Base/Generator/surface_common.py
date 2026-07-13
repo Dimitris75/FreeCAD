@@ -360,7 +360,7 @@ def build_optimized_boundary(faces, offset, tolerance=0.005):
     if not faces:
         return None
 
-    touching_groups, isolated_faces = _separate_touching_faces(faces, tolerance)
+    touching_groups, isolated_faces = _separate_touching_faces(faces)
 
     Path.Log.debug(
         f"build_optimized_boundary: {len(touching_groups)} touching group(s), "
@@ -400,7 +400,7 @@ def build_optimized_boundary(faces, offset, tolerance=0.005):
         return generated_boundaries[0]
 
 
-def _separate_touching_faces(faces, tolerance=0.005):
+def _separate_touching_faces(faces, tolerance=0.01):
     """
     Separates a list of faces into groups of touching faces and a list of
     isolated faces, based on XY bounding box overlap and physical distance.

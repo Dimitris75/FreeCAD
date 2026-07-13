@@ -199,12 +199,12 @@ def group_features(faces_to_group, handle_mode):
         list: A list of lists, e.g., `[[f1, f2]]` for collective or `[[f1], [f2]]` for individual.
     """
     if handle_mode == "Individually" and faces_to_group:
-        Path.Log.info(f"Preparing to process {len(faces_to_group)} features individually.")
+        Path.Log.debug(f"Preparing to process {len(faces_to_group)} features individually.")
         return [[face] for face in faces_to_group]
     else:
         # Default to collective mode for safety and for the "whole model" case
         if len(faces_to_group) > 1:
-            Path.Log.info("Preparing to process all selected features collectively.")
+            Path.Log.debug("Preparing to process all selected features collectively.")
         return [faces_to_group]
 
 

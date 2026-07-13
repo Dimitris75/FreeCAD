@@ -683,7 +683,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "ProfileEdges": "None",
             "GapThreshold": 0.005,
             "AngularDeflection": 0.25,
-            "LinearDeflection": 0.001,
+            "LinearDeflection": 0.075,
             "MeshSimplification": 1,  # Default to highest accuracy (no simplification)
             "SamplingAccuracy": "4",
             "LeadInOut": False,
@@ -697,16 +697,6 @@ class ObjectSurface(PathOp.ObjectOp):
             "HelixMaxRampAngle": 3.00,
             "HelixMaxDiameterPercent": 75,
         }
-
-        warn = True
-        if hasattr(job, "GeometryTolerance"):
-            if job.GeometryTolerance.Value != 0.0:
-                warn = False
-                defaults["LinearDeflection"] = job.GeometryTolerance.Value / 4
-        if warn:
-            msg = translate("CAM_SurfaceExp", "The GeometryTolerance for this Job is 0.0.")
-            msg += translate("CAM_SurfaceExp", "Initializing LinearDeflection to 0.001 mm.")
-            FreeCAD.Console.PrintWarning(msg + "\n")
 
         return defaults
 
@@ -766,8 +756,11 @@ class ObjectSurface(PathOp.ObjectOp):
             E = hide if z_pattern in ["None"] else show
             F = hide if z_pattern in ["None", "Offset", "Adaptive"] else show
         if is_surface_scan:
+            D = show
             E = show
             F = show if obj.CutPattern in ["Line", "ZigZag"] else hide
+        if is_waterline:
+            D = show
 
         # Apply Visibility to Z-Level Group (B-C)
         obj.setEditorMode("ClearPlanarOnly", B)
@@ -1056,7 +1049,7 @@ class ObjectSurface(PathOp.ObjectOp):
         if hasattr(tool, "LengthOffset"):
             length_offset = float(tool.LengthOffset)
 
-        Path.Log.info(
+        Path.Log.debug(
             "Surface tool: type={}, diameter={}, edge_height={}, "
             "corner_radius={}, flat_radius={}, edge_angle={}".format(
                 tool_type, diameter, edge_height, corner_radius, flat_radius, edge_angle
@@ -1661,7 +1654,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 return
 
             tool_diam = cutter.getDiameter()
-            Path.Log.info(
+            Path.Log.debug(
                 "Surface OCL cutter created: getDiameter()={}, StepOver={}%, "
                 "stepover_dist={}".format(
                     tool_diam, obj.StepOver, tool_diam * (obj.StepOver / 100.0)
@@ -1670,6 +1663,13 @@ class ObjectSurface(PathOp.ObjectOp):
 
         # Generate primary and secondary STL meshes
         if needs_stl:
+            Path.Log.info(
+                f"STL creation — "
+                f"LinearDeflection={round(obj.LinearDeflection.Value, 4)}mm, "
+                f"AngularDeflection={round(obj.AngularDeflection.Value, 4)}°, "
+                f"MeshSimplification={getattr(obj, 'MeshSimplification', 1)}, "
+            )
+
             stl_start = time.time()
 
             stl, safe_stl = surface_mesh.generate_stl(
@@ -1688,7 +1688,7 @@ class ObjectSurface(PathOp.ObjectOp):
             )
             stl_time = time.time() - stl_start
 
-            Path.Log.info("opExecute: STL creation took {:.3f}s".format(stl_time))
+            Path.Log.info("STL creation took {:.3f}s".format(stl_time))
             if stl is None:
                 Path.Log.error(
                     "Failed to create a valid Mesh from the model (Check the Start and Final Depth)."
