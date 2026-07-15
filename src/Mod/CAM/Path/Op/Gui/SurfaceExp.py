@@ -496,6 +496,7 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         self.form.clearPlanarOnly.setVisible(is_zlevel)
         self.form.ignoreOuter.setVisible(is_zlevel)
         self.form.fillSelectedHoles.setVisible(is_zlevel)
+        self.form.useStartPoint.setVisible(is_zlevel)
 
         # Surface Scan specific checkboxes
         self.form.avoidFacesOverlap.setVisible(is_surface_scan)
