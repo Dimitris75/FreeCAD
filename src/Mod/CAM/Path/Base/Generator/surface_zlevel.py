@@ -622,10 +622,6 @@ def zlevel_hybrid_stack(
     # Configure C++ engine parameters
     params = area_engine.getDefaultParams()
     params["SectionTolerance"] = 0.0001
-    #params["Accuracy"] = 0.001
-    #params["JoinType"] = 0
-    #params["EndType"] = 0
-    #params["FitArcs"] = False
 
     # 3. Identify critical snapping depths (Top and floors)
     model_bottom, model_top = shape.BoundBox.ZMin, shape.BoundBox.ZMax

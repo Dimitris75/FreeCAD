@@ -92,7 +92,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "linear_deflection": 0.075,
             "mesh_simplification": 6,  # Aggressive reduction
             "sample_interval": 1.0,
-            "min_sample_interval": 0.20,
+            "min_sample_interval": 0.2,
             "description": "Rapid roughing with basic verification",
         },
         3: {  # Fast
@@ -101,7 +101,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "linear_deflection": 0.05,
             "mesh_simplification": 5,  # Strong reduction
             "sample_interval": 0.5,
-            "min_sample_interval": 0.10,
+            "min_sample_interval": 0.1,
             "description": "Efficient processing for initial prototypes",
         },
         4: {  # Balanced
@@ -675,7 +675,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "CutPatternAngle": 0.0,
             "DepthOffset": 0.0,
             "SampleInterval": 1.00,
-            "MinSampleInterval": 0.20,
+            "MinSampleInterval": 0.2,
             "BoundaryAdjustment": 0.0,
             "AvoidLastX_Faces": 0,
             "AvoidFacesOverlap": False,
@@ -925,17 +925,33 @@ class ObjectSurface(PathOp.ObjectOp):
 
     def opApplyPropertyLimits(self, obj):
         """opApplyPropertyLimits(obj) ... Apply necessary limits to user input property values."""
+        # Limit linear deflection
+        if obj.LinearDeflection.Value < 0.001:
+            obj.LinearDeflection.Value = 0.001
+            Path.Log.error("Linear deflection limits are 0.001 to 25.4 millimeters.")
+        if obj.LinearDeflection.Value > 25.4:
+            obj.LinearDeflection.Value = 25.4
+            Path.Log.error("Linear deflection limits are 0.001 to 25.4 millimeters.")
+
+        # Limit angular deflection
+        if obj.AngularDeflection.Value < 0.001:
+            obj.AngularDeflection.Value = 0.001
+            Path.Log.error("Angular deflection limits are 0.001 to 25.4 millimeters.")
+        if obj.AngularDeflection.Value > 25.4:
+            obj.AngularDeflection.Value = 25.4
+            Path.Log.error("Angular deflection limits are 0.001 to 25.4 millimeters.")
+
         # Limit sample interval
-        if obj.SampleInterval.Value < 0.0001:
-            obj.SampleInterval.Value = 0.0001
-            Path.Log.error("Sample interval limits are 0.0001 to 25.4 millimeters.")
+        if obj.SampleInterval.Value < 0.001:
+            obj.SampleInterval.Value = 0.001
+            Path.Log.error("Sample interval limits are 0.001 to 25.4 millimeters.")
         if obj.SampleInterval.Value > 25.4:
             obj.SampleInterval.Value = 25.4
-            Path.Log.error("Sample interval limits are 0.0001 to 25.4 millimeters.")
+            Path.Log.error("Sample interval limits are 0.001 to 25.4 millimeters.")
 
         # Limit min sample interval
-        if obj.MinSampleInterval.Value < 0.0001:
-            obj.MinSampleInterval.Value = 0.0001
+        if obj.MinSampleInterval.Value < 0.001:
+            obj.MinSampleInterval.Value = 0.001
             Path.Log.error("Min sample interval limits are 0.0001 to 25.4 millimeters.")
         if obj.MinSampleInterval.Value > 25.4:
             obj.MinSampleInterval.Value = 25.4

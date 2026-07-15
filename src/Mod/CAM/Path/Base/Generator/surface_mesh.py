@@ -561,7 +561,7 @@ def generate_stl(
             return None, None
 
         # Pre-clip the full model shape to the final depth
-        CLIP_BUFFER = 0.5
+        CLIP_BUFFER = 0.1
         bbox = model_shape.BoundBox
 
         if final_depth > bbox.ZMin + CLIP_BUFFER:
@@ -577,7 +577,6 @@ def generate_stl(
 
                 clipped_shape = model_shape.common(clipper_box)
             except Exception as e:
-                # Catch any other OpenCASCADE topology errors gracefully
                 clipped_shape = model_shape
                 Path.Log.warning(
                     f"Failed to create clipping boundary. Check your Job Origin and Depths. "
@@ -611,7 +610,7 @@ def generate_stl(
         # Generate the Safe STL
         if needs_safe_stl:
             safe_stl = _shape_to_safe_stl(
-                model_shape,
+                clipped_shape,
                 avoid_faces,
                 tool_diam,
                 start_depth,
