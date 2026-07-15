@@ -127,10 +127,10 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         if obj.FillSelectedHoles != self.form.fillSelectedHoles.isChecked():
             obj.FillSelectedHoles = self.form.fillSelectedHoles.isChecked()
 
-        # -- Optimization --
         if obj.UseStartPoint != self.form.useStartPoint.isChecked():
             obj.UseStartPoint = self.form.useStartPoint.isChecked()
 
+        # -- Optimization --
         if obj.OptimizeLinearPaths != self.form.optimizeEnabled.isChecked():
             obj.OptimizeLinearPaths = self.form.optimizeEnabled.isChecked()
 
@@ -230,12 +230,12 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         else:
             self.form.fillSelectedHoles.setCheckState(QtCore.Qt.Unchecked)
 
-        # -- Optimization --
         if obj.UseStartPoint:
             self.form.useStartPoint.setCheckState(QtCore.Qt.Checked)
         else:
             self.form.useStartPoint.setCheckState(QtCore.Qt.Unchecked)
 
+        # -- Optimization --
         if obj.OptimizeLinearPaths:
             self.form.optimizeEnabled.setCheckState(QtCore.Qt.Checked)
         else:
@@ -317,8 +317,8 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             signals.append(self.form.clearPlanarOnly.checkStateChanged)
             signals.append(self.form.ignoreOuter.checkStateChanged)
             signals.append(self.form.fillSelectedHoles.checkStateChanged)
-            # -- Optimization --
             signals.append(self.form.useStartPoint.checkStateChanged)
+            # -- Optimization --
             signals.append(self.form.keepToolDown.checkStateChanged)
             signals.append(self.form.optimizeEnabled.checkStateChanged)
             # -- Adaptive Pattern Settings --
@@ -335,8 +335,8 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             signals.append(self.form.clearPlanarOnly.stateChanged)
             signals.append(self.form.ignoreOuter.stateChanged)
             signals.append(self.form.fillSelectedHoles.stateChanged)
-            # -- Optimization --
             signals.append(self.form.useStartPoint.stateChanged)
+            # -- Optimization --
             signals.append(self.form.keepToolDown.stateChanged)
             signals.append(self.form.optimizeEnabled.stateChanged)
             # -- Adaptive Pattern Settings --
@@ -369,24 +369,30 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         self.updateVisibility()
 
     def _syncAccuracyLabel(self):
-        """Check if current UI values match a preset; update slider and label accordingly."""
+        """Check if current property values match a preset; update slider and label."""
+        obj = self.obj
         presets = PathSurfaceExp.ObjectSurface.ACCURACY_PRESETS
-        try:
-            current_si = FreeCAD.Units.Quantity(self.form.sampleInterval.text()).Value
-        except Exception:
-            current_si = None
 
         for lvl, preset in presets.items():
-            if current_si is not None and abs(current_si - preset["sample_interval"]) < 0.001:
-                self.form.accuracySlider.blockSignals(True)
-                self.form.accuracySlider.setValue(lvl)
-                self.form.accuracySlider.blockSignals(False)
-                self.form.accuracyDescription.setText(
-                    "{} - {}".format(preset["name"], preset["description"])
-                )
-                return
+            try:
+                if (
+                    abs(obj.AngularDeflection.Value  - preset["angular_deflection"])  < 1e-6
+                    and abs(obj.LinearDeflection.Value   - preset["linear_deflection"])   < 1e-6
+                    and obj.MeshSimplification          == preset["mesh_simplification"]
+                    and abs(obj.SampleInterval.Value     - preset["sample_interval"])     < 0.001
+                    and abs(obj.MinSampleInterval.Value  - preset["min_sample_interval"]) < 0.001
+                ):
+                    self.form.accuracySlider.blockSignals(True)
+                    self.form.accuracySlider.setValue(lvl)
+                    self.form.accuracySlider.blockSignals(False)
+                    self.form.accuracyDescription.setText(
+                        "{} - {}".format(preset["name"], preset["description"])
+                    )
+                    return
+            except Exception:
+                continue
 
-        self.form.accuracyDescription.setText("Custom")
+        self.form.accuracyDescription.setText("Custom accuracy settings**")
 
     def updateVisibility(self, sentObj=None):
         """Main visibility controller. Acts as a conductor, gathering the current state
@@ -487,7 +493,7 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         self.form.stepOver_label.setEnabled(has_surface_scan or has_zlevel_pattern)
 
         # Z-Level specific checkboxes
-        self.form.clearPlanarOnly.setVisible(is_zlevel and cut_pattern_zlevel != "None")
+        self.form.clearPlanarOnly.setVisible(is_zlevel)
         self.form.ignoreOuter.setVisible(is_zlevel)
         self.form.fillSelectedHoles.setVisible(is_zlevel)
 
@@ -500,15 +506,15 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         is_zlevel = strategy == "ZLevelHybrid"
         self.form.optimizationGroup.setVisible(not is_zlevel)
         self.form.keepToolDown.setVisible(is_surface_scan)
-        self.form.useStartPoint.setVisible(is_surface_scan)
 
     def _updateAdaptivePatternWidgets(self, strategy, cut_pattern_zlevel):
         """Manages widgets in the 'Adaptive Pattern Settings' group."""
         is_adaptive_pattern = strategy == "ZLevelHybrid" and cut_pattern_zlevel == "Adaptive"
         self.form.adaptivePatternGroup.setVisible(is_adaptive_pattern)
-        self.form.clearPlanarOnly.setEnabled(not is_adaptive_pattern)
+        self.form.clearPlanarOnly.setEnabled(not is_adaptive_pattern and cut_pattern_zlevel != "None")
         self.form.ignoreOuter.setEnabled(not is_adaptive_pattern)
         self.form.cutPatternReversed.setEnabled(not is_adaptive_pattern)
+        self.form.useStartPoint.setEnabled(not is_adaptive_pattern)
 
     def registerSignalHandlers(self, obj):
         self.form.strategySelect.currentIndexChanged.connect(self.updateVisibility)
@@ -524,6 +530,8 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         self.form.accuracySlider.valueChanged.connect(self._onAccuracySliderChanged)
         self.form.sampleInterval.editingFinished.connect(self.updateVisibility)
         self.form.performanceAccuracyGroup.toggled.connect(self.updateVisibility)
+        self.form.sampleInterval.editingFinished.connect(self._syncAccuracyLabel)
+        self.form.minSampleInterval.editingFinished.connect(self._syncAccuracyLabel)
 
 
 Command = PathOpGui.SetupOperation(
@@ -532,7 +540,7 @@ Command = PathOpGui.SetupOperation(
     TaskPanelOpPage,
     "CAM_3DSurfaceExp",
     QT_TRANSLATE_NOOP("CAM_SurfaceExp", "3D SurfaceExp"),
-    QT_TRANSLATE_NOOP("CAM_SurfaceExp", "Creates a 3D Experimental operation from a model"),
+    QT_TRANSLATE_NOOP("CAM_SurfaceExp", "Creates a 3D Surface operation from a model"),
     PathSurfaceExp.SetupProperties,
 )
 

@@ -505,6 +505,16 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
         </property>
        </widget>
       </item>
+      <item row="5" column="0">
+       <widget class="QCheckBox" name="useStartPoint">
+        <property name="toolTip">
+         <string>Enables a custom toolpath start point</string>
+        </property>
+        <property name="text">
+         <string>Use start point</string>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>
@@ -524,12 +534,12 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
      </property>
      <layout class="QGridLayout" name="gridLayout_4">
       <item row="0" column="0">
-       <widget class="QCheckBox" name="useStartPoint">
+       <widget class="QCheckBox" name="keepToolDown">
         <property name="toolTip">
-         <string>Enables a custom toolpath start point</string>
+         <string>Keeps the tool down during transitions instead of retracting to safe height</string>
         </property>
         <property name="text">
-         <string>Use start point</string>
+         <string>Keep tool down</string>
         </property>
        </widget>
       </item>
@@ -540,16 +550,6 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
         </property>
         <property name="text">
          <string>Optimize linear paths</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="0">
-       <widget class="QCheckBox" name="keepToolDown">
-        <property name="toolTip">
-         <string>Keeps the tool down during transitions instead of retracting to safe height</string>
-        </property>
-        <property name="text">
-         <string>Keep tool down</string>
         </property>
        </widget>
       </item>

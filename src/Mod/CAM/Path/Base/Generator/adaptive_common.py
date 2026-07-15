@@ -201,7 +201,16 @@ def _generate_helix_entry(
             # helix_gen.generate() prepends G0 Z retract [0] and appends
             # a retract [-1] — strip both since we manage retracts here.
             if len(helix_cmds) > 2:
-                commands.extend(helix_cmds[1:-1])
+                # helix.generate() produces no feed rates — inject them.
+                feed_injected = []
+                for cmd in helix_cmds[1:-1]:
+                    params = dict(cmd.Parameters)
+                    if cmd.Name == "G1":
+                        params["F"] = v_feed
+                    feed_injected.append(Path.Command(cmd.Name, params))
+
+                commands.extend(feed_injected)
+
                 Path.Log.debug(
                     f"adaptive_common._generate_helix_entry: "
                     f"Z={round(z_target, 3)}, r={round(r, 3)}mm, "

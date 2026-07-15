@@ -238,21 +238,21 @@ class ObjectSurface(PathOp.ObjectOp):
                 ),
             ),
             (
-                "App::PropertyBool",
-                "AdaptiveSampling",
-                "Performance Optimization",
-                QT_TRANSLATE_NOOP(
-                    "App::Property",
-                    "Dynamically adjusts sampling density in high-curvature areas.",
-                ),
-            ),
-            (
                 "App::PropertyDistance",
                 "MinSampleInterval",
                 "Performance Optimization",
                 QT_TRANSLATE_NOOP(
                     "App::Property",
                     "Set the minimum sampling resolution for Adaptive Sampling.",
+                ),
+            ),
+            (
+                "App::PropertyBool",
+                "AdaptiveSampling",
+                "Performance Optimization",
+                QT_TRANSLATE_NOOP(
+                    "App::Property",
+                    "Dynamically adjusts sampling density in high-curvature areas.",
                 ),
             ),
             # -- Selected Geometry Settings --
@@ -420,7 +420,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 "ClearPlanarOnly",
                 "Clearing Options",
                 QT_TRANSLATE_NOOP(
-                    "App::Property", "If true, clears only detected horizontal floors.",
+                    "App::Property", "Clears only detected horizontal floors.",
                 ),
             ),
             (
@@ -674,17 +674,17 @@ class ObjectSurface(PathOp.ObjectOp):
             "StepOver": 50.0,
             "CutPatternAngle": 0.0,
             "DepthOffset": 0.0,
-            "SampleInterval": 1.00,
-            "MinSampleInterval": 0.2,
+            "SampleInterval": 0.25,
+            "MinSampleInterval": 0.05,
             "BoundaryAdjustment": 0.0,
             "AvoidLastX_Faces": 0,
             "AvoidFacesOverlap": False,
             "HandleMultipleFeatures": "Collectively",
             "ProfileEdges": "None",
             "GapThreshold": 0.005,
-            "AngularDeflection": 0.25,
-            "LinearDeflection": 0.075,
-            "MeshSimplification": 1,  # Default to highest accuracy (no simplification)
+            "AngularDeflection": 0.2,
+            "LinearDeflection": 0.025,
+            "MeshSimplification": 4,  # Default to highest accuracy (no simplification)
             "SamplingAccuracy": "4",
             "LeadInOut": False,
             "LeadFeed": 75,
@@ -726,8 +726,6 @@ class ObjectSurface(PathOp.ObjectOp):
         obj.setEditorMode("AvoidLastX_Faces", A)
         obj.setEditorMode("AvoidFacesOverlap", A)
         obj.setEditorMode("HandleMultipleFeatures", A)
-        obj.setEditorMode("StartPoint", A)
-        obj.setEditorMode("UseStartPoint", A)
         obj.setEditorMode("CutPattern", A)
         obj.setEditorMode("CutPatternAngle", A)
         obj.setEditorMode("KeepToolDown", A)
@@ -763,12 +761,14 @@ class ObjectSurface(PathOp.ObjectOp):
             D = show
 
         # Apply Visibility to Z-Level Group (B-C)
+        obj.setEditorMode("CutPatternZLevel", B)
+        obj.setEditorMode("StockToLeave", B)
         obj.setEditorMode("ClearPlanarOnly", B)
         obj.setEditorMode("IgnoreOuter", B)
         obj.setEditorMode("FillSelectedHoles", B)
-        obj.setEditorMode("StockToLeave", B)
-        obj.setEditorMode("CutPatternZLevel", B)
         obj.setEditorMode("SamplingAccuracy", B)
+        obj.setEditorMode("StartPoint", B)
+        obj.setEditorMode("UseStartPoint", B)
         obj.setEditorMode("AdaptiveAccuracy", C)
         obj.setEditorMode("LiftDistance", C)
         obj.setEditorMode("KeepToolDownRatio", C)
@@ -806,59 +806,6 @@ class ObjectSurface(PathOp.ObjectOp):
                             obj.MeshSimplification = 1
                         elif obj.MeshSimplification > 7:
                             obj.MeshSimplification = 7
-
-    def apply_accuracy_preset(self, obj, level):
-        """Apply preset values based on accuracy level (1-7).
-
-        Args:
-            obj: The 3D Surface operation object
-            level: Accuracy level (1=Fastest, 7=Ultra)
-        """
-        Path.Log.track()
-        preset = self.ACCURACY_PRESETS.get(level, self.ACCURACY_PRESETS[4])
-
-        if hasattr(obj, "AngularDeflection"):
-            obj.AngularDeflection = preset["angular_deflection"]
-        if hasattr(obj, "LinearDeflection"):
-            obj.LinearDeflection = preset["linear_deflection"]
-        if hasattr(obj, "MeshSimplification"):
-            obj.MeshSimplification = preset["mesh_simplification"]
-        if hasattr(obj, "SampleInterval"):
-            obj.SampleInterval = preset["sample_interval"]
-        if hasattr(obj, "MinSampleInterval"):
-            obj.MinSampleInterval = preset["min_sample_interval"]
-
-    def get_accuracy_level(self, obj):
-        """Determine accuracy level from current property values.
-
-        Args:
-            obj: The 3D Surface operation object
-
-        Returns:
-            int: Accuracy level (1-7) if current values match a preset exactly
-            None: If user has customized settings and they don't match any preset
-        """
-        Path.Log.track()
-        for level, preset in self.ACCURACY_PRESETS.items():
-            if (
-                hasattr(obj, "AngularDeflection")
-                and hasattr(obj, "LinearDeflection")
-                and hasattr(obj, "MeshSimplification")
-                and hasattr(obj, "SampleInterval")
-                and hasattr(obj, "MinSampleInterval")
-            ):
-
-                if (
-                    obj.AngularDeflection == preset["angular_deflection"]
-                    and obj.LinearDeflection == preset["linear_deflection"]
-                    and obj.MeshSimplification == preset["mesh_simplification"]
-                    and obj.SampleInterval == preset["sample_interval"]
-                    and obj.MinSampleInterval == preset["min_sample_interval"]
-                ):
-                    return level
-
-        # No exact match found - user has customized settings
-        return None
 
     def opOnDocumentRestored(self, obj):
         self.propertiesReady = False
@@ -1459,6 +1406,10 @@ class ObjectSurface(PathOp.ObjectOp):
         shape_copy = shape.copy()
         fill_holes_masks = []
 
+        # Start Point
+        use_start_point = getattr(obj, "UseStartPoint", False)
+        start_point = getattr(obj, "StartPoint", None) if use_start_point else None
+
         zlevel_tool_params = {
             "radius": radius,
             "c_rad": c_rad,
@@ -1540,6 +1491,7 @@ class ObjectSurface(PathOp.ObjectOp):
             ignore_outer,
             clear_planar_only,
             step_over,
+            start_point,
             radius,
             is_adaptive,
             adaptive_params,

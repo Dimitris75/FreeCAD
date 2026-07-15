@@ -995,6 +995,7 @@ def zlevel_hybrid_to_gcode(
     ignore_outer,
     clear_planar_only,
     step_over,
+    start_point,
     radius,
     is_adaptive,
     adaptive_params,
@@ -1017,8 +1018,9 @@ def zlevel_hybrid_to_gcode(
         clear_planar_only: Boolean. If True, only clears floors detected as
             Mixed or Extra.
         step_over: The horizontal step-over distance for clearing patterns (mm).
+        start_point: A user-defined Start Point or 'None'.
         radius: The tool radius (mm).
-        is_adaptive: True if the CutPattern is Adaptive
+        is_adaptive: True if the CutPattern is Adaptive.
         adaptive_params: Dict containing 'op_type', adaptive_accuracy', 'stock_to_leave',
             'force_insideout', 'finishing_profile', 'lift_distance', 'keep_tool_down',
             'helix_angle', 'helix_diameter', 'helix_min_diameter'
@@ -1094,15 +1096,27 @@ def zlevel_hybrid_to_gcode(
                     wire = wire.removeSplitter()
                 wire.fix(1e-6, 1e-6, 1e-4)
 
-                # Determine start point coordinates
+                # Determine start point — use vertex nearest to operation
+                # start point if provided, otherwise use climb/conventional default
                 V = wire.Vertexes
                 lv = len(V) - 1
-                # Start at the end vertex for Climb to move backward through CCW wire
-                start_p = (
-                    FreeCAD.Vector(V[lv].X, V[lv].Y, V[lv].Z)
-                    if cut_climb
-                    else FreeCAD.Vector(V[0].X, V[0].Y, V[0].Z)
-                )
+
+                if start_point:
+                    # Find the vertex closest to the user-defined start point
+                    start_p = min(
+                        [FreeCAD.Vector(v.X, v.Y, v.Z) for v in V],
+                        key=lambda v: math.hypot(
+                            v.x - start_point.x,
+                            v.y - start_point.y
+                        )
+                    )
+                else:
+                    # Default — climb starts at last vertex (end of CCW wire)
+                    start_p = (
+                        FreeCAD.Vector(V[lv].X, V[lv].Y, V[lv].Z)
+                        if cut_climb
+                        else FreeCAD.Vector(V[0].X, V[0].Y, V[0].Z)
+                    )
 
                 # Generate the wire-following path
                 commands.extend(
@@ -1133,6 +1147,7 @@ def zlevel_hybrid_to_gcode(
                 reverse_pattern,
                 z_target,
                 step_over,
+                start_point,
                 radius,
                 feed_params,
                 safe_hght,
@@ -1157,6 +1172,7 @@ def _generatePattern(
     reverse_pattern,
     z_target,
     step_over,
+    start_point,
     radius,
     feed_params,
     safe_hght,
@@ -1176,6 +1192,7 @@ def _generatePattern(
         reverse_pattern: Boolean. If True, reverses the clearing order (e.g., Inside-Out).
         z_target: The target Z-coordinate for the toolpath (machining depth).
         step_over: The horizontal distance between consecutive passes (mm).
+        start_point: A user-defined Start Point or 'None'.
         radius: The tool radius used for extra offset calculation (mm).
         feed_params: Dictionary containing 'horizFeed' and 'vertFeed' values.
         safe_hght: The Z-height for rapid transitions between segments.
@@ -1250,7 +1267,18 @@ def _generatePattern(
         if not wire.isClosed() and pattern_mode == 2 or wire.Length < min_path_length:  # Offsets should be closed
             continue
 
-        start_p = wire.Vertexes[0].Point
+        V = wire.Vertexes
+        if start_point:
+            # Find the vertex closest to the user-defined start point
+            start_p = min(
+                [FreeCAD.Vector(v.X, v.Y, v.Z) for v in V],
+                key=lambda v: math.hypot(
+                    v.x - start_point.x,
+                    v.y - start_point.y
+                )
+            )
+        else:
+            start_p = V[0].Point
 
         # Generate the wire-following path
         commands.extend(_generate_wire_path(wire, z_target, safe_hght, start_p, feed_params))
