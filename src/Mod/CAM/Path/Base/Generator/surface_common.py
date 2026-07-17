@@ -427,6 +427,8 @@ def _separate_touching_faces(faces, tolerance=0.01):
     if not faces:
         return [], []
 
+    import math
+
     # Flatten input — handles both [Face, Face] and [[Face], [Face]]
     flat_faces = []
     for item in faces:
@@ -474,9 +476,31 @@ def _separate_touching_faces(faces, tolerance=0.01):
                 dist = flat_faces[i].distToShape(flat_faces[j])[0]
                 if dist <= tolerance:
                     union(i, j)
+                    continue
             except Exception as e:
                 Path.Log.debug(
                     f"_separate_touching_faces: distToShape failed for "
+                    f"faces {i},{j}: {e}"
+                )
+            # Fallback: check if face centroids are within a larger
+            # proximity threshold based on average face diagonal.
+            try:
+                bb_i = bboxes[i]
+                bb_j = bboxes[j]
+                cx_i = (bb_i.XMin + bb_i.XMax) / 2
+                cy_i = (bb_i.YMin + bb_i.YMax) / 2
+                cx_j = (bb_j.XMin + bb_j.XMax) / 2
+                cy_j = (bb_j.YMin + bb_j.YMax) / 2
+                centroid_dist = math.hypot(cx_i - cx_j, cy_i - cy_j)
+                avg_diag = (
+                    math.hypot(bb_i.XLength, bb_i.YLength) +
+                    math.hypot(bb_j.XLength, bb_j.YLength)
+                ) / 2
+                if centroid_dist < avg_diag * 0.75:
+                    union(i, j)
+            except Exception as e:
+                Path.Log.debug(
+                    f"_separate_touching_faces: centroid check failed for "
                     f"faces {i},{j}: {e}"
                 )
 

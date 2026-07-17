@@ -751,7 +751,7 @@ class ObjectSurface(PathOp.ObjectOp):
         if is_zlevel:
             z_pattern = getattr(obj, "CutPatternZLevel", "None")
             C = show if z_pattern == "Adaptive" else hide
-            E = hide if z_pattern in ["None"] else show
+            E = hide if z_pattern == "None" else show
             F = hide if z_pattern in ["None", "Offset", "Adaptive"] else show
         if is_surface_scan:
             D = show
@@ -1214,8 +1214,13 @@ class ObjectSurface(PathOp.ObjectOp):
                 Path.Log.error("Could not determine source faces for pattern generation.")
                 return []
 
-        # Determine the bounding box
-        group_bb = bb_face.BoundBox
+        # Determine the bounding box (if cutting_faces the bb_face is None)
+        if bb_face:
+            group_bb = bb_face.BoundBox
+        elif cutting_faces:
+            from functools import reduce
+            group_bb = reduce(lambda a, b: a.united(b),
+                            [f.BoundBox for f in cutting_faces])
 
         # Construct the list of face groups to process based on user's choice
         handle_mode = getattr(obj, "HandleMultipleFeatures", "Collectively")
@@ -1583,15 +1588,6 @@ class ObjectSurface(PathOp.ObjectOp):
             Path.Log.error("No valid shapes found to machine.")
             return
 
-        # Create boundary face
-        if needs_boundary:
-            offset = obj.BoundaryAdjustment.Value - tool_radius - 0.01
-
-            if obj.BoundBox == "Stock":
-                bb_face = surface_common.create_boundary_face(JOB.Stock.Shape.Faces, offset)
-            else:
-                bb_face = surface_common.create_boundary_face(model_shape.Faces, offset)
-
         # Split selected features
         if needs_face_selection:
             base_prop = getattr(obj, "Base", [])
@@ -1599,6 +1595,16 @@ class ObjectSurface(PathOp.ObjectOp):
             cutting_faces, avoid_faces = surface_pattern.split_selected_features(
                 base_prop, avoid_count
             )
+
+        # Create boundary face
+        if needs_boundary:
+            offset = obj.BoundaryAdjustment.Value - tool_radius - 0.01
+
+            if obj.BoundBox == "Stock":
+                bb_face = surface_common.create_boundary_face(JOB.Stock.Shape.Faces, offset)
+            elif not cutting_faces:
+                # If cutting_faces, the boundary will be created by those in SurfaceScan
+                bb_face = surface_common.create_boundary_face(model_shape.Faces, offset)
 
         # Avoid Faces Overlap
         if needs_avoid_overlap and boundary_adjustment > 0:
