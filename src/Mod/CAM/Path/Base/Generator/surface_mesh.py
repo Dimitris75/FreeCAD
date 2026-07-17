@@ -482,7 +482,7 @@ def _shape_to_safe_stl(
 
     try:
         safe_stl = _shape_to_stl(
-            hollow_shape, linear_deflection, angular_deflection, mesh_simplification=5, use_cpp=True
+            hollow_shape, linear_deflection + 0.02, angular_deflection + 0.1, mesh_simplification=5, use_cpp=True
         )
 
         Path.Log.debug("surface_mesh._shape_to_safe_stl: Safe STL generated successfully.")
