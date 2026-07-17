@@ -305,12 +305,13 @@ def generate_pattern_mask(
     # Create the Main Outer Boundary
     main_boundary = None
     outer_offset = -tool_radius + boundary_adj
+    epsilon = tolerance + 0.001  # Allow some extra room to avoid "path spikes" on vertical walls
 
     if is_whole_model_job:
         # Use TechDraw.findShapeOutline for whole model silhouette
         main_boundary = bb_face
     else:
-        main_boundary = build_optimized_boundary([cutting_faces], outer_offset, tolerance)
+        main_boundary = build_optimized_boundary([cutting_faces], outer_offset-epsilon, tolerance)
 
     if not main_boundary:
         Path.Log.warning("Could not determine geometry for main boundary mask.")
@@ -321,7 +322,6 @@ def generate_pattern_mask(
         return main_boundary
 
     # For avoid zones, we apply a negative offset if avoid faces overlap is enabled. Otherwise, the tool radius.
-    epsilon = tolerance + 0.001  # Allow some extra room to avoid "path spikes" on vertical walls
     # avoid_overlap applied on surface_mesh._shape_to_safe_stl also
     avoid_boundary = build_optimized_boundary([avoid_faces], avoid_overlap + epsilon, tolerance)
 
