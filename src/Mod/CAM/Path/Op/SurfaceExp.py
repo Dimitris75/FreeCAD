@@ -1218,6 +1218,7 @@ class ObjectSurface(PathOp.ObjectOp):
         if bb_face:
             group_bb = bb_face.BoundBox
         elif cutting_faces:
+            # Avoid compound.BoundBox for really complex face selections
             from functools import reduce
             group_bb = reduce(lambda a, b: a.united(b),
                             [f.BoundBox for f in cutting_faces])
