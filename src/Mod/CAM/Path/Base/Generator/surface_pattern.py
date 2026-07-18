@@ -281,20 +281,26 @@ def generate_offset_scan_lines(
         list: A nested list of scan lines, where each line is a list of (x, y, z) tuples
               forming an offset ring.
     """
-    import PathScripts.PathUtils as PathUtils
-
     if boundary_face is None or boundary_face.isNull():
         return []
+
+    offset_engine = Path.Area()
+    offset_engine.setParams(Tolerance=0.01)
 
     offset_lines = []
     current_offset = 0.0
     min_path_length = tool_diam
 
     while True:
-        # Using a negative offset mathematically shrinks the geometry inwards
-        offset_shape = PathUtils.getOffsetArea(
-            boundary_face, current_offset, removeHoles=False, tolerance=0.01, plane=Part.makeCircle(2.0)
-        )
+        offset_engine.add(boundary_face)
+        offset_engine.setParams(Offset=current_offset)
+        try:
+            offset_shape = offset_engine.getShape()
+        except Exception as e:
+            Path.Log.debug(
+                f"generate_offset_scan_lines: Offset layer failed: {e}."
+            )
+            break
 
         # If the shape collapses entirely or errors out, we've reached the absolute center
         if not offset_shape or offset_shape.isNull() or len(offset_shape.Wires) == 0:
