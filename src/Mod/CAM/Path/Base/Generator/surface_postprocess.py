@@ -179,6 +179,7 @@ def _optimize_travel(
     next_point,
     last_point,
     start_z,
+    depth_offset,
     safe_z,
     clearance_z,
     step_down,
@@ -223,7 +224,7 @@ def _optimize_travel(
 
         if xy_dist_sqrd <= (cutter_diam * 2.0) ** 2:
             transition_cmds = _dropcutter_transition(
-                last_point, next_point, safe_pdc, start_z, safe_z, step_down, horiz_feed, force_keep_down,
+                last_point, next_point, safe_pdc, start_z, depth_offset, safe_z, step_down, horiz_feed, force_keep_down,
             )
             if transition_cmds:
                 return transition_cmds
@@ -231,7 +232,7 @@ def _optimize_travel(
     return []
 
 
-def _dropcutter_transition(start, end, safe_pdc, start_z, safe_z, step_down, horiz_feed, force_keep_down=False):
+def _dropcutter_transition(start, end, safe_pdc, start_z, depth_offset, safe_z, step_down, horiz_feed, force_keep_down=False):
     """Probes a transition path and returns surface-following G1 commands."""
     ocl = _get_ocl()
     path = ocl.Path()
@@ -267,11 +268,11 @@ def _dropcutter_transition(start, end, safe_pdc, start_z, safe_z, step_down, hor
 
     # Generate G1 moves that follow the probed surface
     for pt in cl_points[1:-1]:  # Skip first and last point to avoid duplicating moves
-        z = max(pt.z, z_floor)  # Plus a small buffer to avoid touching previous on Multi-pass
+        z = max(pt.z, z_floor) + depth_offset  # Plus a small buffer to avoid touching previous on Multi-pass
         commands.append(Path.Command("G1", {"X": pt.x, "Y": pt.y, "Z": z, "F": horiz_feed}))
 
     # Ensure a perfect final connection to the start of the next cutting pass
-    commands.append(Path.Command("G1", {"X": end[0], "Y": end[1], "Z": end[2], "F": horiz_feed}))
+    commands.append(Path.Command("G1", {"X": end[0], "Y": end[1], "Z": end[2] + depth_offset, "F": horiz_feed}))
     return commands
 
 
@@ -725,6 +726,7 @@ def scan_lines_to_gcode(
                     first_point,
                     last_point,
                     start_z,
+                    depth_offset,
                     safe_z,
                     clearance_z,
                     step_down,
@@ -749,7 +751,7 @@ def scan_lines_to_gcode(
             )
 
         # C. Plunge to start of lead/cut
-        commands.append(Path.Command("G1", {"Z": first_point[2], "F": vert_feed}))
+        commands.append(Path.Command("G1", {"Z": first_point[2] + depth_offset, "F": vert_feed}))
 
         # D. Add Lead-in G-code
         commands.extend(lead_in_cmds)
