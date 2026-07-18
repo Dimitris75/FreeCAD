@@ -293,7 +293,7 @@ def generate_offset_scan_lines(
     while True:
         # Using a negative offset mathematically shrinks the geometry inwards
         offset_shape = PathUtils.getOffsetArea(
-            boundary_face, current_offset, removeHoles=False, tolerance=0.01, plane=boundary_face
+            boundary_face, current_offset, removeHoles=False, tolerance=0.01, plane=Part.makeCircle(2.0)
         )
 
         # If the shape collapses entirely or errors out, we've reached the absolute center

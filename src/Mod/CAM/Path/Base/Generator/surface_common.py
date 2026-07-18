@@ -217,59 +217,113 @@ def make_safe_cutter(
 # ---------------------------------------------------------------------------
 
 
-def create_boundary_face(model_faces, offset, tolerance=0.005):
+def create_boundary_face(model_faces, offset=0.0, tolerance=0.005):
     """
-    Creates a 2D boundary mask from the silhouette of an entire model.
+    Creates a flat 2D boundary face from a list of 3D faces using
+    Path.Area's built-in HLR projection (Outline mode) as primary method,
+    falling back to TechDraw.findShapeOutline() if projection fails.
 
-    This function uses the high-speed TechDraw module to find the 2D projection
-    of a full model shape, which is very efficient for this specific task.
+    Path.Area with Outline=True uses OCC's HLRBRep_Algo to project the
+    3D shape silhouette onto the XY plane — more robust than TechDraw
+    for complex curved and spiral faces where findShapeOutline() struggles.
 
     Args:
-        model_faces (list): A list of all faces from a Part.Compound of the model.
-        offset (float): The expansion or contraction distance for the boundary.
-        tolerance (float): The deflection tolerance for discretizing curves.
+        model_faces (list): List of Part.Face objects to build boundary from.
+        offset (float): Offset to apply to the resulting boundary.
+        tolerance (float): Tolerance for wire joining.
 
     Returns:
-        Part.Face: The final 2D boundary face, or None on failure.
+        Part.Shape: The 2D boundary face, or None on failure.
     """
-    import TechDraw
-    import PathScripts.PathUtils as PathUtils
-
     if not model_faces:
-        return None
-
-    outer_wire, offset_shape = None, None
-
-    # Create a single compound of the 3D faces to find the global silhouette
-    compound = Part.Compound(model_faces)
-
-    # Extract the exact 2D projection outline looking down the Z-axis
-    try:
-        outer_wire = TechDraw.findShapeOutline(compound, 1, FreeCAD.Vector(0, 0, 1))
-    except Exception as e:
-        Path.Log.error(f"TechDraw failed to extract the 2D projection outline from Model: {e}")
-        return None
-
-    # Let PathUtils (ClipperLib) handle the offsetting natively.
-    offset_shape = PathUtils.getOffsetArea(
-        outer_wire,
-        offset,
-        removeHoles=False,
-        tolerance=tolerance,
-        plane=Part.makeCircle(2.0),
-    )
-
-    if not offset_shape or not hasattr(offset_shape, "Edges") or len(offset_shape.Edges) == 0:
         Path.Log.warning(
-            "Offsetting the Model faces resulted in an empty shape. "
-            "Extend the boundary if the selected faces are too small."
+            "No faces provided. Check that the Base Geometry selection contains valid faces."
         )
         return None
 
-    if offset_shape.BoundBox.ZMin != 0.0:
-        offset_shape.translate(FreeCAD.Vector(0, 0, -offset_shape.BoundBox.ZMin))
+    # Build compound from all faces
+    try:
+        if len(model_faces) == 1:
+            compound = model_faces[0]
+        else:
+            compound = Part.makeCompound(model_faces)
+    except Exception as e:
+        Path.Log.error(
+            f"Failed to build compound from {len(model_faces)} face(s): {e}. "
+            "The selected faces may contain invalid geometry."
+        )
+        return None
 
-    return offset_shape
+    # Primary: Path.Area HLR projection (Outline mode)
+    try:
+        wpc = Part.makeCircle(2)
+        area = Path.Area()
+        area.setPlane(wpc)
+        area.add(compound)
+        area.setParams(
+            Outline  = True,
+            Offset   = offset,
+            Coplanar = 0,   # CoplanarNone — don't restrict to coplanar
+            Fill     = 2,   # FillFace
+        )
+        result = area.getShape()
+
+        if result and not result.isNull() and result.Wires:
+            # Build a face from the projected outline
+            try:
+                boundary = Part.makeFace(result.Wires, "Part::FaceMakerBullseye")
+                if boundary and not boundary.isNull():
+                    Path.Log.debug(
+                        "create_boundary_face: HLR projection succeeded."
+                    )
+                    return boundary
+            except Exception as e:
+                Path.Log.debug(
+                    f"create_boundary_face: FaceMakerBullseye failed on "
+                    f"HLR result: {e} — trying wire directly."
+                )
+                # Return the wire shape directly if face construction fails
+                return result
+        else:
+            Path.Log.warning(
+                "Offsetting the Model faces resulted in an empty shape. "
+                "Extend the boundary if the selected faces are too small."
+            )
+
+    except Exception as e:
+        Path.Log.warning(
+            f"Path.Area HLR projection failed: {e} "
+            "— falling back to TechDraw outline extraction."
+        )
+
+    # Fallback: TechDraw.findShapeOutline()
+    try:
+        import TechDraw
+        direction = FreeCAD.Vector(0, 0, 1)
+        outline = TechDraw.findShapeOutline(compound, 1.0, direction)
+
+        if not outline:
+            Path.Log.warning(
+                "Offsetting the Model faces resulted in an empty shape. "
+                "Extend the boundary if the selected faces are too small."
+            )
+            return None
+
+        outline.translate(FreeCAD.Vector(0, 0, -outline.BoundBox.ZMin))
+
+        if offset != 0.0:
+            offset_engine = Path.Area()
+            offset_engine.add(outline)
+            offset_engine.setParams(Offset=offset)
+            outline = offset_engine.getShape()
+
+        return outline
+
+    except Exception as e:
+        Path.Log.error(
+            f"Both HLR and TechDraw failed: {e}"
+        )
+        return None
 
 
 def generate_pattern_mask(
