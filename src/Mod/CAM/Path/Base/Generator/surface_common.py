@@ -261,10 +261,10 @@ def create_boundary_face(model_faces, offset=0.0, tolerance=0.005):
         area.setPlane(wpc)
         area.add(compound)
         area.setParams(
-            Outline  = True,
-            Offset   = offset,
-            Coplanar = 0,   # CoplanarNone — don't restrict to coplanar
-            Fill     = 2,   # FillFace
+            Outline=True,
+            Offset=offset,
+            Coplanar=0,  # CoplanarNone — don't restrict to coplanar
+            Fill=2,  # FillFace
         )
         result = area.getShape()
 
@@ -282,13 +282,12 @@ def create_boundary_face(model_faces, offset=0.0, tolerance=0.005):
                     f"create_boundary_face: FaceMakerBullseye failed on "
                     f"HLR result: {e} — trying wire directly."
                 )
-                # Return the wire shape directly if face construction fails
-                return result
         else:
             Path.Log.warning(
                 "Offsetting the Model faces resulted in an empty shape. "
                 "Extend the boundary if the selected faces are too small."
             )
+            return None
 
     except Exception as e:
         Path.Log.warning(
@@ -311,17 +310,19 @@ def create_boundary_face(model_faces, offset=0.0, tolerance=0.005):
 
         outline.translate(FreeCAD.Vector(0, 0, -outline.BoundBox.ZMin))
 
-        if offset != 0.0:
-            offset_engine = Path.Area()
-            offset_engine.add(outline)
-            offset_engine.setParams(Offset=offset)
-            outline = offset_engine.getShape()
+        if offset == 0.0:
+            offset = -0.0001
+
+        offset_engine = Path.Area()
+        offset_engine.add(outline)
+        offset_engine.setParams(Offset=offset)
+        outline = offset_engine.getShape()
 
         return outline
 
     except Exception as e:
         Path.Log.error(
-            f"Both HLR and TechDraw failed: {e}"
+            f"Both HLR and TechDraw failed offsetting the Model faces: {e}"
         )
         return None
 
