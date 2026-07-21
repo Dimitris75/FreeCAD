@@ -136,19 +136,6 @@ def _shape_to_stl_cpp(shape, linear_deflection, angular_deflection):
 
     start_time = time.perf_counter()
 
-    if not hasattr(shape, "ShapeType"):
-        if hasattr(shape, "Shape"):
-            shape = shape.Shape
-        else:
-            raise ValueError("Expected Part.Shape-like object or object with Shape property")
-
-    Path.Log.debug(
-        f"surface_mesh._shape_to_stl_cpp: shape type={type(shape)}, ShapeType={getattr(shape, 'ShapeType', 'N/A')}"
-    )
-    Path.Log.debug(
-        f"surface_mesh._shape_to_stl_cpp: deflection params linear={linear_deflection}, angular={angular_deflection}"
-    )
-
     # C++ tessellation
     cpp_start = time.perf_counter()
     verts, faces = _stl_cpp.shape_tessellate_fast(shape, linear_deflection, angular_deflection)
@@ -177,19 +164,6 @@ def _shape_to_stl_python(shape, linear_deflection, angular_deflection):
     """
 
     start_time = time.perf_counter()
-
-    if not hasattr(shape, "ShapeType"):
-        if hasattr(shape, "Shape"):
-            shape = shape.Shape
-        else:
-            raise ValueError("Expected Part.Shape-like object or object with Shape property")
-
-    Path.Log.debug(
-        f"surface_mesh._shape_to_stl_python: shape type={type(shape)}, ShapeType={getattr(shape, 'ShapeType', 'N/A')}"
-    )
-    Path.Log.debug(
-        f"surface_mesh._shape_to_stl_python: deflection params linear={linear_deflection}, angular={angular_deflection}"
-    )
 
     # Python tessellation
     py_start = time.perf_counter()
@@ -284,6 +258,16 @@ def _shape_to_stl(
     """
 
     total_start = time.perf_counter()
+
+    # Validate Shape
+    if not hasattr(shape, "ShapeType"):
+        if hasattr(shape, "Shape"):
+            shape = shape.Shape
+        else:
+            raise ValueError("Expected Part.Shape-like object or object with Shape property")
+
+    Path.Log.debug(f"surface_mesh._shape_to_stl: shape type={type(shape)}, ShapeType={getattr(shape, 'ShapeType', 'N/A')}")
+    Path.Log.debug(f"surface_mesh._shape_to_stl: deflection params linear={linear_deflection}, angular={angular_deflection}")
 
     # Tessellation phase
     tess_start = time.perf_counter()
@@ -409,16 +393,17 @@ def _mesh_to_stl(mesh_obj):
 
 def _clip_model(model_shape, bbox, final_depth, clip_buffer=0.1):
     """
-    Clips jobs' model below the final depth of the operation to reduce the mesh load generation.
+    Clips the Job's model geometry below the operation's final depth to reduce
+    the computational load during mesh generation.
 
     Args:
         model_shape (Part.Shape): The mathematically fused solid of the entire Job model.
-        bbox (Base.BoundBox): The Models' BoundBox
+        bbox (Base.BoundBox): The bounding box of the model.
         final_depth (float): The lower Z-bound of the operation.
-        clip_buffer (float): A safety buffer
+        clip_buffer (float): A safety buffer added to the clipping plane.
 
     Returns:
-        A clipped Part.Shape or the original Model
+        Part.Shape: The clipped model shape, or the original model if clipping fails.
     """
     clipped_shape = None
     padding = 1.0
@@ -458,20 +443,37 @@ def _model_optimization(
     normal_tolerance=0.01,
 ):
     """
-    Filters the models' faces based on certain criteria to reduce the mesh generation load as much as possible.
+    Filters the model's faces based on specific criteria to minimize the
+    computational load during mesh generation.
 
     Args:
-        strategy (str): The selected strategy of the operation, SurfaceScan or Waterline.
+        strategy (str): The selected operation strategy ('SurfaceScan' or 'Waterline').
         shape (Part.Shape): The mathematically fused solid of the entire Job model.
-        bb_face (Base.BoundBox): The BoundBox of the selected faces.
-        exempt_faces A list of Part.Face objects selected to be machined.
+        bb_face (Base.BoundBox): The bounding box of the selected faces.
+        exempt_faces (list): A list of Part.Face objects explicitly selected to be machined.
         stl_filter_adj (float): A positive offset value for the boundary adjustment of the face filter.
         tool_diam (float): The diameter of the active tool.
         final_depth (float): The lower Z-bound of the operation.
+        normal_tolerance (float): Tolerance for filtering vertical faces.
 
     Returns:
-        A Compound of filtered faces or the original shape.
+        Part.Compound or Part.Shape: A compound of the filtered faces, or the original shape if no faces are filtered.
     """
+    sample_faces = shape.Faces if not exempt_faces else exempt_faces
+
+    # Detect pre-triangulated models and skip optimization
+    if sample_faces:
+        sample_size = min(75, len(sample_faces))
+
+        # Count how many faces in the sample have exactly 3 edges
+        triangle_count = sum(
+            1 for f in sample_faces[:sample_size] if len(f.Edges) == 3
+        )
+        # If the majority (>50%) are triangles, it's a mesh-to-shape conversion
+        if sample_size > 0 and (triangle_count / sample_size) > 0.50:
+            Path.Log.debug("surface_mesh._model_optimization: Pre-triangulated model detected. Skipping face optimization.")
+            return shape
+
     filtered = []
     rejected = 0
     clip_bb = None
@@ -551,6 +553,9 @@ def _model_optimization(
 
 def _shape_to_safe_stl(
     model_shape,
+    bb_safe,
+    pad_buffer,
+    final_depth,
     avoid_faces,
     start_depth,
     avoid_overlap,
@@ -565,6 +570,10 @@ def _shape_to_safe_stl(
 
     Args:
         model_shape (Part.Shape): The complete, un-clipped model geometry.
+        bb_safe (Base.BoundBox): The bounding box of the model.
+        bb_safe (Base.BoundBox): The bounding box to use for the safety pad.
+        pad_buffer (float): The calculated outward offset for the safety pad.
+        final_depth (float): The lower Z-bound of the operation.
         avoid_faces (list): A list of Part.Face objects to be avoided.
         start_depth (float): The upper Z-bound of the operation.
         avoid_overlap (float): A negative offset value if Avoid Faces Overlap is enabled or the tool radius.
@@ -579,6 +588,20 @@ def _shape_to_safe_stl(
     offset_avoid = None
 
     fused_shapes.append(model_shape)
+
+    # Create a pad face at the bottom of the original bounding box
+    try:
+        p1 = FreeCAD.Vector(bb_safe.XMin - pad_buffer, bb_safe.YMin - pad_buffer, final_depth)
+        p2 = FreeCAD.Vector(bb_safe.XMax + pad_buffer, bb_safe.YMin - pad_buffer, final_depth)
+        p3 = FreeCAD.Vector(bb_safe.XMax + pad_buffer, bb_safe.YMax + pad_buffer, final_depth)
+        p4 = FreeCAD.Vector(bb_safe.XMin - pad_buffer, bb_safe.YMax + pad_buffer, final_depth)
+
+        pad_wire = Part.makePolygon([p1, p2, p3, p4, p1])
+        pad_face = Part.Face(pad_wire)
+        fused_shapes.append(pad_face)
+        Path.Log.debug("surface_mesh._shape_to_safe_stl: Appended bottom pad face to safe STL.")
+    except Exception as e:
+        Path.Log.warning(f"Failed to create bottom pad face for safe STL: {e}")
 
     # Create "Keep-Out Pillars" for avoided faces
     if avoid_faces:
@@ -635,6 +658,7 @@ def generate_stl(
     tool_diam,
     needs_safe_stl,
     avoid_overlap,
+    boundary_adjustment,
     start_depth,
     final_depth,
     linear_deflection,
@@ -660,6 +684,7 @@ def generate_stl(
         tool_diam (float): The diameter of the active tool.
         needs_safe_stl (bool): Flag indicating if the safety model is required.
         avoid_overlap (float): A negative offset value if Avoid Faces Overlap is enabled or the tool radius.
+        boundary_adjustment (float): A positive or negative value of the boundary adjustment.
         start_depth (float): The upper Z-bound of the operation.
         final_depth (float): The lower Z-bound of the operation.
         linear_deflection (float): The user-set linear deflection for the primary mesh.
@@ -736,8 +761,19 @@ def generate_stl(
 
         # Generate the Safe STL
         if needs_safe_stl:
+
+            if optimize_stl and stl_faces:
+                bb_safe = bb_face
+                pad_buffer = stl_filter_adj + 0.1
+            else:
+                bb_safe = bbox
+                pad_buffer = boundary_adjustment + 0.1
+
             safe_stl = _shape_to_safe_stl(
                 clipped_shape,
+                bb_safe,
+                pad_buffer,
+                final_depth,
                 avoid_faces,
                 start_depth,
                 avoid_overlap,

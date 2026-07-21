@@ -241,7 +241,15 @@ def create_boundary_face(model_faces, offset=0.0, tolerance=0.005):
         )
         return None
 
+    # Check if it's a Mesh conversion and skip Primary Path.Area
     is_triangulated = False
+    sample_size = min(75, len(model_faces))
+
+    triangle_count = sum(
+        1 for f in model_faces[:sample_size] if len(f.Edges) == 3
+    )
+    if sample_size > 0 and (triangle_count / sample_size) > 0.50:
+        is_triangulated = True
 
     # Build compound from all faces
     try:
@@ -249,13 +257,6 @@ def create_boundary_face(model_faces, offset=0.0, tolerance=0.005):
             compound = model_faces[0]
         else:
             compound = Part.makeCompound(model_faces)
-            # Detect pre-triangulated models (all faces are planar triangles)
-            is_triangulated = all(
-                hasattr(f.Surface, "TypeId") and
-                "Plane" in f.Surface.TypeId and
-                len(f.Vertexes) == 3
-                for f in model_faces[:30]  # sample first 30 faces
-            )
     except Exception as e:
         Path.Log.error(
             f"Failed to build compound from {len(model_faces)} face(s): {e}. "

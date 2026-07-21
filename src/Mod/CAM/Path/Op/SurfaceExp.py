@@ -1681,6 +1681,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 tool_diam=tool_diam,
                 needs_safe_stl=needs_safe_stl,
                 avoid_overlap=avoid_overlap,
+                boundary_adjustment=boundary_adjustment,
                 start_depth=obj.StartDepth.Value,
                 final_depth=obj.FinalDepth.Value,
                 linear_deflection=obj.LinearDeflection.Value,
