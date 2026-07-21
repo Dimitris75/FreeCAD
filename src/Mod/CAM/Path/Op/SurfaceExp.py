@@ -1595,7 +1595,8 @@ class ObjectSurface(PathOp.ObjectOp):
             # Ensure the OCL cutter shaft is at least as long as the operation 'depth - edge_height'
             # so it cannot pass through vertical walls removed by mesh optimization.
             op_depth = obj.StartDepth.Value - obj.FinalDepth.Value + 0.1
-            tool_params["length_offset"] = op_depth - tool_params["edge_height"]
+            if op_depth > tool_params["edge_height"]:
+                tool_params["length_offset"] = op_depth - tool_params["edge_height"]
 
         # Geometry preperation
         base_objs = JOB.Model.Group
