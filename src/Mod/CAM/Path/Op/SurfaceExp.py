@@ -1590,6 +1590,13 @@ class ObjectSurface(PathOp.ObjectOp):
         if needs_stl and getattr(obj, "LeadInOut", False):
             stl_filter_adj = max(tool_radius, boundary_adjustment)
 
+        # Override cutter length for Waterline Strategy
+        if is_waterline:
+            # Ensure the OCL cutter shaft is at least as long as the operation 'depth - edge_height'
+            # so it cannot pass through vertical walls removed by mesh optimization.
+            op_depth = obj.StartDepth.Value - obj.FinalDepth.Value + 0.1
+            tool_params["length_offset"] = op_depth - tool_params["edge_height"]
+
         # Geometry preperation
         base_objs = JOB.Model.Group
         if not base_objs:
