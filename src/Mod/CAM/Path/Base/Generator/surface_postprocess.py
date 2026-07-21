@@ -192,11 +192,9 @@ def _optimize_travel(
 ):
     """Find the shortest safe path between two scan line endpoints.
 
-    For short transitions (≤ 2× cutter diameter), emits a direct G1
-    feed move to the next point — the tool stays down without probing.
-    Longer transitions returns an empty list.
-
-    Long-distance optimization is deferred to a future iteration.
+    - Short transitions (≤ 2× cutter diameter): Emits a direct G1 feed move.
+    - Medium transitions (≤ 10× cutter diameter): Calculates a local dynamic clearance plane.
+    - Long transitions: Returns an empty list, falling back to absolute safe_z retracts.
 
     Args:
         next_point: (x, y, z) start of next scan line.
@@ -216,19 +214,30 @@ def _optimize_travel(
     Returns:
         List of ``Path.Command``.
     """
-    if safe_pdc is not None and cutter is not None:
-        cutter_diam = cutter.getDiameter()
-        dx = next_point[0] - last_point[0]
-        dy = next_point[1] - last_point[1]
-        xy_dist_sqrd = dx * dx + dy * dy
+    if safe_pdc is None or cutter is None:
+        return []
 
-        if xy_dist_sqrd <= (cutter_diam * 2.0) ** 2:
-            transition_cmds = _dropcutter_transition(
-                last_point, next_point, safe_pdc, start_z, depth_offset, safe_z, step_down, horiz_feed, force_keep_down,
-            )
-            if transition_cmds:
-                return transition_cmds
+    cutter_diam = cutter.getDiameter()
+    dx = next_point[0] - last_point[0]
+    dy = next_point[1] - last_point[1]
+    xy_dist_sqrd = dx * dx + dy * dy
 
+    # 1. Short Transition (Keep-Down Feed Move)
+    if xy_dist_sqrd <= (cutter_diam * 2.0) ** 2:
+        transition_cmds = _dropcutter_transition(
+            last_point, next_point, safe_pdc, start_z, depth_offset, safe_z, step_down, horiz_feed, force_keep_down,
+        )
+        if transition_cmds:
+            return transition_cmds
+
+    # 2. Medium Transition (Dynamic Clearance Rapid "Hop")
+    if xy_dist_sqrd <= (cutter_diam * 10.0) ** 2:
+        return _dropcutter_medium_transition(
+            last_point, next_point, safe_pdc, depth_offset, safe_z, vert_rapid, horiz_rapid
+        )
+
+    # 3. Long Transition
+    # Return empty list to trigger the absolute safe_z fallback in the parent function
     return []
 
 
@@ -273,6 +282,46 @@ def _dropcutter_transition(start, end, safe_pdc, start_z, depth_offset, safe_z, 
 
     # Ensure a perfect final connection to the start of the next cutting pass
     commands.append(Path.Command("G1", {"X": end[0], "Y": end[1], "Z": end[2] + depth_offset, "F": horiz_feed}))
+    return commands
+
+
+def _dropcutter_medium_transition(
+    last_point, next_point, safe_pdc, depth_offset, safe_z, vert_rapid, horiz_rapid
+):
+    """Probes a medium-distance transition path and returns dynamic clearance rapid commands.
+
+    Creates a local rapid plane 1mm above the highest probed terrain between the points.
+    """
+    ocl = _get_ocl()
+    path = ocl.Path()
+
+    # Create a line high above the part to probe the direct path
+    p1 = ocl.Point(last_point[0], last_point[1], safe_z)
+    p2 = ocl.Point(next_point[0], next_point[1], safe_z)
+    path.append(ocl.Line(p1, p2))
+
+    safe_pdc.setPath(path)
+    safe_pdc.run()
+
+    cl_points = safe_pdc.getCLPoints()
+    if not cl_points:
+        return []
+
+    # Find the highest point on the terrain between start and end
+    highest_terrain_z = max(pt.z for pt in cl_points)
+
+    # Hop 1mm over the local terrain, capped at safe_z
+    local_rapid_z = min(highest_terrain_z + depth_offset + 1.0, safe_z)
+
+    # Ensure the local rapid height is at least as high as the start and end points
+    local_rapid_z = max(local_rapid_z, last_point[2] + depth_offset, next_point[2] + depth_offset)
+
+    # Generate the optimized Rapid (G0) commands
+    commands = [
+        Path.Command("G0", {"Z": local_rapid_z, "F": vert_rapid}),
+        Path.Command("G0", {"X": next_point[0], "Y": next_point[1], "F": horiz_rapid})
+    ]
+
     return commands
 
 
