@@ -275,7 +275,7 @@ def _shape_to_stl(
         try:
             verts, faces = _shape_to_stl_cpp(shape, linear_deflection, angular_deflection)
         except RuntimeError as e:
-            Path.Log.warning(f"C++ shape extraction failed: {e}, falling back to Python")
+            Path.Log.warning(f"High-speed mesh generation failed. Falling back to the slower standard method. (Error: {e})")
             verts, faces = _shape_to_stl_python(shape, linear_deflection, angular_deflection)
     else:
         verts, faces = _shape_to_stl_python(shape, linear_deflection, angular_deflection)
@@ -449,7 +449,7 @@ def _model_optimization(
     Args:
         strategy (str): The selected operation strategy ('SurfaceScan' or 'Waterline').
         shape (Part.Shape): The mathematically fused solid of the entire Job model.
-        bb_face (Base.BoundBox): The bounding box of the selected faces.
+        bb_face (Part.Face): The bounding box of the selected faces.
         exempt_faces (list): A list of Part.Face objects explicitly selected to be machined.
         stl_filter_adj (float): A positive offset value for the boundary adjustment of the face filter.
         tool_diam (float): The diameter of the active tool.
@@ -464,7 +464,6 @@ def _model_optimization(
     # Detect pre-triangulated models and skip optimization
     if sample_faces:
         sample_size = min(75, len(sample_faces))
-
         # Count how many faces in the sample have exactly 3 edges
         triangle_count = sum(
             1 for f in sample_faces[:sample_size] if len(f.Edges) == 3
@@ -487,11 +486,12 @@ def _model_optimization(
 
         if bb_face is not None and tool_diam > 0 and strategy == "SurfaceScan":
             ba = stl_filter_adj
+            bb = bb_face.BoundBox
             clip_bb = {
-                "XMin": bb_face.XMin - ba,
-                "XMax": bb_face.XMax + ba,
-                "YMin": bb_face.YMin - ba,
-                "YMax": bb_face.YMax + ba,
+                "XMin": bb.XMin - ba,
+                "XMax": bb.XMax + ba,
+                "YMin": bb.YMin - ba,
+                "YMax": bb.YMax + ba,
             }
 
     for face in shape.Faces:
@@ -570,8 +570,7 @@ def _shape_to_safe_stl(
 
     Args:
         model_shape (Part.Shape): The complete, un-clipped model geometry.
-        bb_safe (Base.BoundBox): The bounding box of the model.
-        bb_safe (Base.BoundBox): The bounding box to use for the safety pad.
+        bb_safe (Part.Face): The bounding box of the model or selected faces.
         pad_buffer (float): The calculated outward offset for the safety pad.
         final_depth (float): The lower Z-bound of the operation.
         avoid_faces (list): A list of Part.Face objects to be avoided.
@@ -586,15 +585,16 @@ def _shape_to_safe_stl(
     """
     fused_shapes = []
     offset_avoid = None
+    bb = bb_safe.BoundBox
 
     fused_shapes.append(model_shape)
 
     # Create a pad face at the bottom of the original bounding box
     try:
-        p1 = FreeCAD.Vector(bb_safe.XMin - pad_buffer, bb_safe.YMin - pad_buffer, final_depth)
-        p2 = FreeCAD.Vector(bb_safe.XMax + pad_buffer, bb_safe.YMin - pad_buffer, final_depth)
-        p3 = FreeCAD.Vector(bb_safe.XMax + pad_buffer, bb_safe.YMax + pad_buffer, final_depth)
-        p4 = FreeCAD.Vector(bb_safe.XMin - pad_buffer, bb_safe.YMax + pad_buffer, final_depth)
+        p1 = FreeCAD.Vector(bb.XMin - pad_buffer, bb.YMin - pad_buffer, final_depth)
+        p2 = FreeCAD.Vector(bb.XMax + pad_buffer, bb.YMin - pad_buffer, final_depth)
+        p3 = FreeCAD.Vector(bb.XMax + pad_buffer, bb.YMax + pad_buffer, final_depth)
+        p4 = FreeCAD.Vector(bb.XMin - pad_buffer, bb.YMax + pad_buffer, final_depth)
 
         pad_wire = Part.makePolygon([p1, p2, p3, p4, p1])
         pad_face = Part.Face(pad_wire)
@@ -639,7 +639,8 @@ def _shape_to_safe_stl(
         Path.Log.debug("surface_mesh._shape_to_safe_stl: Safe STL generated successfully.")
     except Exception as e:
         Path.Log.error(
-            f"Failed to generate Safe STL. Transitions or Smart LeadIn/LeadOut may not be collision-safe.: {e}"
+            "Could not generate the safety collision mesh."
+            f"WARNING: Rapid transitions and Smart Lead-In/Out moves may crash into the part! (Error: {e})"
         )
         return None
 
@@ -679,7 +680,7 @@ def generate_stl(
         strategy (str): The selected strategy of the operation, SurfaceScan or Waterline.
         stl_faces (list): A list of Part.Face objects to be machined.
         stl_filter_adj (float): A positive offset value for the boundary adjustment of the STL face filter.
-        bb_face: (Base.BoundBox): The BoundBox of the selected faces.
+        bb_face: (Part.Face): The BoundBox of the selected faces.
         avoid_faces (list): A list of Part.Face objects to be avoided.
         tool_diam (float): The diameter of the active tool.
         needs_safe_stl (bool): Flag indicating if the safety model is required.
@@ -695,11 +696,11 @@ def generate_stl(
         tuple: (stl, safe_stl), where stl is the primary mesh and safe_stl is the
                collision mesh (or a copy of stl if generation failed or wasn't needed).
     """
-    stl, safe_stl, clipped_shape = None, None, None
-    use_cpp = False if strategy == "Waterline" else True
+    stl = safe_stl = clipped_shape = None
+    use_cpp = True
 
     if not base_objs:
-        Path.Log.error("No base models provided for STL generation.")
+        Path.Log.error("No 3D models were found in the Job. Please add a base model to the Job setup.")
         return None, None
 
     # Dispatch based on geometry type
@@ -766,7 +767,7 @@ def generate_stl(
                 bb_safe = bb_face
                 pad_buffer = stl_filter_adj + 0.1
             else:
-                bb_safe = bbox
+                bb_safe = model_shape
                 pad_buffer = boundary_adjustment + 0.1
 
             safe_stl = _shape_to_safe_stl(

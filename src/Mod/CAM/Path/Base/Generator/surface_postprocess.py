@@ -731,18 +731,14 @@ def scan_lines_to_gcode(
 
     if use_smart_leads:
         lead_feed = horiz_feed * (lead_feed_percent / 100)
-        Path.Log.warning(
-            "Smart Lead-In/Out is enabled. "
-            "The strategy makes a best effort to avoid collisions using OCL probing, "
-            "but it is not guaranteed to be collision-free in all cases. "
-            "Always inspect the generated path visually before running on the machine."
-        )
+
+        msg = "Smart Lead-In/Out enabled. Please verify the path visually for collision safety."
+
         if optimize_transitions:
-            Path.Log.warning(
-                "LeadInOut and KeepToolDown are mutually exclusive. "
-                "KeepToolDown has been disabled to allow smart lead-in/out moves."
-            )
+            msg += " 'Keep Tool Down' has been disabled to allow leads."
             optimize_transitions = False
+
+        Path.Log.warning(msg)
 
     if (optimize_transitions or use_smart_leads) and safe_stl is not None and cutter is not None:
         safe_pdc = _make_safe_pdc(safe_stl, cutter, final_z, sample_interval)

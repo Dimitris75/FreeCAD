@@ -151,7 +151,7 @@ def make_ocl_cutter(
     if cutter_name == "CylCutter":
         if edge_height <= 0:
             Path.Log.warning(
-                "CylCutter edge_height <= 0 ({}), using diameter as fallback".format(edge_height)
+                f"The cutting edge height for this tool is set to {edge_height}. Using the tool's diameter as a fallback height."
             )
             edge_height = diameter
         return ocl.CylCutter(diameter, edge_height + length_offset)
@@ -304,7 +304,8 @@ def create_boundary_face(model_faces, offset=0.0, tolerance=0.005):
             boundary = Part.makeFace(outline.Wires, "Part::FaceMakerBullseye")
             if not boundary or boundary.isNull():
                 Path.Log.error(
-                    "TechDraw failed offsetting the Model faces."
+                    "Failed to calculate the boundary offset. "
+                    "Try adjusting the Boundary Adjustment value or checking the selected faces for geometric errors."
                 )
                 return None
         else:

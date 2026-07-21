@@ -230,7 +230,7 @@ def fill_selected(base_property):
     selected_faces = _get_selected_faces(base_property)
     if not selected_faces:
         Path.Log.warning(
-            "No faces found in Base Geometry — canceling fill selected holes."
+            "The 'Fill Selected Holes' option is enabled, but no faces were selected in the Base Geometry. Skipping hole filling."
         )
         return []
 
@@ -518,11 +518,16 @@ def _get_fused_floor_geometry(shape, start_z, final_z, tolerance=0.001):
         except:
             return False
 
-    FACE_COUNT_THRESHOLD = 350
-    if len(shape.Faces) > FACE_COUNT_THRESHOLD:
+    # Detect pre-triangulated models and skip floor detection
+    sample_size = min(75, len(shape.Faces))
+    # Count how many faces in the sample have exactly 3 edges
+    triangle_count = sum(
+        1 for f in shape.Faces[:sample_size] if len(f.Edges) == 3
+    )
+    # If the majority (>50%) are triangles, it's a mesh-to-shape conversion
+    if sample_size > 0 and (triangle_count / sample_size) > 0.50:
         Path.Log.warning(
-            f"Model has {len(shape.Faces)} faces (>{FACE_COUNT_THRESHOLD}). "
-            "Automatic floor detection disabled for performance. Use 'Clear Planar Only=False'."
+            "Pre-triangulated model detected. Automatic floor detection disabled for performance. 'Clear Planar Only' disabled."
         )
         return {}
 
@@ -606,8 +611,7 @@ def zlevel_hybrid_stack(
     # 1. Initialization
     stack = []
 
-    sub_face = None
-    allPrevComp = None
+    sub_face = allPrevComp = None
     tol = 0.0001
     loose_tol = 0.0002
     fill_mask_idx = 0  # Fill holes masks list pointer

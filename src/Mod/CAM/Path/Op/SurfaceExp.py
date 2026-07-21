@@ -740,7 +740,6 @@ class ObjectSurface(PathOp.ObjectOp):
         obj.setEditorMode("CutPattern", A)
         obj.setEditorMode("CutPatternAngle", A)
         obj.setEditorMode("KeepToolDown", A)
-        obj.setEditorMode("GapThreshold", A)
         obj.setEditorMode("LayerMode", A)
         obj.setEditorMode("ProfileEdges", A)
         obj.setEditorMode("LeadInOut", A)
@@ -795,6 +794,7 @@ class ObjectSurface(PathOp.ObjectOp):
         obj.setEditorMode("OptimizeLinearPaths", D)
         obj.setEditorMode("OptimizeMeshConversion", D)
         obj.setEditorMode("SampleInterval", D)
+        obj.setEditorMode("GapThreshold", D)
 
         # Apply Visibility to Common/Contextual Group (E-F)
         obj.setEditorMode("StepOver", E)
@@ -887,34 +887,34 @@ class ObjectSurface(PathOp.ObjectOp):
         # Limit linear deflection
         if obj.LinearDeflection.Value < 0.001:
             obj.LinearDeflection.Value = 0.001
-            Path.Log.error("Linear deflection limits are 0.001 to 25.4 millimeters.")
+            Path.Log.error("Linear Deflection must be between 0.001 and 25.4.")
         if obj.LinearDeflection.Value > 25.4:
             obj.LinearDeflection.Value = 25.4
-            Path.Log.error("Linear deflection limits are 0.001 to 25.4 millimeters.")
+            Path.Log.error("Linear Deflection must be between 0.001 and 25.4.")
 
         # Limit angular deflection
         if obj.AngularDeflection.Value < 0.001:
             obj.AngularDeflection.Value = 0.001
-            Path.Log.error("Angular deflection limits are 0.001 to 25.4 millimeters.")
+            Path.Log.error("Angular deflection must be between 0.001 to 25.4 millimeters.")
         if obj.AngularDeflection.Value > 25.4:
             obj.AngularDeflection.Value = 25.4
-            Path.Log.error("Angular deflection limits are 0.001 to 25.4 millimeters.")
+            Path.Log.error("Angular deflection must be between 0.001 to 25.4 millimeters.")
 
         # Limit sample interval
         if obj.SampleInterval.Value < 0.001:
             obj.SampleInterval.Value = 0.001
-            Path.Log.error("Sample interval limits are 0.001 to 25.4 millimeters.")
+            Path.Log.error("Sample interval must be between 0.001 to 25.4 millimeters.")
         if obj.SampleInterval.Value > 25.4:
             obj.SampleInterval.Value = 25.4
-            Path.Log.error("Sample interval limits are 0.001 to 25.4 millimeters.")
+            Path.Log.error("Sample interval must be between 0.001 to 25.4 millimeters.")
 
         # Limit min sample interval
         if obj.MinSampleInterval.Value < 0.001:
             obj.MinSampleInterval.Value = 0.001
-            Path.Log.error("Min sample interval limits are 0.0001 to 25.4 millimeters.")
+            Path.Log.error("Min sample interval must be between 0.0001 to 25.4 millimeters.")
         if obj.MinSampleInterval.Value > 25.4:
             obj.MinSampleInterval.Value = 25.4
-            Path.Log.error("Min sample interval limits are 0.0001 to 25.4 millimeters.")
+            Path.Log.error("Min sample interval must be between 0.0001 to 25.4 millimeters.")
 
         # Limit cut pattern angle
         if obj.CutPatternAngle < -360.0 or obj.CutPatternAngle >= 360.0:
@@ -929,7 +929,7 @@ class ObjectSurface(PathOp.ObjectOp):
         # Limit AvoidLastX_Faces to zero and positive values
         if obj.AvoidLastX_Faces < 0:
             obj.AvoidLastX_Faces = 0
-            Path.Log.error("AvoidLastX_Faces: Only zero or positive values permitted.")
+            Path.Log.error("AvoidLastX_Faces: Value must be 0 or greater.")
         if obj.AvoidLastX_Faces > 100:
             obj.AvoidLastX_Faces = 100
             Path.Log.error("AvoidLastX_Faces: Avoid last X faces count limited to 100.")
@@ -1218,13 +1218,6 @@ class ObjectSurface(PathOp.ObjectOp):
         needs_stl = True if opt_transitions or use_smart_leads else False
         force_keep_down = True if obj.CutPattern in ("ZigZag", "CircularZigZag") else False
 
-        # Determine the bounding box
-        if cutting_faces and not obj.BoundBox == "Stock":
-            # If cutting_faces is ready from bb_face - opExecute
-            group_bb = bb_face
-        else:
-            group_bb = bb_face.BoundBox
-
         # Ensure we have cutting faces (Fallback to whole model if none selected)
         if not cutting_faces:
             if bb_face:
@@ -1232,6 +1225,9 @@ class ObjectSurface(PathOp.ObjectOp):
             else:
                 Path.Log.error("Could not determine source faces for pattern generation.")
                 return []
+
+        # Determine the bounding box
+        group_bb = bb_face.BoundBox
 
         # Construct the list of face groups to process based on user's choice
         handle_mode = getattr(obj, "HandleMultipleFeatures", "Collectively")
@@ -1357,6 +1353,9 @@ class ObjectSurface(PathOp.ObjectOp):
             for zh in wl_data:
                 filter_loop = []
                 for loop in wl_data[zh]:
+                    # Filter out samll fragments
+                    if len(loop) < 3:
+                        continue
                     filter_loop.append(surface_postprocess.filter_cl_points(loop, tolerance))
                 wl_data[zh] = filter_loop
 
@@ -1397,34 +1396,34 @@ class ObjectSurface(PathOp.ObjectOp):
 
         startTime = time.time()
 
-        # 1. Extract ToolBit parameters
+        # 1. Extract and Validate Tool Parameters
         tool_diam = tool_params.get("diameter", 0.0)
         radius = tool_diam / 2.0
         shape_type = tool_params.get("tool_type", "")
         c_rad = tool_params.get("corner_radius", 0.0)
-        is_3d = True if shape_type in ["ballend", "bullnose"] else False
+        is_3d = shape_type in ("ballend", "bullnose")
 
         if tool_diam == 0.0 or (not is_3d and "endmill" not in shape_type):
-            Path.Log.error(f"Unsupported tool type for Z-Level Hybrid: '{shape_type}'")
+            Path.Log.error(f"The Z-Level Hybrid strategy requires a Ball-end, Bull-nose, or flat Endmill. Found: '{shape_type}'.")
             return []
 
-        # 2. Data preparation
+        # 2. Data Preparation & Options
         wpc = Part.makeCircle(1.0, FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(0, 0, 1))
-
-        is_adaptive = True if getattr(obj, "CutPatternZLevel", "None") == "Adaptive" else False
-        fill_selected_holes = getattr(obj, "FillSelectedHoles", False)
-        clear_planar_only = getattr(obj, "ClearPlanarOnly", True)
-        accuracy_val = getattr(obj, "SamplingAccuracy", "4")
-        ignore_outer = getattr(obj, "IgnoreOuter", False)
-        step_over = (obj.StepOver / 100.0) * (radius * 2)
-        stock_to_leave = obj.StockToLeave.Value
-        depth_offset = obj.DepthOffset.Value
         shape_copy = shape.copy()
         fill_holes_masks = []
 
-        # Start Point
-        use_start_point = getattr(obj, "UseStartPoint", False)
-        start_point = getattr(obj, "StartPoint", None) if use_start_point else None
+        is_adaptive = getattr(obj, "CutPatternZLevel", "None") == "Adaptive"
+        fill_selected_holes = getattr(obj, "FillSelectedHoles", False)
+        clear_planar_only = getattr(obj, "ClearPlanarOnly", True)
+        ignore_outer = getattr(obj, "IgnoreOuter", False)
+
+        accuracy_val = getattr(obj, "SamplingAccuracy", "4")
+        step_over = (obj.StepOver / 100.0) * tool_diam
+        stock_to_leave = obj.StockToLeave.Value
+        depth_offset = obj.DepthOffset.Value
+
+        # Start Point handling
+        start_point = obj.StartPoint if getattr(obj, "UseStartPoint", False) else None
 
         zlevel_tool_params = {
             "radius": radius,
@@ -1553,25 +1552,36 @@ class ObjectSurface(PathOp.ObjectOp):
         # Impose property limits
         self.opApplyPropertyLimits(obj)
 
-        # Data preparation (Define what each strategy requires)
+        # Extract basic operation data
         strategy = obj.Strategy
+        is_adaptive = getattr(obj, "AdaptiveSampling", False)
+        boundary_adjustment = obj.BoundaryAdjustment.Value
 
         tool_params = self._extractToolParams(obj)
         tool_diam = tool_params.get("diameter", 0.0)
-        tool_radius = tool_diam / 2
-
-        boundary_adjustment = obj.BoundaryAdjustment.Value
+        tool_radius = tool_diam / 2.0
         avoid_overlap = tool_radius
-        is_adaptive = getattr(obj, "AdaptiveSampling", False)
-        cutter, stl, safe_stl, stl_faces =  None, None, None, None
-        cutting_faces, avoid_faces, bb_face, shape = None, None, None, None
 
-        use_cpp = needs_face_selection = strategy == "SurfaceScan"
-        needs_safe_stl = getattr(obj, "KeepToolDown", False) or getattr(obj, "LeadInOut", False)
-        needs_stl = strategy in ["SurfaceScan", "Waterline"]
-        needs_ocl_cutter = strategy in ["SurfaceScan", "Waterline"]
-        needs_boundary = strategy in ["SurfaceScan", "ZLevelHybrid"]
-        needs_avoid_overlap = getattr(obj, "AvoidFacesOverlap", False) and strategy == "SurfaceScan"
+        # Initialize geometric and OCL containers
+        cutter = stl = safe_stl = stl_faces = None
+        cutting_faces = avoid_faces = bb_face = shape = None
+
+        # Base Strategy Flags
+        is_surface_scan = strategy == "SurfaceScan"
+        is_waterline = strategy == "Waterline"
+        is_zlevel = strategy == "ZLevelHybrid"
+
+        # Geometry & Generation Requirements
+        needs_face_selection = is_surface_scan
+        needs_boundary = is_surface_scan or is_zlevel
+        needs_stl = is_surface_scan or is_waterline
+        needs_ocl_cutter = needs_stl
+
+        # Contextual Requirements
+        needs_safe_stl = (
+            getattr(obj, "KeepToolDown", False) or getattr(obj, "LeadInOut", False)
+        ) and not is_waterline
+        needs_avoid_overlap = getattr(obj, "AvoidFacesOverlap", False) and is_surface_scan
 
         # STL Mesh optimization
         optimize_stl = getattr(obj, "OptimizeMeshConversion", True)
@@ -1623,10 +1633,18 @@ class ObjectSurface(PathOp.ObjectOp):
             if obj.BoundBox == "Stock":
                 bb_face = surface_common.create_boundary_face(JOB.Stock.Shape.Faces, offset)
             elif cutting_faces:
-                # Surface Scan with cutting_faces: Create 'BoundBox' directly that it also needed for STL.
+                # Combine bounding boxes and explicitly convert to a 2D Part.Face
                 from functools import reduce
-                bb_face = reduce(lambda a, b: a.united(b), [f.BoundBox for f in cutting_faces])
+                combined_bb = reduce(lambda a, b: a.united(b), [f.BoundBox for f in cutting_faces])
+
+                p1 = FreeCAD.Vector(combined_bb.XMin - offset, combined_bb.YMin - offset, 0)
+                p2 = FreeCAD.Vector(combined_bb.XMax + offset, combined_bb.YMin - offset, 0)
+                p3 = FreeCAD.Vector(combined_bb.XMax + offset, combined_bb.YMax + offset, 0)
+                p4 = FreeCAD.Vector(combined_bb.XMin - offset, combined_bb.YMax + offset, 0)
+
+                bb_face = Part.Face(Part.makePolygon([p1, p2, p3, p4, p1]))
             else:
+                # Create a boundary from model_shape
                 bb_face = surface_common.create_boundary_face(model_shape.Faces, offset)
 
         # Avoid Faces Overlap
