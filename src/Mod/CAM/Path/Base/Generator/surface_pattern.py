@@ -267,8 +267,8 @@ def generate_offset_scan_lines(
     Generates concentric toolpath rings that progressively shrink inwards from a boundary.
 
     Unlike standard geometric patterns (which use C++), Offset patterns natively rely on
-    the shape of the boundary itself. This function uses the OpenCASCADE/ClipperLib engine
-    via PathUtils to repeatedly collapse the boundary geometry inward by the stepover amount.
+    the shape of the boundary itself. This function uses Path.Area() to repeatedly
+    collapse the boundary geometry inward by the stepover amount.
 
     Args:
         boundary_face (Part.Face): The outermost boundary mask to shrink.
@@ -288,7 +288,7 @@ def generate_offset_scan_lines(
     offset_engine.setParams(Tolerance=0.01)
 
     offset_lines = []
-    current_offset = 0.0
+    current_offset = -0.005
     min_path_length = tool_diam
 
     while True:

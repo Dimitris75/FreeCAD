@@ -241,12 +241,21 @@ def create_boundary_face(model_faces, offset=0.0, tolerance=0.005):
         )
         return None
 
+    is_triangulated = False
+
     # Build compound from all faces
     try:
         if len(model_faces) == 1:
             compound = model_faces[0]
         else:
             compound = Part.makeCompound(model_faces)
+            # Detect pre-triangulated models (all faces are planar triangles)
+            is_triangulated = all(
+                hasattr(f.Surface, "TypeId") and
+                "Plane" in f.Surface.TypeId and
+                len(f.Vertexes) == 3
+                for f in model_faces[:30]  # sample first 30 faces
+            )
     except Exception as e:
         Path.Log.error(
             f"Failed to build compound from {len(model_faces)} face(s): {e}. "
@@ -254,34 +263,49 @@ def create_boundary_face(model_faces, offset=0.0, tolerance=0.005):
         )
         return None
 
-    # Primary: Path.Area HLR projection (Outline mode)
-    try:
-        wpc = Part.makeCircle(2)
-        area = Path.Area()
-        area.setPlane(wpc)
-        area.add(compound)
-        area.setParams(
-            Outline=True,
-            Offset=offset,
-            Coplanar=0,  # CoplanarNone — don't restrict to coplanar
-            Fill=2,  # FillFace
-        )
-        result = area.getShape()
+    # Primary - not pre-triangulated models: Path.Area HLR projection (Outline mode)
+    if not is_triangulated:
+        try:
+            wpc = Part.makeCircle(2)
+            area = Path.Area()
+            area.setPlane(wpc)
+            area.add(compound)
+            area.setParams(
+                Outline=True,
+                Offset=offset,
+                Coplanar=0,  # CoplanarNone — don't restrict to coplanar
+                Fill=2,  # FillFace
+            )
+            result = area.getShape()
 
-        if result and not result.isNull() and result.Wires:
-            # Build a face from the projected outline
-            try:
-                boundary = Part.makeFace(result.Wires, "Part::FaceMakerBullseye")
-                if boundary and not boundary.isNull():
-                    Path.Log.debug(
-                        "create_boundary_face: HLR projection succeeded."
-                    )
-                    return boundary
-            except Exception as e:
-                Path.Log.debug(
-                    f"create_boundary_face: FaceMakerBullseye failed on "
-                    f"HLR result: {e} — trying wire directly."
+            if not result or result.isNull():
+                Path.Log.warning(
+                    "Offsetting the Model faces resulted in an empty shape. "
+                    "Extend the boundary if the selected faces are too small."
                 )
+                return None
+
+            return result
+        except Exception as e:
+            Path.Log.warning(
+                f"Path.Area HLR projection failed: {e} "
+                "— falling back to TechDraw outline extraction."
+            )
+
+    # Fallback and pre-triangulated models: TechDraw.findShapeOutline()
+    try:
+        import TechDraw
+        direction = FreeCAD.Vector(0, 0, 1)
+        outline = TechDraw.findShapeOutline(compound, 1.0, direction)
+
+        if outline and not outline.isNull() and outline.Wires:
+            # Build a face from the projected outline
+            boundary = Part.makeFace(outline.Wires, "Part::FaceMakerBullseye")
+            if not boundary or boundary.isNull():
+                Path.Log.error(
+                    "TechDraw failed offsetting the Model faces."
+                )
+                return None
         else:
             Path.Log.warning(
                 "Offsetting the Model faces resulted in an empty shape. "
@@ -289,40 +313,18 @@ def create_boundary_face(model_faces, offset=0.0, tolerance=0.005):
             )
             return None
 
-    except Exception as e:
-        Path.Log.warning(
-            f"Path.Area HLR projection failed: {e} "
-            "— falling back to TechDraw outline extraction."
-        )
-
-    # Fallback: TechDraw.findShapeOutline()
-    try:
-        import TechDraw
-        direction = FreeCAD.Vector(0, 0, 1)
-        outline = TechDraw.findShapeOutline(compound, 1.0, direction)
-
-        if not outline:
-            Path.Log.warning(
-                "Offsetting the Model faces resulted in an empty shape. "
-                "Extend the boundary if the selected faces are too small."
-            )
-            return None
-
-        outline.translate(FreeCAD.Vector(0, 0, -outline.BoundBox.ZMin))
-
-        if offset == 0.0:
-            offset = -0.0001
+        boundary.translate(FreeCAD.Vector(0, 0, -boundary.BoundBox.ZMin))
 
         offset_engine = Path.Area()
-        offset_engine.add(outline)
+        offset_engine.add(boundary)
         offset_engine.setParams(Offset=offset)
-        outline = offset_engine.getShape()
+        boundary = offset_engine.getShape()
 
-        return outline
+        return boundary
 
     except Exception as e:
         Path.Log.error(
-            f"Both HLR and TechDraw failed offsetting the Model faces: {e}"
+            f"Both Path.Area and TechDraw failed offsetting the Model faces: {e}"
         )
         return None
 
@@ -360,7 +362,9 @@ def generate_pattern_mask(
     # Create the Main Outer Boundary
     main_boundary = None
     outer_offset = -tool_radius + boundary_adj
-    epsilon = tolerance + 0.001  # Allow some extra room to avoid "path spikes" on vertical walls
+
+    # Add a small buffer to avoid "path spikes" on vertical walls
+    epsilon = max(0.01, tolerance + 0.001)
 
     if is_whole_model_job:
         # Use TechDraw.findShapeOutline for whole model silhouette

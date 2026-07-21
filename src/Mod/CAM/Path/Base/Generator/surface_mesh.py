@@ -407,88 +407,216 @@ def _mesh_to_stl(mesh_obj):
 
     return stl
 
+def _clip_model(model_shape, bbox, final_depth, clip_buffer=0.1):
+    """
+    Clips jobs' model below the final depth of the operation to reduce the mesh load generation.
+
+    Args:
+        model_shape (Part.Shape): The mathematically fused solid of the entire Job model.
+        bbox (Base.BoundBox): The Models' BoundBox
+        final_depth (float): The lower Z-bound of the operation.
+        clip_buffer (float): A safety buffer
+
+    Returns:
+        A clipped Part.Shape or the original Model
+    """
+    clipped_shape = None
+    padding = 1.0
+
+    try:
+        clipper_box = Part.makeBox(
+            bbox.XLength + padding * 2,
+            bbox.YLength + padding * 2,
+            bbox.ZMax - (final_depth - clip_buffer) + padding,
+            FreeCAD.Vector(bbox.XMin - padding, bbox.YMin - padding, final_depth - clip_buffer),
+        )
+
+        clipped_shape = model_shape.common(clipper_box)
+    except Exception as e:
+        Path.Log.warning(
+            f"Failed to create clipping boundary. Check your Job Origin and Depths. "
+            f"Using original full model. (Error: {e})"
+        )
+        return model_shape
+
+    if not clipped_shape or clipped_shape.isNull():
+        Path.Log.warning(
+            "Pre-clipping the machining shape resulted in an empty shape. Using original full model."
+        )
+        return model_shape
+
+    return clipped_shape
+
+def _model_optimization(
+    strategy,
+    shape,
+    bb_face=None,
+    exempt_faces=None,
+    stl_filter_adj=0.0,
+    tool_diam=0.0,
+    final_depth=0.0,
+    normal_tolerance=0.01,
+):
+    """
+    Filters the models' faces based on certain criteria to reduce the mesh generation load as much as possible.
+
+    Args:
+        strategy (str): The selected strategy of the operation, SurfaceScan or Waterline.
+        shape (Part.Shape): The mathematically fused solid of the entire Job model.
+        bb_face (Base.BoundBox): The BoundBox of the selected faces.
+        exempt_faces A list of Part.Face objects selected to be machined.
+        stl_filter_adj (float): A positive offset value for the boundary adjustment of the face filter.
+        tool_diam (float): The diameter of the active tool.
+        final_depth (float): The lower Z-bound of the operation.
+
+    Returns:
+        A Compound of filtered faces or the original shape.
+    """
+    filtered = []
+    rejected = 0
+    clip_bb = None
+    exempt_set = None
+
+    # Build exempt set by hashing face geometry identity
+    if exempt_faces:
+        exempt_set = set()
+        for f in exempt_faces:
+            exempt_set.add(id(f))
+
+        if bb_face is not None and tool_diam > 0 and strategy == "SurfaceScan":
+            ba = stl_filter_adj
+            clip_bb = {
+                "XMin": bb_face.XMin - ba,
+                "XMax": bb_face.XMax + ba,
+                "YMin": bb_face.YMin - ba,
+                "YMax": bb_face.YMax + ba,
+            }
+
+    for face in shape.Faces:
+        try:
+            # SurfaceScan strategy with face selection
+            # Exempt faces are always kept
+            if exempt_set and id(face) in exempt_set:
+                filtered.append(face)
+                continue
+
+            # Reject faces below final depth
+            if face.BoundBox.ZMax < final_depth - 0.1:  # Plus a small buffer
+                rejected += 1
+                continue
+
+            u1, u2, v1, v2 = face.ParameterRange
+            norm = face.normalAt((u1 + u2) / 2.0, (v1 + v2) / 2.0)
+            if face.Orientation == "Reversed":
+                norm = norm.multiply(-1)
+
+            normal_z = abs(norm.z)
+
+            # Reject truly vertical faces
+            if normal_z < normal_tolerance:
+                rejected += 1
+                continue
+
+            # Reject faces outside of the selection boundary
+            if clip_bb:
+                bb = face.BoundBox
+                if (bb.XMax < clip_bb["XMin"] or bb.XMin > clip_bb["XMax"] or
+                    bb.YMax < clip_bb["YMin"] or bb.YMin > clip_bb["YMax"]):
+                    rejected += 1
+                    continue
+
+            filtered.append(face)
+
+        except Exception as e:
+            Path.Log.debug(
+                f"surface_mesh._filter_selected_faces: Face check failed — keeping it. {e}"
+            )
+            filtered.append(face)
+
+    # Nothing filtered, return original
+    if not filtered:
+        return shape
+
+    Path.Log.debug(
+        f"surface_mesh._filter_selected_faces: "
+        f"Kept {len(filtered)} faces, rejected {rejected} "
+        f"(vertical or outside boundary)."
+    )
+
+    # All filtered! Return original
+    if len(filtered) == len(shape.Faces):
+        return shape
+
+    return Part.makeCompound(filtered)
 
 def _shape_to_safe_stl(
     model_shape,
     avoid_faces,
-    tool_diam,
     start_depth,
     avoid_overlap,
     linear_deflection,
     angular_deflection,
+    mesh_simplification,
 ):
     """
     Generates the secondary (safety) STL mesh for collision avoidance.
 
-    This function creates a robust collision model by fusing the model with an
-    "invisible floor" and extruded "keep-out zones" for any avoided faces. It
-    applies hollowing and generates a coarse mesh for maximum performance.
+    This function creates a robust "keep-out zones" for any avoided faces.
 
     Args:
         model_shape (Part.Shape): The complete, un-clipped model geometry.
         avoid_faces (list): A list of Part.Face objects to be avoided.
-        tool_diam (float): The diameter of the active tool.
         start_depth (float): The upper Z-bound of the operation.
         avoid_overlap (float): A negative offset value if Avoid Faces Overlap is enabled or the tool radius.
         linear_deflection (float): The base linear deflection for calculating a coarse mesh.
         angular_deflection (float): The base angular deflection for calculating a coarse mesh.
+        mesh_simplification (int): The user-set simplification level for the primary mesh.
 
     Returns:
         ocl.STLSurf: The generated safety mesh, or None on failure.
     """
     fused_shapes = []
-    boundary_face = None
+    offset_avoid = None
 
     fused_shapes.append(model_shape)
 
-    # Add the "Invisible Floor" base plate
-    bb = model_shape.BoundBox
-    plate_padding = tool_diam
-    base_plate = Part.makeBox(
-        bb.XLength + plate_padding * 2,
-        bb.YLength + plate_padding * 2,
-        0.1,
-        FreeCAD.Vector(bb.XMin - plate_padding, bb.YMin - plate_padding, bb.ZMin - 0.1),
-    )
-    fused_shapes.append(base_plate)
-
-    # Create and add the extruded "Keep-Out Pillars" for avoided faces
+    # Create "Keep-Out Pillars" for avoided faces
     if avoid_faces:
         Path.Log.debug(
-            f"surface_mesh._shape_to_safe_stl: Generating extruded envelope for {len(avoid_faces)} avoided faces."
+            f"surface_mesh._shape_to_safe_stl: Generating avoid zones for {len(avoid_faces)} avoided faces."
         )
         from . import surface_common
 
         # avoid_overlap applied on surface_common.generate_pattern_mask also
-        boundary_face = surface_common.build_optimized_boundary(
-            [avoid_faces], avoid_overlap, linear_deflection
+        offset_avoid = surface_common.create_boundary_face(
+            avoid_faces, avoid_overlap, linear_deflection
         )
 
-        if not boundary_face:
-            Path.Log.error("Failed to generate Safe STL. Transitions or Smart LeadIn/LeadOut may not be collision-safe.")
+        if not offset_avoid:
+            Path.Log.error("Offseting avoid zones for avoided faces failed")
             return None
 
-        height = abs(start_depth - bb.ZMin) + 0.1  # Plus 0.1 for safety
-        avoid_solid = boundary_face.extrude(FreeCAD.Vector(0, 0, -height))
-        avoid_solid.translate(FreeCAD.Vector(0, 0, start_depth + 0.1))
-        fused_shapes.append(avoid_solid)
+        try:
+            avoid = Part.makeFace(offset_avoid)
+            avoid.translate(FreeCAD.Vector(0, 0, start_depth + 0.1))
+            fused_shapes.append(avoid)
+        except Exception as e:
+            Path.Log.error(
+                f"Generating avoid zones for avoided faces failed: {e}"
+            )
 
-    # Fuse, Hollow, and create a coarse mesh
+    # Fuse and create a coarse mesh
     safe_compound = Part.Compound(fused_shapes)
-    hollow_shape = safe_compound
-
-    if safe_compound.Shells:
-        hollow_shape = Part.makeCompound(safe_compound.Shells)
 
     try:
         safe_stl = _shape_to_stl(
-            hollow_shape, linear_deflection + 0.02, angular_deflection + 0.1, mesh_simplification=5, use_cpp=True
+            safe_compound, linear_deflection + 0.02, angular_deflection + 0.1, mesh_simplification, use_cpp=True
         )
 
         Path.Log.debug("surface_mesh._shape_to_safe_stl: Safe STL generated successfully.")
     except Exception as e:
         Path.Log.error(
-            f"Failed to generate Safe STL. Transitions may not be collision-safe. Error: {e}"
+            f"Failed to generate Safe STL. Transitions or Smart LeadIn/LeadOut may not be collision-safe.: {e}"
         )
         return None
 
@@ -498,6 +626,11 @@ def _shape_to_safe_stl(
 def generate_stl(
     model_shape,
     base_objs,
+    optimize_stl,
+    strategy,
+    stl_faces,
+    stl_filter_adj,
+    bb_face,
     avoid_faces,
     tool_diam,
     needs_safe_stl,
@@ -507,7 +640,6 @@ def generate_stl(
     linear_deflection,
     angular_deflection,
     mesh_simplification,
-    use_cpp,
 ):
     """
     Orchestrates the creation of the primary (machining) and secondary (safety) STL meshes.
@@ -519,7 +651,11 @@ def generate_stl(
     Args:
         model_shape (Part.Shape): The mathematically fused solid of the entire Job model.
         base_objs (list): The source geometric objects from the Job (can be Part or Mesh).
-        selected_faces (list): A list of Part.Face objects to be machined.
+        optimize_stl (bool): Flag indicating if STL optimization is enabled.
+        strategy (str): The selected strategy of the operation, SurfaceScan or Waterline.
+        stl_faces (list): A list of Part.Face objects to be machined.
+        stl_filter_adj (float): A positive offset value for the boundary adjustment of the STL face filter.
+        bb_face: (Base.BoundBox): The BoundBox of the selected faces.
         avoid_faces (list): A list of Part.Face objects to be avoided.
         tool_diam (float): The diameter of the active tool.
         needs_safe_stl (bool): Flag indicating if the safety model is required.
@@ -529,13 +665,13 @@ def generate_stl(
         linear_deflection (float): The user-set linear deflection for the primary mesh.
         angular_deflection (float): The user-set angular deflection for the primary mesh.
         mesh_simplification (int): The user-set simplification level for the primary mesh.
-        use_cpp: (bool): Use C++ accelerated shape to STL conversion.
 
     Returns:
         tuple: (stl, safe_stl), where stl is the primary mesh and safe_stl is the
                collision mesh (or a copy of stl if generation failed or wasn't needed).
     """
-    stl, safe_stl = None, None
+    stl, safe_stl, clipped_shape = None, None, None
+    use_cpp = False if strategy == "Waterline" else True
 
     if not base_objs:
         Path.Log.error("No base models provided for STL generation.")
@@ -561,35 +697,26 @@ def generate_stl(
             return None, None
 
         # Pre-clip the full model shape to the final depth
-        CLIP_BUFFER = 0.1
+        clip_buffer = 0.1
         bbox = model_shape.BoundBox
 
-        if final_depth > bbox.ZMin + CLIP_BUFFER:
-            padding = 1.0
+        if final_depth > bbox.ZMin + clip_buffer and not optimize_stl:
+            clipped_shape = _clip_model(model_shape, bbox, final_depth, clip_buffer)
 
-            try:
-                clipper_box = Part.makeBox(
-                    bbox.XLength + padding * 2,
-                    bbox.YLength + padding * 2,
-                    bbox.ZMax - (final_depth - CLIP_BUFFER) + padding,
-                    FreeCAD.Vector(bbox.XMin - padding, bbox.YMin - padding, final_depth - CLIP_BUFFER),
-                )
-
-                clipped_shape = model_shape.common(clipper_box)
-            except Exception as e:
-                clipped_shape = model_shape
-                Path.Log.warning(
-                    f"Failed to create clipping boundary. Check your Job Origin and Depths. "
-                    f"Using original full model. (Error: {e})"
-                )
-
-            if clipped_shape.isNull():
-                Path.Log.warning(
-                    "Pre-clipping the machining shape resulted in an empty shape. Using original full model."
-                )
-                clipped_shape = model_shape
-        else:
+        if not clipped_shape or clipped_shape.isNull():
             clipped_shape = model_shape
+
+        # STL optimization - pre-process Model
+        if optimize_stl:
+            clipped_shape = _model_optimization(
+                strategy,
+                clipped_shape,
+                bb_face,
+                stl_faces,
+                stl_filter_adj,
+                tool_diam,
+                final_depth,
+            )
 
         # Generate the primary STL
         stl = _shape_to_stl(
@@ -612,11 +739,11 @@ def generate_stl(
             safe_stl = _shape_to_safe_stl(
                 clipped_shape,
                 avoid_faces,
-                tool_diam,
                 start_depth,
                 avoid_overlap,
                 linear_deflection,
                 angular_deflection,
+                mesh_simplification=max(mesh_simplification, 5),
             )
 
         if safe_stl is None:

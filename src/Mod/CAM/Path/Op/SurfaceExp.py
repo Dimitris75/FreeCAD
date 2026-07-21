@@ -447,6 +447,16 @@ class ObjectSurface(PathOp.ObjectOp):
             ),
             (
                 "App::PropertyBool",
+                "OptimizeMeshConversion",
+                "Optimization",
+                QT_TRANSLATE_NOOP(
+                    "App::Property",
+                    "Can drastically decrease processing time from 5% to 150% based on certain criteria."
+                    "Still in Beta phase - disable if you experience issues.",
+                ),
+            ),
+            (
+                "App::PropertyBool",
                 "KeepToolDown",
                 "Optimization",
                 QT_TRANSLATE_NOOP(
@@ -657,6 +667,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "Strategy": "SurfaceScan",
             "AdaptiveSampling": False,
             "OptimizeLinearPaths": True,
+            "OptimizeMeshConversion": True,
             "KeepToolDown": True,
             "UseStartPoint": False,
             "StartPoint": FreeCAD.Vector(0.0, 0.0, obj.ClearanceHeight.Value),
@@ -782,6 +793,7 @@ class ObjectSurface(PathOp.ObjectOp):
         obj.setEditorMode("LinearDeflection", D)
         obj.setEditorMode("MeshSimplification", D)
         obj.setEditorMode("OptimizeLinearPaths", D)
+        obj.setEditorMode("OptimizeMeshConversion", D)
         obj.setEditorMode("SampleInterval", D)
 
         # Apply Visibility to Common/Contextual Group (E-F)
@@ -1206,6 +1218,13 @@ class ObjectSurface(PathOp.ObjectOp):
         needs_stl = True if opt_transitions or use_smart_leads else False
         force_keep_down = True if obj.CutPattern in ("ZigZag", "CircularZigZag") else False
 
+        # Determine the bounding box
+        if cutting_faces and not obj.BoundBox == "Stock":
+            # If cutting_faces is ready from bb_face - opExecute
+            group_bb = bb_face
+        else:
+            group_bb = bb_face.BoundBox
+
         # Ensure we have cutting faces (Fallback to whole model if none selected)
         if not cutting_faces:
             if bb_face:
@@ -1213,15 +1232,6 @@ class ObjectSurface(PathOp.ObjectOp):
             else:
                 Path.Log.error("Could not determine source faces for pattern generation.")
                 return []
-
-        # Determine the bounding box (if cutting_faces the bb_face is None)
-        if bb_face:
-            group_bb = bb_face.BoundBox
-        elif cutting_faces:
-            # Avoid compound.BoundBox for really complex face selections
-            from functools import reduce
-            group_bb = reduce(lambda a, b: a.united(b),
-                            [f.BoundBox for f in cutting_faces])
 
         # Construct the list of face groups to process based on user's choice
         handle_mode = getattr(obj, "HandleMultipleFeatures", "Collectively")
@@ -1553,16 +1563,22 @@ class ObjectSurface(PathOp.ObjectOp):
         boundary_adjustment = obj.BoundaryAdjustment.Value
         avoid_overlap = tool_radius
         is_adaptive = getattr(obj, "AdaptiveSampling", False)
-        cutter, stl, safe_stl = None, None, None
+        cutter, stl, safe_stl, stl_faces =  None, None, None, None
         cutting_faces, avoid_faces, bb_face, shape = None, None, None, None
 
-        use_cpp = strategy == "SurfaceScan"
-        needs_face_selection = strategy == "SurfaceScan"
+        use_cpp = needs_face_selection = strategy == "SurfaceScan"
         needs_safe_stl = getattr(obj, "KeepToolDown", False) or getattr(obj, "LeadInOut", False)
         needs_stl = strategy in ["SurfaceScan", "Waterline"]
         needs_ocl_cutter = strategy in ["SurfaceScan", "Waterline"]
         needs_boundary = strategy in ["SurfaceScan", "ZLevelHybrid"]
         needs_avoid_overlap = getattr(obj, "AvoidFacesOverlap", False) and strategy == "SurfaceScan"
+
+        # STL Mesh optimization
+        optimize_stl = getattr(obj, "OptimizeMeshConversion", True)
+        stl_filter_adj = boundary_adjustment
+
+        if needs_stl and getattr(obj, "LeadInOut", False):
+            stl_filter_adj = max(tool_radius, boundary_adjustment)
 
         # Geometry preperation
         base_objs = JOB.Model.Group
@@ -1596,6 +1612,9 @@ class ObjectSurface(PathOp.ObjectOp):
             cutting_faces, avoid_faces = surface_pattern.split_selected_features(
                 base_prop, avoid_count
             )
+            if obj.BoundBox not in ["Stock"]:
+                # Send selected faces to STL optimization filter
+                stl_faces = cutting_faces
 
         # Create boundary face
         if needs_boundary:
@@ -1603,8 +1622,11 @@ class ObjectSurface(PathOp.ObjectOp):
 
             if obj.BoundBox == "Stock":
                 bb_face = surface_common.create_boundary_face(JOB.Stock.Shape.Faces, offset)
-            elif not cutting_faces:
-                # If cutting_faces, the boundary will be created by those in SurfaceScan
+            elif cutting_faces:
+                # Surface Scan with cutting_faces: Create 'BoundBox' directly that it also needed for STL.
+                from functools import reduce
+                bb_face = reduce(lambda a, b: a.united(b), [f.BoundBox for f in cutting_faces])
+            else:
                 bb_face = surface_common.create_boundary_face(model_shape.Faces, offset)
 
         # Avoid Faces Overlap
@@ -1650,6 +1672,11 @@ class ObjectSurface(PathOp.ObjectOp):
             stl, safe_stl = surface_mesh.generate_stl(
                 model_shape=model_shape,
                 base_objs=base_objs,
+                optimize_stl=optimize_stl,
+                strategy=strategy,
+                stl_faces=stl_faces,
+                stl_filter_adj=stl_filter_adj,
+                bb_face=bb_face,
                 avoid_faces=avoid_faces,
                 tool_diam=tool_diam,
                 needs_safe_stl=needs_safe_stl,
@@ -1659,7 +1686,6 @@ class ObjectSurface(PathOp.ObjectOp):
                 linear_deflection=obj.LinearDeflection.Value,
                 angular_deflection=obj.AngularDeflection.Value,
                 mesh_simplification=getattr(obj, "MeshSimplification", 1),
-                use_cpp=use_cpp,
             )
             stl_time = time.time() - stl_start
 
@@ -1739,6 +1765,7 @@ def SetupProperties():
     setup.append("IgnoreOuter")
     setup.append("FillSelectedHoles")
     setup.append("OptimizeLinearPaths")
+    setup.append("OptimizeMeshConversion")
     setup.append("SampleInterval")
     setup.append("AdaptiveSampling")
     setup.append("MinSampleInterval")
