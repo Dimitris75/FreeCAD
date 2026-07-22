@@ -499,6 +499,15 @@ class ObjectSurface(PathOp.ObjectOp):
                     "App::Property", "Vertical lift distance applied to the lead-in / lead-out.",
                 ),
             ),
+            # -- Volumetric Feed Rate --
+            (
+                "App::PropertyPercent",
+                "VolumetricFeedPercent",
+                "Volumetric Feed Rate",
+                QT_TRANSLATE_NOOP(
+                    "App::Property", "Increases the horizontal feed rate at the top of the cut as a percentage (0% disables the boost).",
+                ),
+            ),
             # -- Start Point --
             (
                 "App::PropertyVectorDistance",
@@ -699,6 +708,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "SamplingAccuracy": "4",
             "LeadInOut": False,
             "LeadFeed": 75,
+            "VolumetricFeedPercent": 25,
             "LeadLiftDistance": 1.0,
             "AdaptiveAccuracy": "0.1",
             "LiftDistance": 0.05,
@@ -745,6 +755,7 @@ class ObjectSurface(PathOp.ObjectOp):
         obj.setEditorMode("LeadInOut", A)
         obj.setEditorMode("LeadFeed", A)
         obj.setEditorMode("LeadLiftDistance", A)
+        obj.setEditorMode("VolumetricFeedPercent", A)
 
         # Adaptive Sampling Logic
         can_adaptive = is_waterline or is_surface_scan
@@ -965,6 +976,12 @@ class ObjectSurface(PathOp.ObjectOp):
         # Limit Adaptive Keep Tool Down Ratio to positive values
         if obj.KeepToolDownRatio < 0:
             obj.KeepToolDownRatio = 0
+
+        # Limit Volumetric Feed Percent
+        if obj.VolumetricFeedPercent > 100.0:
+            obj.VolumetricFeedPercent = 100.0
+        if obj.VolumetricFeedPercent < 0.0:
+            obj.VolumetricFeedPercent = 0.0
 
     def opUpdateDepths(self, obj):
         if hasattr(obj, "Base") and obj.Base:
@@ -1205,18 +1222,24 @@ class ObjectSurface(PathOp.ObjectOp):
         Returns:
             list: A list of Path.Command objects representing the final G-code.
         """
-
         all_final_cmds = []
 
-        sample_interval = obj.SampleInterval.Value
-        use_smart_leads = getattr(obj, "LeadInOut", False)
-        lead_feed_percent = obj.LeadFeed
-        lift_lead_z = obj.LeadLiftDistance.Value
-        opt_transitions = getattr(obj, "KeepToolDown", False)
-
         is_whole_model_job = False if cutting_faces else True
-        needs_stl = True if opt_transitions or use_smart_leads else False
+        sample_interval = obj.SampleInterval.Value
         force_keep_down = True if obj.CutPattern in ("ZigZag", "CircularZigZag") else False
+
+        options = {
+            "depth_offset": obj.DepthOffset.Value,
+            "optimize_transitions": obj.KeepToolDown,
+            "safe_stl": safe_stl,
+            "cutter": cutter,
+            "force_keep_down": force_keep_down,
+            "use_smart_leads": obj.LeadInOut,
+            "lead_feed_percent": obj.LeadFeed,
+            "lift_lead_z": obj.LeadLiftDistance.Value,
+            "volumetric_percent": obj.VolumetricFeedPercent,
+            "use_multipass": getattr(obj, "LayerMode", "Single-pass") == "Multi-pass",
+        }
 
         # Ensure we have cutting faces (Fallback to whole model if none selected)
         if not cutting_faces:
@@ -1266,12 +1289,6 @@ class ObjectSurface(PathOp.ObjectOp):
                 ]
 
             # F. Generate G-Code
-            # For "Individual" mode, we force full retracts between features.
-            # For "Collective" mode, we allow "Keep Tool Down".
-            can_optimize_transitions = len(feature_groups) == 1 and getattr(
-                obj, "KeepToolDown", False
-            )
-
             group_cmds = surface_postprocess.scan_lines_to_gcode(
                 scan_lines,
                 sample_interval=sample_interval,
@@ -1284,14 +1301,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 start_z=obj.StartDepth.Value,
                 final_z=obj.FinalDepth.Value,
                 step_down=obj.StepDown.Value,
-                depth_offset=obj.DepthOffset.Value,
-                optimize_transitions=opt_transitions,
-                safe_stl=safe_stl if needs_stl else None,
-                cutter=cutter if needs_stl else None,
-                force_keep_down=force_keep_down,
-                use_smart_leads=use_smart_leads,
-                lead_feed_percent=lead_feed_percent,
-                lift_lead_z=lift_lead_z,
+                options=options,
             )
             all_final_cmds.extend(group_cmds)
 
@@ -1594,9 +1604,8 @@ class ObjectSurface(PathOp.ObjectOp):
         if is_waterline:
             # Ensure the OCL cutter shaft is at least as long as the operation 'depth - edge_height'
             # so it cannot pass through vertical walls removed by mesh optimization.
-            op_depth = obj.StartDepth.Value - obj.FinalDepth.Value + 0.1
-            if op_depth > tool_params["edge_height"]:
-                tool_params["length_offset"] = op_depth - tool_params["edge_height"]
+            op_depth = obj.StartDepth.Value - obj.FinalDepth.Value
+            tool_params["length_offset"] = op_depth + tool_params["edge_height"]
 
         # Geometry preperation
         base_objs = JOB.Model.Group

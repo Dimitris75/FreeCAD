@@ -164,7 +164,7 @@ def make_ocl_cutter(
     elif cutter_name == "BullCutter":
         if edge_height <= 0:
             Path.Log.warning(
-                "BullCutter edge_height <= 0 ({}), using diameter as fallback".format(edge_height)
+                f"The cutting edge height for this Bull-nose tool is set to {edge_height}. Using the tool's diameter as a fallback height."
             )
             edge_height = diameter
         # OCL BullCutter(diameter, minor_radius, length)

@@ -215,7 +215,7 @@ def _optimize_travel(
         List of ``Path.Command``.
     """
     if safe_pdc is None or cutter is None:
-        return []
+        return None, False
 
     cutter_diam = cutter.getDiameter()
     dx = next_point[0] - last_point[0]
@@ -228,17 +228,18 @@ def _optimize_travel(
             last_point, next_point, safe_pdc, start_z, depth_offset, safe_z, step_down, horiz_feed, force_keep_down,
         )
         if transition_cmds:
-            return transition_cmds
+            return transition_cmds, True
 
     # 2. Medium Transition (Dynamic Clearance Rapid "Hop")
     if xy_dist_sqrd <= (cutter_diam * 10.0) ** 2:
-        return _dropcutter_medium_transition(
+        medium_cmds = _dropcutter_medium_transition(
             last_point, next_point, safe_pdc, depth_offset, safe_z, vert_rapid, horiz_rapid
         )
+        return medium_cmds, False
 
     # 3. Long Transition
     # Return empty list to trigger the absolute safe_z fallback in the parent function
-    return []
+    return None, False
 
 
 def _dropcutter_transition(start, end, safe_pdc, start_z, depth_offset, safe_z, step_down, horiz_feed, force_keep_down=False):
@@ -666,6 +667,145 @@ def _probe_surface_z(point_2d, reference_z, safe_pdc):
 
 
 # ---------------------------------------------------------------------------
+# Volumetric Feed Rates
+# ---------------------------------------------------------------------------
+
+
+def _generate_volumetric_cut_commands(line, depth_offset, horiz_feed, vert_feed, layer_start_z, layer_target_z, volumetric_percent):
+    """
+    Generate G-code commands for a single scan line using a Volumetric feed rate.
+
+    This function converts 3D toolpath coordinates into Path.Command objects while
+    dynamically adjusting the feed rate based on the slope and depth of the cut.
+    It utilizes a 1-point lookahead kinematic preview to progressively blend feed
+    rates, allowing the machine to brake early before steep plunges.
+
+    A threshold filter is applied to prevent micro-adjustments from bloating the
+    final G-code file.
+
+    Args:
+        line (list): Scan line as a list of (x, y, z) tuples.
+        depth_offset (float): Global Z-offset to apply to the toolpath.
+        horiz_feed (float): Base horizontal cutting feed rate (mm/s).
+        vert_feed (float): Vertical plunge feed rate (mm/s).
+        layer_start_z (float): The top Z-boundary of the current roughing pass.
+        layer_target_z (float): The bottom Z-boundary of the current roughing pass.
+        volumetric_percent (float): The percentage value defining the maximum speed boost
+                                 at the top of a shallow cut (e.g., 50 provides a 50%
+                                 speed increase; 0 disables the boost).
+
+    Returns:
+        list: A list of FreeCAD Path.Command objects representing the cutting move.
+    """
+    commands = []
+
+    if not line:
+        return commands
+
+    # Volumetric boost factor
+    boost_factor = 1.0 + (volumetric_percent / 100.0)
+    threshold = 0.5  # Ignore feed changes smaller than 0.5 mm/s (30 mm/min)
+
+    # Setup the very first point
+    first_pt = line[0]
+    z = first_pt[2] + depth_offset
+
+    # Find the starting feed rate using the helper
+    # We fake a prev_pt that is flat to avoid triggering a plunge penalty on the first move
+    fake_prev = (first_pt[0] - 0.01, first_pt[1], first_pt[2])
+    initial_feed = _get_segment_target_feed(
+        fake_prev, first_pt, horiz_feed, vert_feed, layer_start_z, layer_target_z, boost_factor
+    )
+
+    current_feed = round(initial_feed, 2)
+    commands.append(Path.Command("G1", {"X": first_pt[0], "Y": first_pt[1], "Z": z, "F": current_feed}))
+
+    # Loop through the rest of the segments
+    for i in range(1, len(line)):
+        pt = line[i]
+        prev_pt = line[i-1]
+        z = pt[2] + depth_offset
+
+        # Calculate feed for This segment based on height and plunge angle
+        curr_target = _get_segment_target_feed(
+            prev_pt, pt, horiz_feed, vert_feed, layer_start_z, layer_target_z, boost_factor
+        )
+
+        # Lookahead: Only look ahead to pre-brake for steep upcoming downhill drops
+        if i + 1 < len(line):
+            next_pt = line[i+1]
+            next_target = _get_segment_target_feed(
+                pt, next_pt, horiz_feed, vert_feed, layer_start_z, layer_target_z, boost_factor
+            )
+            # Pre-brake if the next move is significantly slower
+            if (curr_target - next_target) > threshold * 2:
+                curr_target = (curr_target + next_target) / 2.0
+
+        # Threshold Cache: Only update if the change is significant enough
+        if abs(curr_target - current_feed) >= threshold:
+            calculated_feed = round(curr_target, 2)
+            commands.append(Path.Command("G1", {"X": pt[0], "Y": pt[1], "Z": z, "F": calculated_feed}))
+            current_feed = calculated_feed  # Update the cache
+        else:
+            # Same speed, just output the coordinates
+            commands.append(Path.Command("G1", {"X": pt[0], "Y": pt[1], "Z": z}))
+
+    return commands
+
+
+def _get_segment_target_feed(prev_pt, pt, horiz_feed, vert_feed, layer_start_z, layer_target_z, boost_factor):
+    """
+    Calculate the ideal feed rate for a single linear segment based on depth and slope.
+
+    This acts as a volumetric chip-load optimizer. It applies a speed boost when the
+    tool is near the top of the pass layer (less material engagement), and scales
+    down to the baseline horizontal feed at the target depth. It also applies a
+    kinematic penalty based on the 3D angle of the segment (slowing down for plunges
+    and stripping boosts for steep climbs).
+
+    Note: This is a pure math function. It does not apply rounding or thresholding.
+
+    Args:
+        prev_pt (tuple): The starting (x, y, z) coordinate of the segment.
+        pt (tuple): The ending (x, y, z) coordinate of the segment.
+        horiz_feed (float): Base horizontal cutting feed rate (mm/s).
+        vert_feed (float): Vertical plunge feed rate (mm/s).
+        layer_start_z (float): The top Z-boundary of the current roughing pass.
+        layer_target_z (float): The bottom Z-boundary of the current roughing pass.
+        boost_factor (float): The calculated decimal multiplier applied to the horizontal
+                              feed rate at the top of the layer (e.g., 1.5 for a 50% increase).
+                              A value of 1.0 completely disables volumetric scaling.
+
+    Returns:
+        float: The raw, calculated target feed rate for this specific movement.
+    """
+    # 1. Base feed determined strictly by absolute Z-height
+    total_depth = layer_start_z - layer_target_z
+    if total_depth > 1e-5:
+        clamped_z = max(layer_target_z, min(layer_start_z, pt[2]))
+        z_ratio = (clamped_z - layer_target_z) / total_depth
+    else:
+        z_ratio = 0.0
+
+    # Boost the horizontal feed based on how high up we are
+    base_target = horiz_feed + (horiz_feed * (boost_factor - 1.0) * z_ratio)
+
+    # 2. Plunge Penalty (Only evaluate if we are going downhill)
+    dx = pt[0] - prev_pt[0]
+    dy = pt[1] - prev_pt[1]
+    dz = pt[2] - prev_pt[2]
+    dist_3d = math.hypot(dx, dy, dz)
+
+    if dist_3d > 1e-6 and dz < -1e-5:
+        # Plunging downwards: blend between the base_target and vert_feed
+        z_angle_ratio = abs(dz) / dist_3d
+        return base_target - ((base_target - vert_feed) * z_angle_ratio)
+
+    # If flat or climbing, just return the height-based feed!
+    return base_target
+
+
+# ---------------------------------------------------------------------------
 # G-code generation from drop-cutter data
 # ---------------------------------------------------------------------------
 
@@ -682,14 +822,7 @@ def scan_lines_to_gcode(
     start_z,
     final_z,
     step_down,
-    depth_offset=0.0,
-    optimize_transitions=False,
-    safe_stl=None,
-    cutter=None,
-    force_keep_down=False,
-    use_smart_leads=False,
-    lead_feed_percent=75,
-    lift_lead_z=0.0,
+    options,
 ):
     """
     Convert multiple scan lines of CL-points to G-code with transitions,
@@ -702,22 +835,32 @@ def scan_lines_to_gcode(
         scan_lines: List of scan lines, each a list of ``(x, y, z)`` tuples.
         sample_interval: Sample_interval.
         horiz_feed: Horizontal feed rate.
+        vert_feed: Vertical plunge feed rate.
         vert_rapid: Vertical rapid feed rate.
         horiz_rapid: Horizontal rapid feed rate.
         safe_z: Safe height.
         clearance_z: Clearance height.
         start_z: Start Depth.
         final_z: Final depth.
-        step_down: Step Down height
-        depth_offset: Optional Z offset.
-        use_smart_leads: If True and not optimize_transitions, uses smart
-                         Lead-in/out algorithm.
-        optimize_transitions: If True, short transitions (≤ 2× cutter
-                              diameter) use a direct G1 feed move instead
-                              of retracting.  Longer transitions fall back
-                              to a full safe_z retract.
-        safe_stl: Optional ``ocl.STLSurf`` for transition optimization.
-        cutter: Optional OCL cutter for transition optimization.
+        step_down: Step Down height.
+        options (dict):
+            depth_offset: Optional Z offset.
+            optimize_transitions: If True, short transitions (≤ 2× cutter
+                                diameter) use a direct G1 feed move instead
+                                of retracting.  Longer transitions fall back
+                                to a full safe_z retract.
+            safe_stl: Optional ``ocl.STLSurf`` for transition optimization.
+            cutter: Optional OCL cutter for transition optimization.
+            force_keep_down: If True, forces the tool to stay down during transitions
+                            (useful for specific path patterns like ZigZag).
+            use_smart_leads: If True and not optimize_transitions, uses smart
+                            Lead-in/out algorithm.
+            lead_feed_percent: Feed rate for lead-in/out arcs, expressed as a
+                            percentage of the horiz_feed.
+            lift_lead_z: Optional vertical lift applied during the lead moves.
+            volumetric_perncent: Scales the horizontal feed rate at the top of the cut
+                            as a percentage (0 disables the depth boost).
+            use_multipass: A job on single pass at depth, or multiple passes to final depth.
 
     Returns:
         List of ``Path.Command``.
@@ -726,8 +869,18 @@ def scan_lines_to_gcode(
     if not scan_lines:
         return []
 
-    # Create the PDC once and reuse it for all transitions
-    safe_pdc = None
+    safe_pdc = last_point = is_multi_pass = kept_down = None
+
+    depth_offset = options["depth_offset"]
+    optimize_transitions = options["optimize_transitions"]
+    safe_stl = options["safe_stl"]
+    cutter = options["cutter"]
+    force_keep_down = options["force_keep_down"]
+    use_smart_leads = options["use_smart_leads"]
+    lead_feed_percent = options["lead_feed_percent"]
+    lift_lead_z = options["lift_lead_z"]
+    volumetric_percent = options.get("volumetric_percent", 25) > 0
+    use_multipass = options["use_multipass"]
 
     if use_smart_leads:
         lead_feed = horiz_feed * (lead_feed_percent / 100)
@@ -737,20 +890,41 @@ def scan_lines_to_gcode(
         if optimize_transitions:
             msg += " 'Keep Tool Down' has been disabled to allow leads."
             optimize_transitions = False
-
         Path.Log.warning(msg)
 
     if (optimize_transitions or use_smart_leads) and safe_stl is not None and cutter is not None:
         safe_pdc = _make_safe_pdc(safe_stl, cutter, final_z, sample_interval)
 
+    if volumetric_percent > 0:
+        vol_msg = (
+            f"Volumetric Feed enabled ({volumetric_feed}% boost). "
+            "Ensure 'Start Depth', 'Final Depth', and 'Step Down' tightly bound "
+            "your actual stock material for accurate depth-based acceleration."
+        )
+        Path.Log.warning(vol_msg)
+
     commands = []
     commands.append(Path.Command("G0", {"Z": clearance_z, "F": vert_rapid}))
 
-    last_point = None
+    # Setup initial multi-pass layer boundaries
+    current_layer_start = start_z
+    current_layer_target = start_z - step_down if use_multipass else final_z
 
     for line in scan_lines:
         if not line:
             continue
+
+        # Volumetric feed Layer Bounds
+        if is_multi_pass:
+            line_min_z = min(pt[2] for pt in line)
+
+            # If the tool drops into the next level, step the tracking bounds down
+            while line_min_z < current_layer_target - 1e-4:
+                current_layer_start = current_layer_target
+                current_layer_target -= step_down
+                # Cap the target at absolute final_z to prevent overshoot
+                if current_layer_target < final_z:
+                    current_layer_target = final_z
 
         lead_in_cmds = []
         first_point = line[0]  # First Point
@@ -767,7 +941,7 @@ def scan_lines_to_gcode(
         if last_point is not None:
             travel_cmds = None
             if optimize_transitions:
-                travel_cmds = _optimize_travel(
+                travel_cmds, kept_down = _optimize_travel(
                     first_point,
                     last_point,
                     start_z,
@@ -796,15 +970,18 @@ def scan_lines_to_gcode(
             )
 
         # C. Plunge to start of lead/cut
-        commands.append(Path.Command("G1", {"Z": first_point[2] + depth_offset, "F": vert_feed}))
+        if not kept_down:
+            commands.append(Path.Command("G1", {"Z": first_point[2] + depth_offset, "F": vert_feed}))
 
         # D. Add Lead-in G-code
         commands.extend(lead_in_cmds)
 
-        # E. Cut along the scan line
-        for pt in line:
-            z = pt[2] + depth_offset
-            commands.append(Path.Command("G1", {"X": pt[0], "Y": pt[1], "Z": z, "F": horiz_feed}))
+        # E. Cut along the scan line - Apply Volumetric Feed
+        cut_cmds = _generate_volumetric_cut_commands(
+            line, depth_offset, horiz_feed, vert_feed,
+            current_layer_start, current_layer_target, volumetric_percent,
+        )
+        commands.extend(cut_cmds)
 
         # F. Generate Lead-out
         if use_smart_leads and safe_pdc:
