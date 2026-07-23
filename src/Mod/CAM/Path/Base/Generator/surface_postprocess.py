@@ -880,7 +880,7 @@ def scan_lines_to_gcode(
     lead_feed_percent = options["lead_feed_percent"]
     lift_lead_z = options["lift_lead_z"]
     volumetric_percent = options.get("volumetric_percent", 25)
-    use_multipass = options["use_multipass"]
+    is_multipass = options["is_multipass"]
 
     if use_smart_leads:
         lead_feed = horiz_feed * (lead_feed_percent / 100)
@@ -908,7 +908,7 @@ def scan_lines_to_gcode(
 
     # Setup initial multi-pass layer boundaries
     current_layer_start = start_z
-    current_layer_target = start_z - step_down if use_multipass else final_z
+    current_layer_target = start_z - step_down if is_multipass else final_z
 
     for line in scan_lines:
         if not line:

@@ -1238,7 +1238,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "lead_feed_percent": obj.LeadFeed,
             "lift_lead_z": obj.LeadLiftDistance.Value,
             "volumetric_percent": obj.VolumetricFeedPercent,
-            "use_multipass": getattr(obj, "LayerMode", "Single-pass") == "Multi-pass",
+            "is_multipass": getattr(obj, "LayerMode", "Single-pass") == "Multi-pass",
         }
 
         # Ensure we have cutting faces (Fallback to whole model if none selected)
