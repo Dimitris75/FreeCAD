@@ -897,7 +897,7 @@ def scan_lines_to_gcode(
 
     if volumetric_percent > 0:
         vol_msg = (
-            f"Volumetric Feed enabled ({volumetric_feed}% boost). "
+            f"Volumetric Feed enabled ({volumetric_percent}% boost). "
             "Ensure 'Start Depth', 'Final Depth', and 'Step Down' tightly bound "
             "your actual stock material for accurate depth-based acceleration."
         )
