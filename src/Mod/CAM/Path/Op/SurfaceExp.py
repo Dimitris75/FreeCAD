@@ -1642,6 +1642,8 @@ class ObjectSurface(PathOp.ObjectOp):
             if obj.BoundBox not in ["Stock"]:
                 # Send selected faces to STL optimization filter
                 stl_faces = cutting_faces
+            if avoid_faces:
+                avoid_faces = surface_common._preprocess_avoid_faces(avoid_faces)
 
         # Create boundary face
         if needs_boundary:

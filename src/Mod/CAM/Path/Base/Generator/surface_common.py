@@ -581,3 +581,75 @@ def _separate_touching_faces(faces, tolerance=0.01):
             touching_groups.append(group)
 
     return touching_groups, isolated_faces
+
+
+def _preprocess_avoid_faces(raw_faces):
+    """
+    Pre-process a list of avoid faces to generate planar caps for tilted or cylindrical holes.
+
+    When users select the inside wall of a hole (especially on tilted surfaces), standard
+    vertical projection turns the 3D cylinder into a distorted ellipse on the XY plane.
+    This function intercepts the raw faces, groups their edges by Z-height to mathematically
+    isolate the top-most rim, and reconstructs a flat, planar cap.
+
+    This ensures that downstream 2D pattern generators will create perfectly uniform,
+    circular boundaries instead of egg-shapes.
+    If a face cannot be cleanly capped (e.g., complex 3D curved topologies), the algorithm
+    safely falls back to the original unmodified face.
+
+    Args:
+        raw_avoid_faces: List of original ``Part.Face`` objects selected by the user.
+
+    Returns:
+        List of processed ``Part.Face`` objects (containing the optimized caps and
+        any unmodified fallbacks) to be shared across the CAM pipeline.
+    """
+    new_faces = []
+
+    for raw_face in raw_faces:
+
+        if not hasattr(raw_face, "Edges") or not raw_face.Edges:
+            continue
+
+        # Group edges by their Center of Mass Z-coordinate.
+        # This cleanly separates the top rim, bottom rim, and vertical seams.
+        edges_by_z = {}
+        for edge in raw_face.Edges:
+            # Rounding to 3 decimal places ensures microscopic floating-point
+            # differences don't split edges that belong to the same continuous rim
+            z_key = round(edge.CenterOfMass.z, 3)
+            if z_key not in edges_by_z:
+                edges_by_z[z_key] = []
+            edges_by_z[z_key].append(edge)
+
+        if not edges_by_z:
+            continue
+
+        # Extract the edges that sit at the absolute highest Z-level
+        highest_z = max(edges_by_z.keys())
+        top_edges = edges_by_z[highest_z]
+
+        try:
+            # Reconstruct just the top boundary into a new, independent wire
+            top_wire = Part.Wire(top_edges)
+
+            # Create a flat cap face from this wire
+            cap_face = Part.Face(top_wire)
+
+            if cap_face.isValid() and not cap_face.isNull():
+                new_faces.append(cap_face)
+
+        except Exception as e:
+            Path.Log.debug(
+                "_preprocess_avoid_faces: Failed to pre-process Avoid Face. "
+                f"Fall back to the original unmodified face {e}"
+            )
+            new_faces.append(raw_face)
+
+    if new_faces:
+        return new_faces
+
+    Path.Log.debug(
+        f"_preprocess_avoid_faces: Failed to pre-process Avoid Faces. Fall back to the original list of faces "
+    )
+    return original_faces

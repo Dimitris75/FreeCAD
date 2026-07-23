@@ -879,7 +879,7 @@ def scan_lines_to_gcode(
     use_smart_leads = options["use_smart_leads"]
     lead_feed_percent = options["lead_feed_percent"]
     lift_lead_z = options["lift_lead_z"]
-    volumetric_percent = options.get("volumetric_percent", 25) > 0
+    volumetric_percent = options.get("volumetric_percent", 25)
     use_multipass = options["use_multipass"]
 
     if use_smart_leads:
