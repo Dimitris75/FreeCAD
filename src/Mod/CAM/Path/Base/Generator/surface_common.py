@@ -652,4 +652,4 @@ def _preprocess_avoid_faces(raw_faces):
     Path.Log.debug(
         f"_preprocess_avoid_faces: Failed to pre-process Avoid Faces. Fall back to the original list of faces "
     )
-    return original_faces
+    return raw_faces
