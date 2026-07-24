@@ -192,9 +192,11 @@ def _optimize_travel(
 ):
     """Find the shortest safe path between two scan line endpoints.
 
-    - Short transitions (≤ 2× cutter diameter): Emits a direct G1 feed move.
-    - Medium transitions (≤ 10× cutter diameter): Calculates a local dynamic clearance plane.
-    - Long transitions: Returns an empty list, falling back to absolute safe_z retracts.
+    For short transitions (≤ 2× cutter diameter), emits a direct G1
+    feed move to the next point — the tool stays down without probing.
+    Longer transitions returns an empty list.
+
+    Long-distance optimization is deferred to a future iteration.
 
     Args:
         next_point: (x, y, z) start of next scan line.
@@ -215,31 +217,21 @@ def _optimize_travel(
         List of ``Path.Command``.
     """
     if safe_pdc is None or cutter is None:
-        return None, False
+        return []
 
     cutter_diam = cutter.getDiameter()
     dx = next_point[0] - last_point[0]
     dy = next_point[1] - last_point[1]
     xy_dist_sqrd = dx * dx + dy * dy
 
-    # 1. Short Transition (Keep-Down Feed Move)
     if xy_dist_sqrd <= (cutter_diam * 2.0) ** 2:
         transition_cmds = _dropcutter_transition(
             last_point, next_point, safe_pdc, start_z, depth_offset, safe_z, step_down, horiz_feed, force_keep_down,
         )
         if transition_cmds:
-            return transition_cmds, True
+            return transition_cmds
 
-    # 2. Medium Transition (Dynamic Clearance Rapid "Hop")
-    if xy_dist_sqrd <= (cutter_diam * 10.0) ** 2:
-        medium_cmds = _dropcutter_medium_transition(
-            last_point, next_point, safe_pdc, depth_offset, safe_z, vert_rapid, horiz_rapid
-        )
-        return medium_cmds, False
-
-    # 3. Long Transition
-    # Return empty list to trigger the absolute safe_z fallback in the parent function
-    return None, False
+    return []
 
 
 def _dropcutter_transition(start, end, safe_pdc, start_z, depth_offset, safe_z, step_down, horiz_feed, force_keep_down=False):
@@ -283,46 +275,6 @@ def _dropcutter_transition(start, end, safe_pdc, start_z, depth_offset, safe_z, 
 
     # Ensure a perfect final connection to the start of the next cutting pass
     commands.append(Path.Command("G1", {"X": end[0], "Y": end[1], "Z": end[2] + depth_offset, "F": horiz_feed}))
-    return commands
-
-
-def _dropcutter_medium_transition(
-    last_point, next_point, safe_pdc, depth_offset, safe_z, vert_rapid, horiz_rapid
-):
-    """Probes a medium-distance transition path and returns dynamic clearance rapid commands.
-
-    Creates a local rapid plane 1mm above the highest probed terrain between the points.
-    """
-    ocl = _get_ocl()
-    path = ocl.Path()
-
-    # Create a line high above the part to probe the direct path
-    p1 = ocl.Point(last_point[0], last_point[1], safe_z)
-    p2 = ocl.Point(next_point[0], next_point[1], safe_z)
-    path.append(ocl.Line(p1, p2))
-
-    safe_pdc.setPath(path)
-    safe_pdc.run()
-
-    cl_points = safe_pdc.getCLPoints()
-    if not cl_points:
-        return []
-
-    # Find the highest point on the terrain between start and end
-    highest_terrain_z = max(pt.z for pt in cl_points)
-
-    # Hop 1mm over the local terrain, capped at safe_z
-    local_rapid_z = min(highest_terrain_z + depth_offset + 1.0, safe_z)
-
-    # Ensure the local rapid height is at least as high as the start and end points
-    local_rapid_z = max(local_rapid_z, last_point[2] + depth_offset, next_point[2] + depth_offset)
-
-    # Generate the optimized Rapid (G0) commands
-    commands = [
-        Path.Command("G0", {"Z": local_rapid_z, "F": vert_rapid}),
-        Path.Command("G0", {"X": next_point[0], "Y": next_point[1], "F": horiz_rapid})
-    ]
-
     return commands
 
 
@@ -865,7 +817,6 @@ def scan_lines_to_gcode(
     Returns:
         List of ``Path.Command``.
     """
-
     if not scan_lines:
         return []
 
@@ -915,16 +866,16 @@ def scan_lines_to_gcode(
             continue
 
         # Volumetric feed Layer Bounds
-        if is_multi_pass:
-            line_min_z = min(pt[2] for pt in line)
+        if is_multipass:
+            min_range = min(50, len(line))
 
-            # If the tool drops into the next level, step the tracking bounds down
-            while line_min_z < current_layer_target - 1e-4:
-                current_layer_start = current_layer_target
-                current_layer_target -= step_down
-                # Cap the target at absolute final_z to prevent overshoot
-                if current_layer_target < final_z:
-                    current_layer_target = final_z
+            for i in range(0, min_range):
+                pt = line[i]
+                if pt[2] < current_layer_target - 1e-2:
+                    # If the tool drops into the next level, step the tracking bounds down
+                    current_layer_start = current_layer_target
+                    current_layer_target -= step_down
+                    continue
 
         lead_in_cmds = []
         first_point = line[0]  # First Point
@@ -941,7 +892,7 @@ def scan_lines_to_gcode(
         if last_point is not None:
             travel_cmds = None
             if optimize_transitions:
-                travel_cmds, kept_down = _optimize_travel(
+                travel_cmds = _optimize_travel(
                     first_point,
                     last_point,
                     start_z,
@@ -970,8 +921,7 @@ def scan_lines_to_gcode(
             )
 
         # C. Plunge to start of lead/cut
-        if not kept_down:
-            commands.append(Path.Command("G1", {"Z": first_point[2] + depth_offset, "F": vert_feed}))
+        commands.append(Path.Command("G1", {"Z": first_point[2] + depth_offset, "F": vert_feed}))
 
         # D. Add Lead-in G-code
         commands.extend(lead_in_cmds)
