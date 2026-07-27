@@ -332,7 +332,7 @@ def create_boundary_face(model_faces, offset=0.0, tolerance=0.005):
 
 
 def generate_pattern_mask(
-    is_whole_model_job, bb_face, cutting_faces, avoid_faces, tool_radius, boundary_adj, avoid_overlap, tolerance
+    is_whole_model_job, bb_face, cutting_faces, avoid_boundary, tool_radius, boundary_adj, tolerance
 ):
     """
     Generates a universal 2D boundary face, punching out
@@ -348,10 +348,9 @@ def generate_pattern_mask(
 
     Args:
         cutting_faces (list): A list of Part.Face objects to derive the main boundary from.
-        avoid_faces (list): A list of Part.Face objects to be cut out from the main boundary.
+        avoid_boundary (Part.Shape, optional): Pre-built Avoid Faces "keep-out" boundary.
         tool_radius (float): The radius of the active cutter.
         boundary_adj (float): An explicit user-provided offset override.
-        avoid_overlap (float): A negative offset value if Avoid Faces Overlap is enabled or the tool radius.
         tolerance (float): The deflection tolerance for discretizing curves smoothly.
 
     Returns:
@@ -378,18 +377,10 @@ def generate_pattern_mask(
         Path.Log.warning("Could not determine geometry for main boundary mask.")
         return None
 
-    # Create the "Keep-Out" Zones from Avoid Faces
-    if not avoid_faces:
-        return main_boundary
-
-    # For avoid zones, we apply a negative offset if avoid faces overlap is enabled. Otherwise, the tool radius.
-    # avoid_overlap applied on surface_mesh._shape_to_safe_stl also
-    avoid_boundary = build_optimized_boundary([avoid_faces], avoid_overlap + epsilon, tolerance)
-
+    # Punch the holes for the pre-built Avoid Faces keep-out zone, if any
     if not avoid_boundary:
-        Path.Log.warning("Failed to generate boundary for avoid_faces.")
         return main_boundary
-    # Punch the holes
+
     try:
         final_mask = main_boundary.cut(avoid_boundary)
         if final_mask.isNull():
@@ -399,6 +390,52 @@ def generate_pattern_mask(
     except Exception as e:
         Path.Log.error(f"Failed to cut avoid_faces from boundary mask: {e}")
         return main_boundary
+
+
+def build_avoid_boundary(avoid_faces, avoid_overlap, tolerance):
+    """
+    Builds the 2D "keep-out" boundary for user-selected Avoid Faces.
+
+    This is computed once per operation and shared by both consumers of
+    Avoid Faces geometry:
+      - ``surface_mesh._shape_to_safe_stl``, which extrudes it into a
+        collision-safety pillar fused into the safe STL, and
+      - :func:`generate_pattern_mask`, which cuts it out of the main
+        cutting-area boundary.
+
+    Previously each consumer independently rebuilt this boundary from the
+    raw ``avoid_faces`` list — running the (expensive) HLR/TechDraw
+    projection twice per operation, and using two different construction
+    strategies in the process (a single-pass ``create_boundary_face`` call
+    for the safety pillar vs. the touching-face-aware
+    ``build_optimized_boundary`` for the mask). Building it once here and
+    sharing the result avoids the duplicate work and guarantees the safety
+    pillar and the cutting mask always agree on the same keep-out geometry.
+
+    Args:
+        avoid_faces (list): Preprocessed Part.Face objects (see
+            :func:`_preprocess_avoid_faces`) defining the zones to avoid.
+        avoid_overlap (float): A negative offset value if Avoid Faces
+            Overlap is enabled, or the tool radius otherwise.
+        tolerance (float): The deflection tolerance for discretizing curves
+            smoothly.
+
+    Returns:
+        Part.Shape: The offset avoid-zone boundary, or None if
+        ``avoid_faces`` is empty or boundary generation fails.
+    """
+    if not avoid_faces:
+        return None
+
+    epsilon = max(0.01, tolerance + 0.001)
+
+    avoid_boundary = build_optimized_boundary([avoid_faces], avoid_overlap + epsilon, tolerance)
+
+    if not avoid_boundary:
+        Path.Log.warning("build_avoid_boundary: Failed to generate boundary for avoid_faces.")
+        return None
+
+    return avoid_boundary
 
 
 def build_optimized_boundary(faces, offset, tolerance=0.005):
@@ -608,7 +645,7 @@ def _preprocess_avoid_faces(raw_faces):
 
     for raw_face in raw_faces:
 
-        if not hasattr(raw_face, "Edges") or not raw_face.Edges:
+        if not hasattr(raw_face, "Edges") or not raw_face.Edges or len(raw_face.Wires) == 1:
             continue
 
         # Group edges by their Center of Mass Z-coordinate.

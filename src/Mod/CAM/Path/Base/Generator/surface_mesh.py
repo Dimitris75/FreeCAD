@@ -556,9 +556,8 @@ def _shape_to_safe_stl(
     bb_safe,
     pad_buffer,
     final_depth,
-    avoid_faces,
+    avoid_boundary,
     start_depth,
-    avoid_overlap,
     linear_deflection,
     angular_deflection,
     mesh_simplification,
@@ -573,9 +572,8 @@ def _shape_to_safe_stl(
         bb_safe (Part.Face): The bounding box of the model or selected faces.
         pad_buffer (float): The calculated outward offset for the safety pad.
         final_depth (float): The lower Z-bound of the operation.
-        avoid_faces (list): A list of Part.Face objects to be avoided.
+        avoid_boundary (Part.Shape, optional): Pre-built Avoid Faces "keep-out" boundary.
         start_depth (float): The upper Z-bound of the operation.
-        avoid_overlap (float): A negative offset value if Avoid Faces Overlap is enabled or the tool radius.
         linear_deflection (float): The base linear deflection for calculating a coarse mesh.
         angular_deflection (float): The base angular deflection for calculating a coarse mesh.
         mesh_simplification (int): The user-set simplification level for the primary mesh.
@@ -603,24 +601,13 @@ def _shape_to_safe_stl(
     except Exception as e:
         Path.Log.warning(f"Failed to create bottom pad face for safe STL: {e}")
 
-    # Create "Keep-Out Pillars" for avoided faces
-    if avoid_faces:
+    # Fuse in the "Keep-Out Pillar" for the pre-built avoid boundary, if any
+    if avoid_boundary:
         Path.Log.debug(
-            f"surface_mesh._shape_to_safe_stl: Generating avoid zones for {len(avoid_faces)} avoided faces."
+            "surface_mesh._shape_to_safe_stl: Fusing precomputed avoid-zone boundary into safe STL."
         )
-        from . import surface_common
-
-        # avoid_overlap applied on surface_common.generate_pattern_mask also
-        offset_avoid = surface_common.create_boundary_face(
-            avoid_faces, avoid_overlap, linear_deflection
-        )
-
-        if not offset_avoid:
-            Path.Log.error("Offseting avoid zones for avoided faces failed")
-            return None
-
         try:
-            avoid = Part.makeFace(offset_avoid)
+            avoid = Part.makeFace(avoid_boundary)
             avoid.translate(FreeCAD.Vector(0, 0, start_depth + 0.1))
             fused_shapes.append(avoid)
         except Exception as e:
@@ -655,10 +642,9 @@ def generate_stl(
     stl_faces,
     stl_filter_adj,
     bb_face,
-    avoid_faces,
+    avoid_boundary,
     tool_diam,
     needs_safe_stl,
-    avoid_overlap,
     boundary_adjustment,
     start_depth,
     final_depth,
@@ -681,10 +667,9 @@ def generate_stl(
         stl_faces (list): A list of Part.Face objects to be machined.
         stl_filter_adj (float): A positive offset value for the boundary adjustment of the STL face filter.
         bb_face: (Part.Face): The BoundBox of the selected faces.
-        avoid_faces (list): A list of Part.Face objects to be avoided.
+        avoid_boundary (Part.Shape, optional): Pre-built Avoid Faces "keep-out" boundary.
         tool_diam (float): The diameter of the active tool.
         needs_safe_stl (bool): Flag indicating if the safety model is required.
-        avoid_overlap (float): A negative offset value if Avoid Faces Overlap is enabled or the tool radius.
         boundary_adjustment (float): A positive or negative value of the boundary adjustment.
         start_depth (float): The upper Z-bound of the operation.
         final_depth (float): The lower Z-bound of the operation.
@@ -775,9 +760,8 @@ def generate_stl(
                 bb_safe,
                 pad_buffer,
                 final_depth,
-                avoid_faces,
+                avoid_boundary,
                 start_depth,
-                avoid_overlap,
                 linear_deflection,
                 angular_deflection,
                 mesh_simplification=max(mesh_simplification, 5),

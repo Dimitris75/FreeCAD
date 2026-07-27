@@ -1059,7 +1059,7 @@ class ObjectSurface(PathOp.ObjectOp):
         }
 
     def _generate_scan_lines(
-        self, obj, job, tool_diam, bb, bb_face, cutting_faces, avoid_faces, avoid_overlap, is_whole_model_job
+        self, obj, job, tool_diam, bb, bb_face, cutting_faces, avoid_boundary, is_whole_model_job
     ):
         """Generates the raw 2D scan line geometry for a given machining area."""
 
@@ -1078,10 +1078,9 @@ class ObjectSurface(PathOp.ObjectOp):
             is_whole_model_job,
             bb_face,
             cutting_faces,
-            avoid_faces,
+            avoid_boundary,
             tool_diam / 2.0,
             boundary_adj,
-            avoid_overlap,
             obj.LinearDeflection.Value,
         )
 
@@ -1195,8 +1194,7 @@ class ObjectSurface(PathOp.ObjectOp):
         cutter,
         tool_diam,
         bb_face,
-        avoid_overlap,
-        avoid_faces=None,
+        avoid_boundary=None,
         cutting_faces=None,
     ):
         """
@@ -1216,8 +1214,7 @@ class ObjectSurface(PathOp.ObjectOp):
             bb (BoundBox): The bounding box of the entire operation area.
             cutting_faces (list, optional): A list of Part.Face objects if the user
                                              has made a specific selection. Defaults to None.
-            avoid_faces (list, optional): A list of Part.Face objects. Defaults to None.
-            avoid_overlap (float): A negative offset value if Avoid Faces Overlap is enabled or the tool radius.
+            avoid_boundary (Part.Shape, optional): Pre-built Avoid Faces "keep-out" boundary.
 
         Returns:
             list: A list of Path.Command objects representing the final G-code.
@@ -1262,7 +1259,7 @@ class ObjectSurface(PathOp.ObjectOp):
 
             # A. Generate all 2D scan lines for this group
             raw_scan_lines = self._generate_scan_lines(
-                obj, job, tool_diam, group_bb, bb_face, face_group, avoid_faces, avoid_overlap, is_whole_model_job
+                obj, job, tool_diam, group_bb, bb_face, face_group, avoid_boundary, is_whole_model_job
             )
             if not raw_scan_lines:
                 continue
@@ -1642,8 +1639,6 @@ class ObjectSurface(PathOp.ObjectOp):
             if obj.BoundBox not in ["Stock"]:
                 # Send selected faces to STL optimization filter
                 stl_faces = cutting_faces
-            if avoid_faces:
-                avoid_faces = surface_common._preprocess_avoid_faces(avoid_faces)
 
         # Create boundary face
         if needs_boundary:
@@ -1666,9 +1661,18 @@ class ObjectSurface(PathOp.ObjectOp):
                 # Create a boundary from model_shape
                 bb_face = surface_common.create_boundary_face(model_shape.Faces, offset)
 
-        # Avoid Faces Overlap
+        # Avoid Faces processing
         if needs_avoid_overlap and boundary_adjustment > 0:
             avoid_overlap = -(boundary_adjustment - tool_radius)
+
+        avoid_boundary = None
+
+        if avoid_faces:
+            avoid_faces = surface_common._preprocess_avoid_faces(avoid_faces)
+
+            avoid_boundary = surface_common.build_avoid_boundary(
+                avoid_faces, avoid_overlap, obj.LinearDeflection.Value
+            )
 
         # Create OCL cutter from tool parameters
         if needs_ocl_cutter:
@@ -1714,10 +1718,9 @@ class ObjectSurface(PathOp.ObjectOp):
                 stl_faces=stl_faces,
                 stl_filter_adj=stl_filter_adj,
                 bb_face=bb_face,
-                avoid_faces=avoid_faces,
+                avoid_boundary=avoid_boundary,
                 tool_diam=tool_diam,
                 needs_safe_stl=needs_safe_stl,
-                avoid_overlap=avoid_overlap,
                 boundary_adjustment=boundary_adjustment,
                 start_depth=obj.StartDepth.Value,
                 final_depth=obj.FinalDepth.Value,
@@ -1765,7 +1768,7 @@ class ObjectSurface(PathOp.ObjectOp):
         cmds = []
         if strategy == "SurfaceScan":
             cmds = self._executeSurfaceScan(
-                obj, JOB, stl, safe_stl, cutter, tool_diam, bb_face, avoid_overlap, avoid_faces, cutting_faces
+                obj, JOB, stl, safe_stl, cutter, tool_diam, bb_face, avoid_boundary, cutting_faces
             )
         elif strategy == "Waterline":
             cmds = self._executeWaterline(obj, JOB, stl, cutter, tool_diam, is_adaptive=is_adaptive)
