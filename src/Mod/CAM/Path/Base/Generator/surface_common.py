@@ -645,7 +645,7 @@ def _preprocess_avoid_faces(raw_faces):
 
     for raw_face in raw_faces:
 
-        if not hasattr(raw_face, "Edges") or not raw_face.Edges or len(raw_face.Wires) == 1:
+        if not hasattr(raw_face, "Edges") or not raw_face.Edges:
             continue
 
         # Group edges by their Center of Mass Z-coordinate.
