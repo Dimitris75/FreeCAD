@@ -852,7 +852,7 @@ def scan_lines_to_gcode(
             "Ensure 'Start Depth', 'Final Depth', and 'Step Down' tightly bound "
             "your actual stock material for accurate depth-based acceleration."
         )
-        Path.Log.warning(vol_msg)
+        Path.Log.info(vol_msg)
 
     commands = []
     commands.append(Path.Command("G0", {"Z": clearance_z, "F": vert_rapid}))
