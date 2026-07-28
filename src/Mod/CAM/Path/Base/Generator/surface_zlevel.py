@@ -496,11 +496,16 @@ def _get_fused_floor_geometry(shape, start_z, final_z, tolerance=0.001):
     """
 
     def is_upward(face):
-        if not (hasattr(face.Surface, "TypeId") and "Plane" in face.Surface.TypeId):
+        # 1. Check if OpenCASCADE classifies it as a plane
+        is_plane_class = hasattr(face.Surface, "TypeId") and "Plane" in face.Surface.TypeId
+        # 2. Check if it's physically flat in Z (catches revolved surfaces and B-splines)
+        is_flat_geometry = face.BoundBox.ZLength < 1e-4
+
+        if not (is_plane_class or is_flat_geometry):
             return False
         u1, u2, v1, v2 = face.ParameterRange
         norm = face.normalAt((u1 + u2) / 2.0, (v1 + v2) / 2.0)
-        if face.Orientation == "Reversed":
+        if face.Orientation == "Reversed" and not is_flat_geometry:
             norm = norm.multiply(-1)
         return norm.z > 0.99
 
@@ -522,7 +527,8 @@ def _get_fused_floor_geometry(shape, start_z, final_z, tolerance=0.001):
     sample_size = min(75, len(shape.Faces))
     # Count how many faces in the sample have exactly 3 edges
     triangle_count = sum(
-        1 for f in shape.Faces[:sample_size] if len(f.Edges) == 3
+        1 for f in shape.Faces[:sample_size]
+        if len(f.Edges) == 3 and hasattr(f, "Surface") and isinstance(f.Surface, Part.Plane)
     )
     # If the majority (>50%) are triangles, it's a mesh-to-shape conversion
     if sample_size > 0 and (triangle_count / sample_size) > 0.50:
