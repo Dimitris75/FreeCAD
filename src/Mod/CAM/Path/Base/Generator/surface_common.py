@@ -217,7 +217,7 @@ def make_safe_cutter(
 # ---------------------------------------------------------------------------
 
 
-def create_boundary_face(model_faces, offset=0.0, tolerance=0.005):
+def create_boundary_face(model_faces, offset=0.0, tolerance=0.005, avoids=False):
     """
     Creates a flat 2D boundary face from a list of 3D faces using
     Path.Area's built-in HLR projection (Outline mode) as primary method,
@@ -231,6 +231,7 @@ def create_boundary_face(model_faces, offset=0.0, tolerance=0.005):
         model_faces (list): List of Part.Face objects to build boundary from.
         offset (float): Offset to apply to the resulting boundary.
         tolerance (float): Tolerance for wire joining.
+        avoids (bool): 'True' only from _preprocess_avoid_faces.
 
     Returns:
         Part.Shape: The 2D boundary face, or None on failure.
@@ -244,9 +245,11 @@ def create_boundary_face(model_faces, offset=0.0, tolerance=0.005):
     # Check if it's a Mesh conversion and skip Primary Path.Area
     is_triangulated = False
     sample_size = min(75, len(model_faces))
+    outline = True if not avoids else False
 
     triangle_count = sum(
-        1 for f in model_faces[:sample_size] if len(f.Edges) == 3
+        1 for f in model_faces[:sample_size]
+        if len(f.Edges) == 3 and hasattr(f, "Surface") and isinstance(f.Surface, Part.Plane)
     )
     if sample_size > 0 and (triangle_count / sample_size) > 0.50:
         is_triangulated = True
@@ -272,7 +275,7 @@ def create_boundary_face(model_faces, offset=0.0, tolerance=0.005):
             area.setPlane(wpc)
             area.add(compound)
             area.setParams(
-                Outline=True,
+                Outline=outline,
                 Offset=offset,
                 Coplanar=0,  # CoplanarNone — don't restrict to coplanar
                 Fill=2,  # FillFace
@@ -284,9 +287,8 @@ def create_boundary_face(model_faces, offset=0.0, tolerance=0.005):
                     "Offsetting the Model faces resulted in an empty shape. "
                     "Extend the boundary if the selected faces are too small."
                 )
-                return None
-
-            return result
+            else:
+                return result
         except Exception as e:
             Path.Log.warning(
                 f"Path.Area HLR projection failed: {e} "
@@ -392,7 +394,7 @@ def generate_pattern_mask(
         return main_boundary
 
 
-def build_avoid_boundary(avoid_faces, avoid_overlap, tolerance):
+def build_avoid_boundary(avoid_faces, avoid_overlap, tolerance, avoids=False):
     """
     Builds the 2D "keep-out" boundary for user-selected Avoid Faces.
 
@@ -419,6 +421,7 @@ def build_avoid_boundary(avoid_faces, avoid_overlap, tolerance):
             Overlap is enabled, or the tool radius otherwise.
         tolerance (float): The deflection tolerance for discretizing curves
             smoothly.
+        avoids (bool): Default 'False'. 'True' only from _preprocess_avoid_faces.
 
     Returns:
         Part.Shape: The offset avoid-zone boundary, or None if
@@ -429,7 +432,7 @@ def build_avoid_boundary(avoid_faces, avoid_overlap, tolerance):
 
     epsilon = max(0.01, tolerance + 0.001)
 
-    avoid_boundary = build_optimized_boundary([avoid_faces], avoid_overlap + epsilon, tolerance)
+    avoid_boundary = build_optimized_boundary([avoid_faces], avoid_overlap + epsilon, tolerance, avoids)
 
     if not avoid_boundary:
         Path.Log.warning("build_avoid_boundary: Failed to generate boundary for avoid_faces.")
@@ -438,7 +441,7 @@ def build_avoid_boundary(avoid_faces, avoid_overlap, tolerance):
     return avoid_boundary
 
 
-def build_optimized_boundary(faces, offset, tolerance=0.005):
+def build_optimized_boundary(faces, offset, tolerance=0.005, avoids=False):
     """
     Acts as a middleman to optimize boundary creation.
 
@@ -451,6 +454,7 @@ def build_optimized_boundary(faces, offset, tolerance=0.005):
         faces (list): List of Part.Face objects or nested list of faces.
         offset (float): Offset to apply to each boundary.
         tolerance (float): Maximum distance to be considered touching.
+        avoids (bool): Default 'False'. 'True' only from _preprocess_avoid_faces.
 
     Returns:
         Part.Shape: The combined boundary shape, or None on failure.
@@ -469,13 +473,13 @@ def build_optimized_boundary(faces, offset, tolerance=0.005):
 
     # Process each connected group as a single batch
     for group in touching_groups:
-        bnd = create_boundary_face(group, offset, tolerance)
+        bnd = create_boundary_face(group, offset, tolerance, avoids)
         if bnd and not bnd.isNull():
             generated_boundaries.append(bnd)
 
     # Process isolated faces one by one
     for face in isolated_faces:
-        bnd = create_boundary_face([face], offset, tolerance)
+        bnd = create_boundary_face([face], offset, tolerance, avoids)
         if bnd and not bnd.isNull():
             generated_boundaries.append(bnd)
 
@@ -622,30 +626,60 @@ def _separate_touching_faces(faces, tolerance=0.01):
 
 def _preprocess_avoid_faces(raw_faces):
     """
-    Pre-process a list of avoid faces to generate planar caps for tilted or cylindrical holes.
+    Pre-process a list of Avoid Faces so that any genuinely vertical or
+    tilted wall is reduced to a flat cap at its topmost rim, while faces
+    that are already planar are left completely untouched.
 
-    When users select the inside wall of a hole (especially on tilted surfaces), standard
-    vertical projection turns the 3D cylinder into a distorted ellipse on the XY plane.
-    This function intercepts the raw faces, groups their edges by Z-height to mathematically
-    isolate the top-most rim, and reconstructs a flat, planar cap.
+    Standard top-down projection distorts a tilted or cylindrical wall
+    into a distorted ellipse on the XY plane, so this function handles
+    each raw face individually:
 
-    This ensures that downstream 2D pattern generators will create perfectly uniform,
-    circular boundaries instead of egg-shapes.
-    If a face cannot be cleanly capped (e.g., complex 3D curved topologies), the algorithm
-    safely falls back to the original unmodified face.
+      - Planar faces (``Surface`` is a ``Part.Plane``, flat or tilted —
+        this also covers faces with genuine holes, e.g. an annular/donut
+        selection) are passed through unmodified. They need no capping,
+        and guessing at "the real wire" among several would risk
+        discarding legitimate geometry.
+      - Non-planar faces (cylindrical, conical, or otherwise curved
+        walls) have their edges grouped by Center-of-Mass Z-height to
+        mathematically isolate the top-most rim, which is then
+        reconstructed into a flat, planar cap — preserving its exact
+        curve geometry rather than approximating it.
+
+    Any face that can't be cleanly resolved this way (no edges, no valid
+    top-rim wire, or an exception during reconstruction) is collected
+    into a fallback batch and run once, collectively, through
+    ``build_avoid_boundary()`` at zero offset.
+
+    If nothing at all could be processed, the original, completely
+    unmodified list of faces is returned as a last-resort fallback.
 
     Args:
-        raw_avoid_faces: List of original ``Part.Face`` objects selected by the user.
+        raw_faces: List of original ``Part.Face`` objects selected by the
+            user as Avoid Faces.
 
     Returns:
-        List of processed ``Part.Face`` objects (containing the optimized caps and
-        any unmodified fallbacks) to be shared across the CAM pipeline.
+        List of processed ``Part.Face``/``Part.Shape`` objects — a mix of
+        untouched planar faces, individually-capped wall faces, and (if
+        needed) one fused fallback boundary for whatever couldn't be
+        resolved individually — to be shared across the CAM pipeline.
     """
     new_faces = []
+    fallback = []
+    secondary = None
 
     for raw_face in raw_faces:
-
         if not hasattr(raw_face, "Edges") or not raw_face.Edges:
+            fallback.append(raw_face)
+            continue
+
+        # Skip if face is planar
+        try:
+            is_planar = isinstance(raw_face.Surface, Part.Plane)
+        except Exception:
+            is_planar = False
+
+        if is_planar:
+            new_faces.append(raw_face)
             continue
 
         # Group edges by their Center of Mass Z-coordinate.
@@ -660,6 +694,7 @@ def _preprocess_avoid_faces(raw_faces):
             edges_by_z[z_key].append(edge)
 
         if not edges_by_z:
+            fallback.append(raw_face)
             continue
 
         # Extract the edges that sit at the absolute highest Z-level
@@ -669,24 +704,30 @@ def _preprocess_avoid_faces(raw_faces):
         try:
             # Reconstruct just the top boundary into a new, independent wire
             top_wire = Part.Wire(top_edges)
-
             # Create a flat cap face from this wire
             cap_face = Part.Face(top_wire)
 
             if cap_face.isValid() and not cap_face.isNull():
                 new_faces.append(cap_face)
+            else:
+                fallback.append(raw_face)
 
         except Exception as e:
             Path.Log.debug(
                 "_preprocess_avoid_faces: Failed to pre-process Avoid Face. "
-                f"Fall back to the original unmodified face {e}"
+                f"Fall back to the original Avoid Faces process: {e}"
             )
-            new_faces.append(raw_face)
+            fallback.append(raw_face)
+
+    if fallback:
+        secondary = build_avoid_boundary(fallback, 0.0, 0.001)
+        if secondary is not None:
+            new_faces.append(secondary)
 
     if new_faces:
         return new_faces
 
     Path.Log.debug(
-        f"_preprocess_avoid_faces: Failed to pre-process Avoid Faces. Fall back to the original list of faces "
+        f"_preprocess_avoid_faces: Failed to pre-process Avoid Faces. Fall back to the original list of faces."
     )
     return raw_faces

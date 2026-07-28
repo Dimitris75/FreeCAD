@@ -1668,10 +1668,13 @@ class ObjectSurface(PathOp.ObjectOp):
         avoid_boundary = None
 
         if avoid_faces:
+            # Pre-process the avoid faces first, then generate their boundary
+            # using build_avoid_boundary(). Passing the 'avoids=True' flag
+            # disables the 'outline' parameter inside 'Path.Area'.
             avoid_faces = surface_common._preprocess_avoid_faces(avoid_faces)
 
             avoid_boundary = surface_common.build_avoid_boundary(
-                avoid_faces, avoid_overlap, obj.LinearDeflection.Value
+                avoid_faces, avoid_overlap, obj.LinearDeflection.Value, avoids=True
             )
 
         # Create OCL cutter from tool parameters
