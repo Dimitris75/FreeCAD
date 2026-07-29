@@ -554,10 +554,10 @@ def _get_fused_floor_geometry(shape, start_z, final_z, tolerance=0.001):
     fuse_engine = Path.Area()
 
     for z, faces in floor_accumulator.items():
-        fuse_engine.addShape(faces[0])
+        fuse_engine.add(faces[0])
         if len(faces) > 1:
             for i in range(1, len(faces)):
-                fuse_engine.addShape(faces[i])
+                fuse_engine.add(faces[i])
         try:
             res = fuse_engine.getShape()
         except:
