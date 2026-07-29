@@ -496,18 +496,19 @@ def _get_fused_floor_geometry(shape, start_z, final_z, tolerance=0.001):
     """
 
     def is_upward(face):
-        # 1. Check if OpenCASCADE classifies it as a plane
-        is_plane_class = hasattr(face.Surface, "TypeId") and "Plane" in face.Surface.TypeId
-        # 2. Check if it's physically flat in Z (catches revolved surfaces and B-splines)
-        is_flat_geometry = face.BoundBox.ZLength < 1e-4
-
-        if not (is_plane_class or is_flat_geometry):
+        # 1. Fast-fail using the cached bounding box Z-length (it's a plane)
+        if face.BoundBox.ZLength > 1e-5:
             return False
-        u1, u2, v1, v2 = face.ParameterRange
-        norm = face.normalAt((u1 + u2) / 2.0, (v1 + v2) / 2.0)
-        if face.Orientation == "Reversed" and not is_flat_geometry:
-            norm = norm.multiply(-1)
-        return norm.z > 0.99
+
+        # 2. Extract and evaluate the normal
+        try:
+            u1, u2, v1, v2 = face.ParameterRange
+            norm = face.normalAt((u1 + u2) / 2.0, (v1 + v2) / 2.0)
+
+            # Bypass orientation bugs by checking absolute Z-direction
+            return abs(norm.z) > 0.99
+        except Exception:
+            return False
 
     def isAccessibleFromTop(face, shape, abs_top):
         """Accessibility Check: Solid Projection (Shadow Test)."""
@@ -524,14 +525,9 @@ def _get_fused_floor_geometry(shape, start_z, final_z, tolerance=0.001):
             return False
 
     # Detect pre-triangulated models and skip floor detection
-    sample_size = min(75, len(shape.Faces))
-    # Count how many faces in the sample have exactly 3 edges
-    triangle_count = sum(
-        1 for f in shape.Faces[:sample_size]
-        if len(f.Edges) == 3 and hasattr(f, "Surface") and isinstance(f.Surface, Part.Plane)
-    )
-    # If the majority (>50%) are triangles, it's a mesh-to-shape conversion
-    if sample_size > 0 and (triangle_count / sample_size) > 0.50:
+    from . import surface_common
+    is_triangulated = surface_common._is_triangulated_mesh(shape.Faces)
+    if is_triangulated:
         Path.Log.warning(
             "Pre-triangulated model detected. Automatic floor detection disabled for performance. 'Clear Planar Only' disabled."
         )
@@ -555,12 +551,21 @@ def _get_fused_floor_geometry(shape, start_z, final_z, tolerance=0.001):
                     floor_accumulator[z].append(f_copy)
 
     fused = {}
+    fuse_engine = Path.Area()
 
     for z, faces in floor_accumulator.items():
-        res = faces[0]
+        fuse_engine.addShape(faces[0])
         if len(faces) > 1:
             for i in range(1, len(faces)):
-                res = res.fuse(faces[i])
+                fuse_engine.addShape(faces[i])
+        try:
+            res = fuse_engine.getShape()
+        except:
+            # Try fuse if 'Path.Area' failed
+            res = faces[0]
+            if len(faces) > 1:
+                for i in range(1, len(faces)):
+                    res = res.fuse(faces[i])
         if hasattr(res, "removeSplitter"):
             res = res.removeSplitter()
         fused[z] = res
@@ -1166,7 +1171,11 @@ def zlevel_hybrid_to_gcode(
 
             commands.extend(pattern_cmds)
 
-    # 3. Finalize Operation
+    if not commands:
+        Path.Log.warning(
+            "No toolpath generated. The tool may not fit within the defined machining area. "
+            "Try increasing the 'Boundary adjustment' or checking your tool diameter."
+        )
 
     # Return to clearance height
     commands.append(Path.Command("G0", {"Z": clear_hght, "F": v_rapid}))

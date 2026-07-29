@@ -391,6 +391,7 @@ def _mesh_to_stl(mesh_obj):
 
     return stl
 
+
 def _clip_model(model_shape, bbox, final_depth, clip_buffer=0.1):
     """
     Clips the Job's model geometry below the operation's final depth to reduce
@@ -432,6 +433,29 @@ def _clip_model(model_shape, bbox, final_depth, clip_buffer=0.1):
 
     return clipped_shape
 
+
+def _face_fingerprint(face, precision=4):
+    """
+    Builds a lightweight, hashable fingerprint for a Part.Face, used to
+    match faces across two independently-obtained shapes (e.g. a face
+    selection made before a boolean fuse, checked against the fused
+    result afterward) where Python object identity can't be relied on --
+    FreeCAD's `.Faces` property returns freshly-built wrapper objects on
+    every access, and a fuse additionally produces a genuinely new shape
+    with no guaranteed object correspondence to its inputs.
+
+    Returns:
+        tuple: (rounded_area, rounded_x, rounded_y, rounded_z)
+    """
+    com = face.CenterOfMass
+    return (
+        round(face.Area, precision),
+        round(com.x, precision),
+        round(com.y, precision),
+        round(com.z, precision),
+    )
+
+
 def _model_optimization(
     strategy,
     shape,
@@ -459,30 +483,23 @@ def _model_optimization(
     Returns:
         Part.Compound or Part.Shape: A compound of the filtered faces, or the original shape if no faces are filtered.
     """
-    sample_faces = shape.Faces if not exempt_faces else exempt_faces
-
+    from . import surface_common
     # Detect pre-triangulated models and skip optimization
-    if sample_faces:
-        sample_size = min(75, len(sample_faces))
-        # Count how many faces in the sample have exactly 3 edges
-        triangle_count = sum(
-            1 for f in sample_faces[:sample_size] if len(f.Edges) == 3
-        )
-        # If the majority (>50%) are triangles, it's a mesh-to-shape conversion
-        if sample_size > 0 and (triangle_count / sample_size) > 0.50:
+    if not exempt_faces:
+        if surface_common._is_triangulated_mesh(shape.Faces):
             Path.Log.debug("surface_mesh._model_optimization: Pre-triangulated model detected. Skipping face optimization.")
             return shape
+
+    sample_faces = shape.Faces if not exempt_faces else exempt_faces
 
     filtered = []
     rejected = 0
     clip_bb = None
     exempt_set = None
 
-    # Build exempt set by hashing face geometry identity
+    # Build exempt set by geometric fingerprint, not object identity
     if exempt_faces:
-        exempt_set = set()
-        for f in exempt_faces:
-            exempt_set.add(id(f))
+        exempt_set = {_face_fingerprint(f) for f in exempt_faces}
 
         if bb_face is not None and tool_diam > 0 and strategy == "SurfaceScan":
             ba = stl_filter_adj
@@ -496,12 +513,6 @@ def _model_optimization(
 
     for face in shape.Faces:
         try:
-            # SurfaceScan strategy with face selection
-            # Exempt faces are always kept
-            if exempt_set and id(face) in exempt_set:
-                filtered.append(face)
-                continue
-
             # Reject faces below final depth
             if face.BoundBox.ZMax < final_depth - 0.1:  # Plus a small buffer
                 rejected += 1
@@ -517,6 +528,12 @@ def _model_optimization(
             # Reject truly vertical faces
             if normal_z < normal_tolerance:
                 rejected += 1
+                continue
+
+            # SurfaceScan strategy with face selection
+            # Exempt faces are always kept
+            if exempt_set and _face_fingerprint(face) in exempt_set:
+                filtered.append(face)
                 continue
 
             # Reject faces outside of the selection boundary
@@ -550,6 +567,7 @@ def _model_optimization(
         return shape
 
     return Part.makeCompound(filtered)
+
 
 def _shape_to_safe_stl(
     model_shape,
@@ -681,7 +699,7 @@ def generate_stl(
         tuple: (stl, safe_stl), where stl is the primary mesh and safe_stl is the
                collision mesh (or a copy of stl if generation failed or wasn't needed).
     """
-    stl = safe_stl = clipped_shape = None
+    stl = safe_stl = clipped_shape = optimized_shape = None
     use_cpp = True
 
     if not base_objs:
@@ -707,6 +725,20 @@ def generate_stl(
             Path.Log.error("Could not create a valid shape for primary STL generation.")
             return None, None
 
+        # STL optimization - pre-process Model
+        if optimize_stl:
+            optimized_shape = _model_optimization(
+                strategy,
+                model_shape,
+                bb_face,
+                stl_faces,
+                stl_filter_adj,
+                tool_diam,
+                final_depth,
+            )
+            if optimized_shape and not optimized_shape.isNull():
+                model_shape = optimized_shape
+
         # Pre-clip the full model shape to the final depth
         clip_buffer = 0.1
         bbox = model_shape.BoundBox
@@ -714,24 +746,12 @@ def generate_stl(
         if final_depth > bbox.ZMin + clip_buffer and not optimize_stl:
             clipped_shape = _clip_model(model_shape, bbox, final_depth, clip_buffer)
 
-        if not clipped_shape or clipped_shape.isNull():
-            clipped_shape = model_shape
-
-        # STL optimization - pre-process Model
-        if optimize_stl:
-            clipped_shape = _model_optimization(
-                strategy,
-                clipped_shape,
-                bb_face,
-                stl_faces,
-                stl_filter_adj,
-                tool_diam,
-                final_depth,
-            )
+        if clipped_shape and not clipped_shape.isNull():
+            model_shape = clipped_shape
 
         # Generate the primary STL
         stl = _shape_to_stl(
-            clipped_shape,
+            model_shape,
             linear_deflection,
             angular_deflection,
             mesh_simplification,
@@ -756,7 +776,7 @@ def generate_stl(
                 pad_buffer = boundary_adjustment + 0.1
 
             safe_stl = _shape_to_safe_stl(
-                clipped_shape,
+                model_shape,
                 bb_safe,
                 pad_buffer,
                 final_depth,
