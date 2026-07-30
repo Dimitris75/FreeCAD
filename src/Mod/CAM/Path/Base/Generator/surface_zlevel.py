@@ -478,11 +478,10 @@ def categorize_floor_steps(shape, start_z, final_z, step_down, clear_planar_only
 
 
 def _get_fused_floor_geometry(shape, start_z, final_z, tolerance=0.001):
-    """Identifies and fuses upward-facing horizontal faces within the machining range.
+    """Identifies and fuses horizontal faces within the machining range.
 
     Iterates through all faces of the shape, filtering for planar surfaces
-    whose normal vector points strictly toward the tool (+Z). It performs
-    an accessibility check to ensure the floor is not occluded by geometry
+    It performs an accessibility check to ensure the floor is not occluded by geometry
     above it and fuses coincident faces at the same height into single regions.
 
     Args:
@@ -494,24 +493,30 @@ def _get_fused_floor_geometry(shape, start_z, final_z, tolerance=0.001):
     Returns:
         A dictionary: {z_height: fused_face_at_Z0}.
     """
-
-    def is_upward(face):
-        # 1. Fast-fail using the cached bounding box Z-length (it's a plane)
-        if face.BoundBox.ZLength > 1e-5:
-            return False
-
-        # 2. Extract and evaluate the normal
+    def fuse_faces(faces):
+        fuse_engine = Path.Area()
+        for i in range(0, len(faces)):
+            fuse_engine.add(faces[i])
         try:
-            u1, u2, v1, v2 = face.ParameterRange
-            norm = face.normalAt((u1 + u2) / 2.0, (v1 + v2) / 2.0)
+            result = fuse_engine.getShape()
+        except:
+            result = faces[0]
+            for i in range(1, len(faces)):
+                result = result.fuse(faces[i])
+        return result
 
-            # Bypass orientation bugs by checking absolute Z-direction
-            return abs(norm.z) > 0.99
-        except Exception:
+    def is_planar(face):
+        # If you ever have issues with Planar surfaces (face.BoundBox.ZLength < 1e-5)
+        if not (hasattr(face.Surface, "TypeId") and "Plane" in face.Surface.TypeId):
             return False
+
+        u1, u2, v1, v2 = face.ParameterRange
+        norm = face.normalAt((u1 + u2) / 2.0, (v1 + v2) / 2.0)
+
+        return abs(norm.z > 0.99)
 
     def isAccessibleFromTop(face, shape, abs_top):
-        """Accessibility Check: Solid Projection (Shadow Test)."""
+        # Accessibility Check: Solid Projection (Shadow Test)
         try:
             z = face.Vertexes[0].Z
             extrude_h = (abs_top - z) + 5.0
@@ -539,10 +544,10 @@ def _get_fused_floor_geometry(shape, start_z, final_z, tolerance=0.001):
     z_min, z_max = min(start_z, final_z), max(start_z, final_z)
 
     for face in shape.Faces:
-        if is_upward(face):
-            if isAccessibleFromTop(face, shape, abs_top):
-                z = round(face.Vertexes[0].Z, 5)
-                if (z >= z_min - tolerance) and (z < z_max):
+        if is_planar(face):
+            z = round(face.Vertexes[0].Z, 5)
+            if (z >= z_min - tolerance) and (z < z_max):
+                if isAccessibleFromTop(face, shape, abs_top):
                     f_copy = face.copy()
                     f_copy.translate(FreeCAD.Vector(0, 0, -f_copy.BoundBox.ZMin))
 
@@ -551,21 +556,12 @@ def _get_fused_floor_geometry(shape, start_z, final_z, tolerance=0.001):
                     floor_accumulator[z].append(f_copy)
 
     fused = {}
-    fuse_engine = Path.Area()
 
     for z, faces in floor_accumulator.items():
-        fuse_engine.add(faces[0])
         if len(faces) > 1:
-            for i in range(1, len(faces)):
-                fuse_engine.add(faces[i])
-        try:
-            res = fuse_engine.getShape()
-        except:
-            # Try fuse if 'Path.Area' failed
+            res = fuse_faces(faces)
+        else:
             res = faces[0]
-            if len(faces) > 1:
-                for i in range(1, len(faces)):
-                    res = res.fuse(faces[i])
         if hasattr(res, "removeSplitter"):
             res = res.removeSplitter()
         fused[z] = res
