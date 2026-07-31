@@ -784,7 +784,7 @@ def generate_stl(
                 start_depth,
                 linear_deflection,
                 angular_deflection,
-                mesh_simplification=max(mesh_simplification, 5),
+                mesh_simplification=max(mesh_simplification, 1),
             )
 
         if safe_stl is None:

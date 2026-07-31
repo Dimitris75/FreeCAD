@@ -217,7 +217,7 @@ def make_safe_cutter(
 # ---------------------------------------------------------------------------
 
 
-def create_boundary_face(model_faces, offset=0.0, tolerance=0.005, avoids=False):
+def create_boundary_face(model_faces, offset=0.0, tolerance=0.005, avoids=False, model_boundary=False):
     """
     Creates a flat 2D boundary face from a list of 3D faces using
     Path.Area's built-in HLR projection (Outline mode) as primary method,
@@ -245,24 +245,17 @@ def create_boundary_face(model_faces, offset=0.0, tolerance=0.005, avoids=False)
     outline = True if not avoids else False
     is_triangulated = _is_triangulated_mesh(model_faces)
 
-    try:
-        compound = model_faces[0] if len(model_faces) == 1 else Part.makeCompound(model_faces)
-    except Exception as e:
-        Path.Log.error(
-            f"Failed to build compound from {len(model_faces)} face(s): {e}. "
-            "The selected faces may contain invalid geometry."
-        )
-        return None
-
     if not is_triangulated:
-        result = _boundary_via_area(compound, offset, outline)
+        if model_boundary:
+            model_faces = _filter_vertical(model_faces)
+        result = _boundary_via_area(model_faces, offset, outline)
         if result is not None:
             return result
 
-    return _boundary_via_techdraw(compound, offset, outline)
+    return _boundary_via_techdraw(model_faces, offset, outline)
 
 
-def _boundary_via_area(compound, offset, outline):
+def _boundary_via_area(model_faces, offset, outline):
     """
     Primary boundary engine: Path.Area projection/offset.
 
@@ -271,6 +264,8 @@ def _boundary_via_area(compound, offset, outline):
         produced an empty/null shape or raised an exception.
     """
     try:
+        compound = model_faces[0] if len(model_faces) == 1 else Part.makeCompound(model_faces)
+
         wpc = Part.makeCircle(2)
         area = Path.Area()
         area.setPlane(wpc)
@@ -298,7 +293,7 @@ def _boundary_via_area(compound, offset, outline):
         return None
 
 
-def _boundary_via_techdraw(compound, offset, outline):
+def _boundary_via_techdraw(model_faces, offset, outline):
     """
     Secondary (fallback) boundary engine: TechDraw.findShapeOutline(),
     followed by a second Path.Area pass purely to apply `offset`.
@@ -317,6 +312,8 @@ def _boundary_via_techdraw(compound, offset, outline):
             "inner wires (holes). Any holes in this selection will be lost."
         )
     try:
+        compound = model_faces[0] if len(model_faces) == 1 else Part.makeCompound(model_faces)
+
         import TechDraw
         direction = FreeCAD.Vector(0, 0, 1)
         outline_shape = TechDraw.findShapeOutline(compound, 1.0, direction)
@@ -631,6 +628,45 @@ def _is_triangulated_mesh(faces, sample_size=75, threshold=0.50):
     triangle_count = sum(1 for f in sample if _looks_like_mesh_triangle(f))
     return len(sample) > 0 and (triangle_count / len(sample)) > threshold
 
+
+def _filter_vertical(model_faces, tolerance=0.0005):
+    """Removes vertical faces from a list of Part.Face objects.
+
+    This function is a performance optimization for BaseBoundBox only.
+
+    The "true" outward-pointing normal is calculated by respecting the
+    face's topological orientation.
+
+    Args:
+        model_faces (list): A list of Part.Face objects to be filtered.
+        tolerance (float, optional): The threshold for the normal vector's
+            Z-component. Faces with abs(normal.z) less than this value are
+            considered vertical and will be removed. Defaults to 0.0005.
+
+    Returns:
+        list: A new list of Part.Face objects with the vertical faces
+            excluded. Returns the original list if filtering would result
+            in an empty list.
+    """
+    filtered = []
+
+    for face in model_faces:
+        u1, u2, v1, v2 = face.ParameterRange
+        norm = face.normalAt((u1 + u2) / 2.0, (v1 + v2) / 2.0)
+        if face.Orientation == "Reversed":
+            norm = norm.multiply(-1)
+
+        normal_z = abs(norm.z)
+
+        # Reject truly vertical faces
+        if normal_z < tolerance:
+            continue
+        filtered.append(face)
+
+    if filtered:
+        return filtered
+
+    return model_faces
 
 # ---------------------------------------------------------------------------
 # Avoid Faces Boundary creation

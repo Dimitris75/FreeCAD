@@ -81,7 +81,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "name": "Fastest",
             "angular_deflection": 0.5,  # Coarse chordal deviation for minimal mesh density
             "linear_deflection": 0.1,  # Relaxed for rough previews (avoids over-precision)
-            "mesh_simplification": 7,  # Maximum reduction to speed up
+            "mesh_simplification": 3,
             "sample_interval": 1.5,  # Sparse sampling for fast computation
             "min_sample_interval": 0.3,  # Minimum sparse sampling for fast computation
             "description": "Quick verification and rough prototypes",
@@ -90,7 +90,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "name": "Very Fast",
             "angular_deflection": 0.4,
             "linear_deflection": 0.075,
-            "mesh_simplification": 6,  # Aggressive reduction
+            "mesh_simplification": 2,
             "sample_interval": 1.0,
             "min_sample_interval": 0.2,
             "description": "Rapid roughing with basic verification",
@@ -99,7 +99,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "name": "Fast",
             "angular_deflection": 0.3,
             "linear_deflection": 0.05,
-            "mesh_simplification": 5,  # Strong reduction
+            "mesh_simplification": 0,
             "sample_interval": 0.5,
             "min_sample_interval": 0.1,
             "description": "Efficient processing for initial prototypes",
@@ -108,7 +108,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "name": "Balanced",
             "angular_deflection": 0.2,
             "linear_deflection": 0.025,
-            "mesh_simplification": 4,  # Moderate reduction
+            "mesh_simplification": 0,
             "sample_interval": 0.25,
             "min_sample_interval": 0.05,
             "description": "Good compromise for most commercial work",
@@ -117,7 +117,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "name": "Good",
             "angular_deflection": 0.15,
             "linear_deflection": 0.015,
-            "mesh_simplification": 3,  # Balanced reduction
+            "mesh_simplification": 0,
             "sample_interval": 0.1,
             "min_sample_interval": 0.05,
             "description": "Reliable quality for commercial machines",
@@ -126,7 +126,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "name": "High",
             "angular_deflection": 0.1,
             "linear_deflection": 0.01,
-            "mesh_simplification": 2,  # Light reduction
+            "mesh_simplification": 0,
             "sample_interval": 0.07,
             "min_sample_interval": 0.05,
             "description": "Detailed surfacing for typical commercial tolerances",
@@ -135,7 +135,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "name": "Ultra",
             "angular_deflection": 0.05,  # Fine chordal for smooth curves
             "linear_deflection": 0.005,  # Precise but not sub-micron (matches standard high-end commercial)
-            "mesh_simplification": 1,  # Minimal reduction
+            "mesh_simplification": 0,
             "sample_interval": 0.05,  # Dense sampling for quality finishes
             "min_sample_interval": 0.05,
             "description": "High quality detailed work, slower processing",
@@ -1659,7 +1659,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 bb_face = Part.Face(Part.makePolygon([p1, p2, p3, p4, p1]))
             else:
                 # Create a boundary from model_shape
-                bb_face = surface_common.create_boundary_face(model_shape.Faces, offset)
+                bb_face = surface_common.create_boundary_face(model_shape.Faces, offset, avoids=False, model_boundary=True)
 
         # Avoid Faces processing
         if needs_avoid_overlap and boundary_adjustment > 0:
@@ -1703,7 +1703,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 f"STL creation — "
                 f"LinearDeflection={round(obj.LinearDeflection.Value, 4)}mm, "
                 f"AngularDeflection={round(obj.AngularDeflection.Value, 4)}°, "
-                f"MeshSimplification={getattr(obj, 'MeshSimplification', 1)}, "
+                f"MeshSimplification={getattr(obj, 'MeshSimplification', 0)}, "
             )
 
             stl_start = time.time()
@@ -1724,7 +1724,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 final_depth=obj.FinalDepth.Value,
                 linear_deflection=obj.LinearDeflection.Value,
                 angular_deflection=obj.AngularDeflection.Value,
-                mesh_simplification=getattr(obj, "MeshSimplification", 1),
+                mesh_simplification=getattr(obj, "MeshSimplification", 0),
             )
             stl_time = time.time() - stl_start
 
