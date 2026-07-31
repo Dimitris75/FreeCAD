@@ -566,65 +566,6 @@ class TestSurfaceExpOp(PathTestWithAssets):
 
     def test43(self):
         """
-        Verifies that apply_accuracy_preset function works correctly.
-
-        INPUT:
-        - Function: ObjectSurface.apply_accuracy_preset()
-        - Parameters: level = 1 (Fastest)
-        - Input data: Surface operation with default parameters
-
-        EXPECTED OUTPUT:
-        - All quality parameters should match preset values
-        - AngularDeflection, LinearDeflection, MeshSimplification, SampleInterval
-        - Confirms preset application works correctly
-        """
-        job = self._createJobWithBox()
-
-        op = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", "SurfaceExp")
-        proxy = PathSurfaceExp.ObjectSurface(op, "SurfaceExp")
-        proxy.initOperation(op)
-
-        # Test Fastest (level 1)
-        proxy.apply_accuracy_preset(op, 1)
-
-        preset = PathSurfaceExp.ObjectSurface.ACCURACY_PRESETS[1]
-        self.assertEqual(op.AngularDeflection.Value, preset["angular_deflection"])
-        self.assertEqual(op.LinearDeflection.Value, preset["linear_deflection"])
-        self.assertEqual(op.MeshSimplification, preset["mesh_simplification"])
-        self.assertEqual(op.SampleInterval.Value, preset["sample_interval"])
-
-    def test44(self):
-        """
-        Verifies that get_accuracy_level function correctly identifies preset matches.
-
-        INPUT:
-        - Function: ObjectSurface.get_accuracy_level()
-        - Parameters: None (checks current operation state)
-        - Input data: Surface operation with preset applied
-
-        EXPECTED OUTPUT:
-        - Should return the correct preset level when values match exactly
-        - Should return None when values don't match any preset
-        - Confirms preset detection works correctly
-        """
-        job = self._createJobWithBox()
-
-        op = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", "SurfaceExp")
-        proxy = PathSurfaceExp.ObjectSurface(op, "SurfaceExp")
-        proxy.initOperation(op)
-
-        # Apply a preset and verify detection
-        proxy.apply_accuracy_preset(op, 3)  # Fast
-        detected_level = proxy.get_accuracy_level(op)
-        self.assertEqual(detected_level, 3)
-
-        # Modify one parameter slightly and verify no match
-        op.AngularDeflection = FreeCAD.Units.Quantity("0.21 mm")
-        detected_level = proxy.get_accuracy_level(op)
-        self.assertIsNone(detected_level)
-
-    def test45(self):
-        """
         Verifies that preset progression is logical from fast to high accuracy.
 
         INPUT:
@@ -659,7 +600,7 @@ class TestSurfaceExpOp(PathTestWithAssets):
             # Sample interval should decrease (denser sampling for higher accuracy)
             self.assertGreaterEqual(current["sample_interval"], next_level["sample_interval"])
 
-    def test46(self):
+    def test44(self):
         """
         Verifies that extreme presets have appropriate values.
 

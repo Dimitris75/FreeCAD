@@ -59,6 +59,22 @@ class TestSurfacePostprocess(PathTestUtils.PathTestBase):
         self.flat_stl = _shape_to_stl(box, 0.1, 0.5)
         self.cutter = make_ocl_cutter("endmill", 6.0, edge_height=20.0)
 
+        # Common scan_lines_to_gcode() parameters shared by the G-code
+        # transition tests below -- each test passes this as a base and
+        # overrides/extends only what it actually needs to vary.
+        self.options = {
+            "depth_offset": 0.0,
+            "optimize_transitions": False,
+            "safe_stl": None,
+            "cutter": self.cutter,
+            "force_keep_down": False,
+            "use_smart_leads": False,
+            "lead_feed_percent": 75,
+            "lift_lead_z": 1.00,
+            "volumetric_percent": 25,
+            "is_multipass": False,
+        }
+
     # -- Multi-pass Tests --
 
     def test00_apply_multipass(self):
@@ -186,6 +202,7 @@ class TestSurfacePostprocess(PathTestUtils.PathTestBase):
             start_z=15.0,
             final_z=10.0,
             step_down=5.0,
+            options=self.options,
         )
 
         # Find the command index for the end of line1
@@ -233,10 +250,11 @@ class TestSurfacePostprocess(PathTestUtils.PathTestBase):
             start_z=15.0,
             final_z=10.0,
             step_down=5.0,
-            depth_offset=0.0,
-            optimize_transitions=True,
-            safe_stl=self.flat_stl,
-            cutter=self.cutter,
+            options={
+                **self.options,
+                "optimize_transitions": True,
+                "safe_stl": self.flat_stl,
+            },
         )
 
         # Check for the ABSENCE of a retract to safe_z during the transition
@@ -281,9 +299,7 @@ class TestSurfacePostprocess(PathTestUtils.PathTestBase):
             start_z=15.0,
             final_z=10.0,
             step_down=5.0,
-            optimize_transitions=True,
-            safe_stl=self.flat_stl,
-            cutter=self.cutter,
+            options=self.options,
         )
 
         # Check for the PRESENCE of a retract, because the distance is too great
@@ -407,3 +423,64 @@ class TestSurfacePostprocess(PathTestUtils.PathTestBase):
         else:
             self.assertIsNone(entry_point,
                               "If no commands, entry_point should be None")
+    # -- Volumetric Feed Tests --
+
+    def test40_segment_target_feed_height_and_plunge(self):
+        """
+        Tests _get_segment_target_feed's core volumetric behavior: a speed
+        boost near the top of the layer that decays to the base feed at
+        the bottom, and a penalty that blends toward vert_feed on a
+        genuine vertical plunge.
+        """
+        from Path.Base.Generator.surface_postprocess import _get_segment_target_feed
+
+        horiz_feed, vert_feed = 300.0, 50.0
+        layer_start_z, layer_target_z = 10.0, 0.0
+        boost_factor = 1.5
+
+        top_feed = _get_segment_target_feed(
+            (0, 0, layer_start_z), (10, 0, layer_start_z),
+            horiz_feed, vert_feed, layer_start_z, layer_target_z, boost_factor,
+        )
+        self.assertAlmostEqual(top_feed, horiz_feed * boost_factor, places=3)
+
+        bottom_feed = _get_segment_target_feed(
+            (0, 0, layer_target_z), (10, 0, layer_target_z),
+            horiz_feed, vert_feed, layer_start_z, layer_target_z, boost_factor,
+        )
+        self.assertAlmostEqual(bottom_feed, horiz_feed, places=3)
+
+        plunge_feed = _get_segment_target_feed(
+            (0, 0, layer_start_z), (0, 0, layer_target_z),
+            horiz_feed, vert_feed, layer_start_z, layer_target_z, boost_factor,
+        )
+        self.assertAlmostEqual(plunge_feed, vert_feed, places=3)
+
+    def test41_generate_volumetric_cut_commands(self):
+        """
+        Tests _generate_volumetric_cut_commands end-to-end.
+        """
+        from Path.Base.Generator.surface_postprocess import _generate_volumetric_cut_commands
+
+        layer_start_z, layer_target_z = 10.0, 0.0
+        line = [
+            (0, 0, 10.0),
+            (10, 0, 10.0),
+            (20, 0, 10.0),
+            (30, 0, 0.0),
+            (40, 0, 0.0),
+        ]
+
+        cmds = _generate_volumetric_cut_commands(
+            line, depth_offset=0.0, horiz_feed=300.0, vert_feed=50.0,
+            layer_start_z=layer_start_z, layer_target_z=layer_target_z,
+            volumetric_percent=50.0,
+        )
+
+        self.assertEqual(len(cmds), len(line))
+        self.assertTrue(all(c.Name == "G1" for c in cmds))
+        self.assertIn("F", cmds[0].Parameters)
+        self.assertGreater(cmds[0].Parameters["F"], 300.0)
+        self.assertFalse(all("F" in c.Parameters for c in cmds))
+        self.assertIn("F", cmds[-1].Parameters)
+        self.assertAlmostEqual(cmds[-1].Parameters["F"], 300.0, delta=1.0)

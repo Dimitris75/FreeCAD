@@ -555,6 +555,7 @@ SET(Tests_SRCS
     CAMTests/test_profile.fcstd
     CAMTests/test_geomop.fcstd
     CAMTests/test_holes00.fcstd
+    CAMTests/TestAdaptiveCommonGenerator.py
     CAMTests/TestAreaOperations.py
     CAMTests/TestCAMSanity.py
     CAMTests/TestCentroidLegacyPost.py

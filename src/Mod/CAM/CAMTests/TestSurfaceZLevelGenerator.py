@@ -260,6 +260,7 @@ class TestSurfaceZLevel(PathTestUtils.PathTestBase):
             ignore_outer=False,
             clear_planar_only=False,
             step_over=4.0,
+            start_point=False,
             radius=tool["radius"],
             is_adaptive=False,
             adaptive_params={},
@@ -378,9 +379,9 @@ class TestSurfaceZLevel(PathTestUtils.PathTestBase):
         finally:
             surface_zlevel._get_selected_faces = original
 
-        # Both faces have different ZMax — so we expect two entries, not one fused
-        # (only co-planar masks fuse). Validate we got at least one valid result.
-        self.assertGreater(len(result), 0, "Should produce at least one mask")
+        # Both faces have the same ZMax — so we expect one fused entrie
+        # (only co-planar masks fuse). Validate we got one valid result.
+        self.assertEqual(len(result), 1, "Should produce exactly one mask for two holes at the same Z")
         for max_z, mask_face in result:
             self.assertIsInstance(mask_face, Part.Shape)
             self.assertFalse(mask_face.isNull())

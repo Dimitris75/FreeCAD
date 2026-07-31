@@ -295,7 +295,8 @@ class TestSurfaceCommon(PathTestUtils.PathTestBase):
 
         INPUT:
         - Function: generate_pattern_mask()
-        - Input data: A large cutting area (50x50) and a smaller avoidance area (10x10) inside it.
+        - Input data: A large cutting area (50x50) and a single, already
+          pre-built avoid boundary face (10x10) inside it.
 
         EXPECTED OUTPUT:
         - Returns a single Part.Face object.
@@ -306,8 +307,19 @@ class TestSurfaceCommon(PathTestUtils.PathTestBase):
 
         # Main area to cut
         cutting_shape = Part.makeBox(50, 50, 1)
-        # Area to avoid inside the main area
-        avoid_shape = Part.makeBox(10, 10, 1, FreeCAD.Vector(20, 20, 0))
+
+        # A pre-built avoid boundary
+        avoid_boundary = Part.Face(
+            Part.makePolygon(
+                [
+                    FreeCAD.Vector(20, 20, 0),
+                    FreeCAD.Vector(30, 20, 0),
+                    FreeCAD.Vector(30, 30, 0),
+                    FreeCAD.Vector(20, 30, 0),
+                    FreeCAD.Vector(20, 20, 0),
+                ]
+            )
+        )
 
         # Bounding box face is created from the cutting_shape
         bb_face = Part.Face(
@@ -326,10 +338,9 @@ class TestSurfaceCommon(PathTestUtils.PathTestBase):
             is_whole_model_job=True,
             bb_face=bb_face,
             cutting_faces=cutting_shape.Faces,
-            avoid_faces=avoid_shape.Faces,
+            avoid_boundary=avoid_boundary,
             tool_radius=3.0,
             boundary_adj=0.0,
-            avoid_overlap=0.0,
             tolerance=0.01,
         )
 
@@ -339,4 +350,53 @@ class TestSurfaceCommon(PathTestUtils.PathTestBase):
         )
         self.assertLess(
             mask.Area, cutting_shape.Area, "Mask area should be smaller after cutting the hole"
+        )
+
+    def test13_build_avoid_boundary_caps_cylindrical_wall(self):
+        """
+        Tests that build_avoid_boundary() correctly caps a non-planar
+        (cylindrical) wall face at its topmost rim, rather than passing
+        it through unmodified or distorting it via a naive top-down
+        projection.
+
+        INPUT:
+        - Function: build_avoid_boundary()
+        - Input data: The lateral (curved) wall face only -- no top or
+          bottom cap faces -- of a 10mm-radius, 20mm-deep cylindrical
+          hole (e.g. a straight bored hole), with its top rim at Z=0 and
+          bottom rim at Z=-20.
+
+        EXPECTED OUTPUT:
+        - Returns a valid, non-None boundary shape.
+        - The boundary's footprint is a circle matching the cylinder's
+          own diameter (~20mm across), not empty or distorted the way a
+          naive top-down projection of a vertical wall would produce.
+        - The boundary sits at the wall's topmost Z (0), not its bottom
+          (-20) -- confirming the true top rim was isolated and used,
+          not an arbitrary wire.
+        """
+        from Path.Base.Generator.surface_common import build_avoid_boundary
+
+        # A solid cylinder representing a straight bored hole: 10mm
+        # radius, 20mm deep, top rim at Z=0, bottom rim at Z=-20.
+        cylinder = Part.makeCylinder(
+            10.0, 20.0, FreeCAD.Vector(0, 0, -20.0), FreeCAD.Vector(0, 0, 1)
+        )
+
+        # Isolate just the lateral (curved) wall face -- the actual
+        # geometry a user would select for an Avoid Face on a hole wall
+        # -- excluding the flat top/bottom cap faces.
+        wall_faces = [f for f in cylinder.Faces if isinstance(f.Surface, Part.Cylinder)]
+        self.assertEqual(len(wall_faces), 1, "Expected exactly one cylindrical wall face")
+
+        avoid_boundary = build_avoid_boundary(wall_faces, avoid_overlap=0.0, tolerance=0.01)
+
+        self.assertIsNotNone(avoid_boundary)
+        self.assertAlmostEqual(avoid_boundary.BoundBox.XLength, 20.0, delta=0.5)
+        self.assertAlmostEqual(avoid_boundary.BoundBox.YLength, 20.0, delta=0.5)
+        self.assertAlmostEqual(
+            avoid_boundary.BoundBox.ZMax,
+            0.0,
+            delta=0.5,
+            msg="Boundary should be capped at the wall's TOP rim (Z=0), not its bottom",
         )

@@ -154,35 +154,56 @@ class TestSurfaceMesh(PathTestUtils.PathTestBase):
 
         INPUT:
         - Function: _shape_to_safe_stl()
-        - Parameters: A model shape, avoid faces, and tool radius.
-        - Input data: A main box with another smaller box on top to be avoided.
+        - Parameters: A model shape, a pre-built avoid boundary face, and
+          a floor-pad buffer.
+        - Input data: A 20x20x10 box as the model, with a separate 5x5
+          flat face representing an already-built Avoid Faces keep-out
+          boundary. _shape_to_safe_stl() expects this pre-built (see
+          surface_common.build_avoid_boundary(), tested separately) --
+          it just extrudes and fuses it, it doesn't build it.
 
         EXPECTED OUTPUT:
         - Returns a valid ocl.STLSurf object.
         - The bounding box of the safe STL should be larger than the original model's
-          bounding box due to the added "invisible floor" and extruded avoid zones.
+          bounding box due to the added "invisible floor" pad.
         """
         from Path.Base.Generator.surface_mesh import _shape_to_safe_stl
 
-        avoid_box = Part.makeBox(5, 5, 5, FreeCAD.Vector(7.5, 7.5, 10))
-        model_shape = self.box.fuse(avoid_box)
+        # A pre-built avoid boundary -- a single flat face representing
+        # the keep-out zone, exactly as _shape_to_safe_stl() expects to
+        # receive it in production (built once, up front, by
+        # surface_common.build_avoid_boundary()).
+        avoid_boundary = Part.Face(
+            Part.makePolygon(
+                [
+                    FreeCAD.Vector(7.5, 7.5, 0),
+                    FreeCAD.Vector(12.5, 7.5, 0),
+                    FreeCAD.Vector(12.5, 12.5, 0),
+                    FreeCAD.Vector(7.5, 12.5, 0),
+                    FreeCAD.Vector(7.5, 7.5, 0),
+                ]
+            )
+        )
 
         safe_stl = _shape_to_safe_stl(
-            model_shape=model_shape,
-            avoid_faces=avoid_box.Faces,
-            tool_diam=6.0,
-            start_depth=20.0,
-            avoid_overlap=3.0,
+            model_shape=self.box,
+            bb_safe=self.box,
+            pad_buffer=2.0,
+            final_depth=0.0,
+            avoid_boundary=avoid_boundary,
+            start_depth=10.0,
             linear_deflection=0.1,
             angular_deflection=0.5,
+            mesh_simplification=1,
         )
 
         self.assertIsNotNone(safe_stl)
         self.assertGreater(safe_stl.size(), 0)
 
-        # Safety STL should be larger due to the floor plate and extruded pillars
+        # Safety STL should be larger due to the floor plate, padded
+        # outward from the model's own bounding box.
         safe_bb = safe_stl.bb
-        model_bb = model_shape.BoundBox
+        model_bb = self.box.BoundBox
         self.assertGreater(safe_bb.maxpt.x - safe_bb.minpt.x, model_bb.XLength)
         self.assertGreater(safe_bb.maxpt.y - safe_bb.minpt.y, model_bb.YLength)
 
@@ -192,12 +213,15 @@ class TestSurfaceMesh(PathTestUtils.PathTestBase):
 
         INPUT:
         - Function: generate_stl()
-        - Parameters: A model shape, needs_safe_stl=True.
-        - Input data: A simple box model.
+        - Parameters: A model shape, needs_safe_stl=True, optimize_stl=False
+          (so STL face-filtering is skipped and this test stays focused
+          on the orchestration itself, not the optimization path).
+        - Input data: A simple box model, no Avoid Faces (avoid_boundary=None).
 
         EXPECTED OUTPUT:
         - Returns two valid ocl.STLSurf objects (stl, safe_stl).
-        - The safe_stl should be a distinct object from the primary stl.
+        - The safe_stl should be larger than the primary stl, due to the
+          added floor pad.
         - This verifies the top-level function correctly manages the generation
           of both primary and secondary meshes.
         """
@@ -206,23 +230,27 @@ class TestSurfaceMesh(PathTestUtils.PathTestBase):
         stl, safe_stl = generate_stl(
             model_shape=self.box,
             base_objs=[self.box],  # Simulate base object from Job
-            avoid_faces=[],
+            optimize_stl=False,
+            strategy="SurfaceScan",
+            stl_faces=[],
+            stl_filter_adj=0.0,
+            bb_face=None,
+            avoid_boundary=None,
             tool_diam=6.0,
             needs_safe_stl=True,
-            avoid_overlap=3.0,
+            boundary_adjustment=2.0,
             start_depth=10.0,
             final_depth=0.0,
             linear_deflection=0.1,
             angular_deflection=0.5,
             mesh_simplification=1,
-            use_cpp=False,
         )
 
         self.assertIsNotNone(stl)
         self.assertIsNotNone(safe_stl)
         self.assertGreater(stl.size(), 0)
         self.assertGreater(safe_stl.size(), 0)
-        # With avoid_faces=[], the safe_stl is still larger due to the base plate
+        # With avoid_boundary=None, the safe_stl is still larger due to the base plate
         self.assertGreater(
             safe_stl.bb.maxpt.x - safe_stl.bb.minpt.x, stl.bb.maxpt.x - stl.bb.minpt.x
         )
