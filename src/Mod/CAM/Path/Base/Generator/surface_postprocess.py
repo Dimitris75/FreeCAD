@@ -812,7 +812,7 @@ def scan_lines_to_gcode(
             lift_lead_z: Optional vertical lift applied during the lead moves.
             volumetric_perncent: Scales the horizontal feed rate at the top of the cut
                             as a percentage (0 disables the depth boost).
-            use_multipass: A job on single pass at depth, or multiple passes to final depth.
+            is_multipass: A job on single pass at depth, or multiple passes to final depth.
 
     Returns:
         List of ``Path.Command``.

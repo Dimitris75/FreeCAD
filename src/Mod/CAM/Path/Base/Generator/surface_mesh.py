@@ -513,10 +513,24 @@ def _model_optimization(
 
     for face in shape.Faces:
         try:
+            # SurfaceScan strategy with face selection
+            # Exempt faces are always kept
+            if exempt_set and _face_fingerprint(face) in exempt_set:
+                filtered.append(face)
+                continue
+
             # Reject faces below final depth
             if face.BoundBox.ZMax < final_depth - 0.1:  # Plus a small buffer
                 rejected += 1
                 continue
+
+            # Reject faces outside of the selection boundary
+            if clip_bb:
+                bb = face.BoundBox
+                if (bb.XMax < clip_bb["XMin"] or bb.XMin > clip_bb["XMax"] or
+                    bb.YMax < clip_bb["YMin"] or bb.YMin > clip_bb["YMax"]):
+                    rejected += 1
+                    continue
 
             u1, u2, v1, v2 = face.ParameterRange
             norm = face.normalAt((u1 + u2) / 2.0, (v1 + v2) / 2.0)
@@ -529,20 +543,6 @@ def _model_optimization(
             if normal_z < normal_tolerance:
                 rejected += 1
                 continue
-
-            # SurfaceScan strategy with face selection
-            # Exempt faces are always kept
-            if exempt_set and _face_fingerprint(face) in exempt_set:
-                filtered.append(face)
-                continue
-
-            # Reject faces outside of the selection boundary
-            if clip_bb:
-                bb = face.BoundBox
-                if (bb.XMax < clip_bb["XMin"] or bb.XMin > clip_bb["XMax"] or
-                    bb.YMax < clip_bb["YMin"] or bb.YMin > clip_bb["YMax"]):
-                    rejected += 1
-                    continue
 
             filtered.append(face)
 
