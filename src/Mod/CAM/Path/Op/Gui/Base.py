@@ -1545,11 +1545,19 @@ class TaskPanel(object):
 
     def accept(self, resetEdit=True):
         """accept() ... callback invoked when user presses the task panel OK button."""
+        # NOTE : Test recompute issues Patch
         self.preCleanup()
-        if self.isDirty():
+        needs_recompute = self.isDirty()
+        if needs_recompute:
             self.panelGetFields()
         FreeCAD.ActiveDocument.commitTransaction()
-        self.cleanup(resetEdit)
+        # Call cleanup but prevent double recompute
+        self.panelCleanup()
+        FreeCADGui.Control.closeDialog()
+        if resetEdit:
+            FreeCADGui.ActiveDocument.resetEdit()
+        if needs_recompute:
+            FreeCAD.ActiveDocument.recompute()
 
     def reject(self, resetEdit=True):
         """reject() ... callback invoked when user presses the task panel Cancel button."""
