@@ -35,6 +35,7 @@
 #include <gp_Ax1.hxx>
 #include <ShapeAnalysis.hxx>
 #include <ShapeAnalysis_FreeBounds.hxx>
+#include <Mod/Part/App/ShapeAnalysis_FreeBoundsFix.h>
 #include <ShapeFix_Face.hxx>
 #include <ShapeFix_Wire.hxx>
 #include <ShapeFix_Wireframe.hxx>
@@ -48,7 +49,6 @@
 
 
 #include <App/Document.h>
-#include <Mod/Part/App/PartFeature.h>
 #include <Gui/BitmapFactory.h>
 #include <Gui/CommandT.h>
 #include <Gui/MainWindow.h>
@@ -91,7 +91,7 @@ public:
             return false;
         }
 
-        auto subShape = Part::Feature::getShape(aPart, Part::ShapeOption::NeedSubElement, sSubName);
+        auto subShape = aPart->Shape.getShape().getSubShape(sSubName, true);
         if (subShape.IsNull()) {
             return false;
         }
@@ -124,7 +124,7 @@ public:
             return false;
         }
 
-        auto subShape = Part::Feature::getShape(aPart, Part::ShapeOption::NeedSubElement, sSubName);
+        auto subShape = aPart->Shape.getShape().getSubShape(sSubName, true);
         if (subShape.IsNull()) {
             return false;
         }
@@ -452,11 +452,7 @@ void PartGui::DlgProjectionOnSurface::store_current_selected_parts(
                 if (!it->getSubNames().empty()) {
                     auto parentShape = currentShapeStore.inputShape;
                     for (const auto& itName : selObj.front().getSubNames()) {
-                        auto currentShape = Part::Feature::getShape(
-                            aPart,
-                            Part::ShapeOption::NeedSubElement,
-                            itName.c_str()
-                        );
+                        auto currentShape = aPart->Shape.getShape().getSubShape(itName.c_str(), true);
                         if (currentShape.IsNull()) {
                             continue;
                         }
@@ -947,8 +943,8 @@ TopoDS_Wire PartGui::DlgProjectionOnSurface::sort_and_heal_wire(
     }
 
     const double tolerance = 0.0001;
-    ShapeAnalysis_FreeBounds::ConnectEdgesToWires(shapeList, tolerance, false, aWireHandle);
-    ShapeAnalysis_FreeBounds::ConnectWiresToWires(aWireHandle, tolerance, false, aWireWireHandle);
+    Part::Fix_ShapeAnalysis_FreeBounds_ConnectEdgesToWires(shapeList, tolerance, false, aWireHandle);
+    Part::Fix_ShapeAnalysis_FreeBounds_ConnectWiresToWires(aWireHandle, tolerance, false, aWireWireHandle);
     if (!aWireWireHandle) {
         return {};
     }

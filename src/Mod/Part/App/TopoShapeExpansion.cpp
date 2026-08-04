@@ -76,6 +76,7 @@
 #include <Precision.hxx>
 #include <ShapeAnalysis_FreeBounds.hxx>
 #include <ShapeBuild_ReShape.hxx>
+#include <Mod/Part/App/ShapeAnalysis_FreeBoundsFix.h>
 #include <ShapeConstruct_Curve.hxx>
 #include <ShapeUpgrade_ShellSewing.hxx>
 #include <TopTools_HSequenceOfShape.hxx>
@@ -3174,7 +3175,7 @@ TopoShape& TopoShape::makeElementWires(
         if (hEdges->Length() == 0) {
             FC_THROWM(NullShapeException, "Null shape");
         }
-        ShapeAnalysis_FreeBounds::ConnectEdgesToWires(hEdges, tol, Standard_True, hWires);
+        Part::Fix_ShapeAnalysis_FreeBounds_ConnectEdgesToWires(hEdges, tol, Standard_True, hWires);
         if (hWires->Length() == 0) {
             FC_THROWM(NullShapeException, "Null shape");
         }
@@ -3885,7 +3886,7 @@ TopoShape& TopoShape::makeElementFilledFace(
                 shapes.begin() + params.boundary_end
             );
             wires = TopoShape(0, Hasher)
-                        .makeElementWires(edges, "", 0.0, ConnectionPolicy::mergeWithTolerance, &output)
+                        .makeElementWires(edges, "", 0.0, ConnectionPolicy::requireSharedVertex, &output)
                         .getSubTopoShapes(TopAbs_WIRE);
             shapes.erase(shapes.begin() + params.boundary_begin, shapes.begin() + params.boundary_end);
         }
@@ -3906,7 +3907,7 @@ TopoShape& TopoShape::makeElementFilledFace(
             }
             if (edges.size()) {
                 wires = TopoShape(0, Hasher)
-                            .makeElementWires(edges, "", 0.0, ConnectionPolicy::mergeWithTolerance, &output)
+                            .makeElementWires(edges, "", 0.0, ConnectionPolicy::requireSharedVertex, &output)
                             .getSubTopoShapes(TopAbs_WIRE);
             }
         }
