@@ -234,6 +234,7 @@ class TestSurfaceWaterline(PathTestUtils.PathTestBase):
         cmds = waterline_to_gcode(
             wl_data,
             horiz_feed=300,
+            vert_feed=150,
             vert_rapid=1000,
             horiz_rapid=1000,
             safe_z=30.0,
@@ -265,8 +266,8 @@ class TestSurfaceWaterline(PathTestUtils.PathTestBase):
         wl_data = OrderedDict()
         wl_data[5.0] = [loop]
 
-        cmds_conv = waterline_to_gcode(wl_data, 300, 1000, 1000, 30, 40, cut_climb=False)
-        cmds_climb = waterline_to_gcode(wl_data, 300, 1000, 1000, 30, 40, cut_climb=True)
+        cmds_conv = waterline_to_gcode(wl_data, 300, 150, 1000, 1000, 30, 40, cut_climb=False)
+        cmds_climb = waterline_to_gcode(wl_data, 300, 150, 1000, 1000, 30, 40, cut_climb=True)
 
         # Extract just the X,Y coordinates from the G1 commands
         path_conv = [

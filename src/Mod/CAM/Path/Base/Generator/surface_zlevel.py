@@ -1110,6 +1110,7 @@ def zlevel_hybrid_to_gcode(
     commands = []
 
     tool_diam = radius * 2
+    vert_rapid = feed_params.get("horizRapid", 0.0)
     min_path_length = tool_diam
     min_adaptive_area = math.pi * (radius ** 2)
 
@@ -1138,6 +1139,16 @@ def zlevel_hybrid_to_gcode(
         # A: Adaptive Cut Pattern
         if is_adaptive:
             from . import adaptive_common as _adaptive
+            force_insideout = adaptive_params.get("force_insideout", False)
+            enforce_geofence = False
+
+            if _is_adaptive_outside(cutArea, bb_face) and not force_insideout:
+                enforce_geofence = True
+                Path.Log.warning(
+                    f"Z={round(z_target, 3)}: Outside adaptive cut detected. "
+                    "We do not have full control over the Adaptive2d algorithm in open regions. "
+                    "Please inspect the toolpath closely for errors and adjust the boundary manually if needed."
+                )
 
             pattern_cmds = _adaptive.generate(
                 adaptive_params,
@@ -1150,8 +1161,9 @@ def zlevel_hybrid_to_gcode(
                 cutArea,
                 min_adaptive_area,
                 bb_face,
+                enforce_geofence,
                 cut_area_offset=radius,
-                bb_face_offset=0.0,
+                bb_face_offset=radius-0.01,
             )
             commands.extend(pattern_cmds)
             if status not in ["Extra"]:
@@ -1171,7 +1183,7 @@ def zlevel_hybrid_to_gcode(
 
         if should_clear:
             # Ensure tool is at a safe level before moving into the pattern
-            commands.append(Path.Command("G0", {"Z": safe_hght}))
+            commands.append(Path.Command("G0", {"Z": safe_hght, "F": vert_rapid}))
 
             # Dispatch to the high-speed Path.Area pattern engine
             pattern_cmds = _generatePattern(
@@ -1230,7 +1242,7 @@ def zlevel_hybrid_to_gcode(
         )
 
     # Return to clearance height
-    commands.append(Path.Command("G0", {"Z": clear_hght}))
+    commands.append(Path.Command("G0", {"Z": clear_hght, "F": vert_rapid}))
 
     return commands
 
@@ -1544,3 +1556,28 @@ def _generatePattern(
             )
 
     return commands
+
+
+def _is_adaptive_outside(cut_area, bb_face):
+    """
+    Analyzes the cut area against the stock boundary to determine
+    if this is an inside pocket or an outside boss operation.
+    """
+    if not cut_area or cut_area.isNull() or not bb_face or bb_face.isNull():
+        return True
+
+    cut_bb = cut_area.BoundBox
+    stock_bb = bb_face.BoundBox
+    tol = 0.01
+
+    is_open = (
+        cut_bb.XMin <= stock_bb.XMin + tol or
+        cut_bb.XMax >= stock_bb.XMax - tol or
+        cut_bb.YMin <= stock_bb.YMin + tol or
+        cut_bb.YMax >= stock_bb.YMax - tol
+    )
+
+    if is_open:
+        return True
+    else:
+        return False

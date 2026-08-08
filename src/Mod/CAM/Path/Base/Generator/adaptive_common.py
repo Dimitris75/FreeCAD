@@ -32,7 +32,7 @@ Usage:
 
     cmds = adaptive_common.generate(
         adaptive_params = {
-            "op_type"            : "ClearingInside",
+            "op_type"            : "ClearingInside/Outside, ProfilingInside/Outside",
             "adaptive_accuracy"  : 0.1,
             "stock_to_leave"     : 0.0,
             "force_insideout"    : False,
@@ -91,8 +91,6 @@ def _filter_faces_by_area(shape, min_area=0.0):
         Part.Shape or None: A new shape containing only the valid faces,
                             or None if all faces were filtered out.
     """
-    import Part
-    import Path
 
     if min_area <= 0.0 or not shape or shape.isNull():
         return shape
@@ -129,12 +127,12 @@ def _offset_area(area, area_offset):
             return offset_area
         else:
             Path.Log.warning(
-                f"adaptive_common.generate: Area offset failed."
+                f"Area offset failed."
             )
             return None
     except Exception as e:
         Path.Log.warning(
-            f"adaptive_common.generate: Area offset failed: {e} ."
+            f"Area offset failed: {e} ."
         )
         return None
 
@@ -151,6 +149,36 @@ def _wire_to_2d(wire, deflection=0.01):
         for pt in edge.discretize(Deflection=deflection):
             pts.append([pt.x, pt.y])
     return pts
+
+
+# ---------------------------------------------------------------------------
+# Shape to 2D paths
+# ---------------------------------------------------------------------------
+
+
+def _shape_to_2d_paths(shape, deflection=0.01):
+    """
+    Extracts all closed wires from a shape and discretizes them into 2D point arrays.
+
+    Args:
+        shape (Part.Shape): The input face or compound.
+        deflection (float): The discretization deflection.
+
+    Returns:
+        list: A list of 2D point arrays.
+    """
+    paths = []
+    if not shape or shape.isNull():
+        return paths
+
+    for wire in shape.Wires:
+        if not wire.isClosed():
+            continue
+        pts = _wire_to_2d(wire, deflection)
+        if pts:
+            paths.append(pts)
+
+    return paths
 
 
 # ---------------------------------------------------------------------------
@@ -259,8 +287,7 @@ def _generate_helix_entry(
 
         except Exception as e:
             Path.Log.warning(
-                f"adaptive_common._generate_helix_entry: helix.generate() failed "
-                f"at Z={round(z_target, 3)}: {e} — falling back to straight plunge."
+                f"Helix entry failed at Z={round(z_target, 3)}: {e} — falling back to straight plunge."
             )
     else:
         Path.Log.debug(
@@ -272,6 +299,116 @@ def _generate_helix_entry(
     # Fallback: rapid to start point and straight plunge
     commands.append(Path.Command("G0", {"X": p2[0], "Y": p2[1], "F": h_rapid}))
     commands.append(Path.Command("G1", {"Z": z_target, "F": v_feed}))
+    return commands
+
+
+# ---------------------------------------------------------------------------
+# Convert results to G-code
+# ---------------------------------------------------------------------------
+
+
+def _results_to_commands(
+    _area,
+    results,
+    bb_face,
+    z_target,
+    prev_z,
+    safe_z,
+    radius,
+    feed_params,
+    lift_distance,
+    helix_min_diameter,
+    helix_angle,
+    helix_cone_angle,
+    safe_bb=None,
+):
+    """
+    Converts Adaptive2d results into a list of Path.Command objects.
+    Tracks Z-height changes to avoid redundant vertical moves.
+    """
+    def _is_outside_geofence(x, y, bb, tol=0.01):
+        """
+        Checks if a given coordinate is strictly outside the provided bounding box.
+        """
+        if not bb:
+            return False
+        return (
+            x < bb.XMin - tol or x > bb.XMax + tol or
+            y < bb.YMin - tol or y > bb.YMax + tol
+        )
+
+    h_feed  = feed_params.get("horizFeed",  0.0)
+    v_feed  = feed_params.get("vertFeed",   0.0)
+    v_rapid = feed_params.get("vertRapid",  0.0)
+    h_rapid = feed_params.get("horizRapid", 0.0)
+
+    commands = []
+
+    for result in results:
+        if not result.AdaptivePaths:
+            continue
+
+        # Helix ramp entry for this region
+        commands.extend(
+            _generate_helix_entry(
+                region             = result,
+                z_target           = z_target,
+                prev_z             = prev_z,
+                safe_z             = safe_z,
+                radius             = radius,
+                feed_params        = feed_params,
+                helix_min_diameter = helix_min_diameter,
+                helix_angle        = helix_angle,
+                helix_cone_angle   = helix_cone_angle,
+            )
+        )
+
+        lz = prev_z
+
+        # Track if we forced an emergency retract on the previous move
+        emergency_retracted = False
+
+        for idx, (motion_type, points) in enumerate(result.AdaptivePaths):
+            if not points:
+                continue
+
+            for pt in points:
+                x, y = pt[0], pt[1]
+
+                if motion_type == _area.AdaptiveMotionType.Cutting:
+                    # If we were emergency retracted during transit, plunge back down safely
+                    if emergency_retracted:
+                        commands.append(Path.Command("G0", {"X": x, "Y": y, "F": h_rapid}))
+                        commands.append(Path.Command("G1", {"Z": z_target, "F": v_feed}))
+                        lz = z_target
+                        emergency_retracted = False
+
+                    z = z_target
+                    if z != lz:
+                        commands.append(Path.Command("G1", {"Z": z, "F": v_feed}))
+                    commands.append(Path.Command("G1", {"X": x, "Y": y, "F": h_feed}))
+
+                elif motion_type == _area.AdaptiveMotionType.LinkClear:
+                    # LinkClear: lift by lift_distance above cut depth.
+                    # GEOFENCE CHECK: If it leaves the stock boundary, force a full retract!
+                    if _is_outside_geofence(x, y, safe_bb):
+                        z = safe_z
+                        emergency_retracted = True
+                    else:
+                        z = z_target + float(lift_distance)
+
+                    if z != lz:
+                        commands.append(Path.Command("G0", {"Z": z, "F": v_rapid}))
+                    commands.append(Path.Command("G0", {"X": x, "Y": y, "F": h_rapid}))
+
+                elif motion_type == _area.AdaptiveMotionType.LinkNotClear:
+                    z = safe_z
+                    if z != lz:
+                        commands.append(Path.Command("G0", {"Z": z, "F": v_rapid}))
+                    commands.append(Path.Command("G0", {"X": x, "Y": y, "F": h_rapid}))
+
+                lz = z
+
     return commands
 
 
@@ -291,6 +428,7 @@ def generate(
     cut_area,
     min_face_area,
     bb_face,
+    enforce_geofence=True,
     cut_area_offset=0.0,
     bb_face_offset=0.0,
 ):
@@ -316,7 +454,9 @@ def generate(
         safe_z (float):         Safe Z height for full retracts.
         prev_z (float):         Previous layer Z depth (helix entry start).
         cut_area (Part.Shape):  2D cutting boundary face for this layer.
+        min_face_area (float):  The minimum allowed area to be machined.
         bb_face (Part.Shape):   2D stock boundary face.
+        enforce_geofence (bool):Geofence active (defaults to True for safety)
         cut_area_offset (float):Offset value for cutting area or 0.0
         bb_face_offset (float): Offset value for boundary face or 0.0
 
@@ -324,10 +464,9 @@ def generate(
         list: Path.Command objects for this layer's adaptive pattern,
               or [] on failure.
     """
-    if not cut_area or cut_area.isNull():
+    if not cut_area or cut_area.isNull() or not bb_face or bb_face.isNull():
         Path.Log.warning(
-            f"adaptive_common.generate: No valid cutting area "
-            f"at Z={round(z_target, 3)} — skipping."
+            f"No valid cutting area or boundary at Z={round(z_target, 3)} — skipping."
         )
         return []
 
@@ -357,11 +496,6 @@ def generate(
     helix_diameter      = tool_diam * helix_diam_pct     / 100.0
     helix_min_diameter  = tool_diam * helix_min_diam_pct / 100.0
 
-    h_feed  = feed_params.get("horizFeed",  0.0)
-    v_feed  = feed_params.get("vertFeed",   0.0)
-    v_rapid = feed_params.get("vertRapid",  0.0)
-    h_rapid = feed_params.get("horizRapid", 0.0)
-
     # Map string to enum
     op_type_map = {
         "ClearingInside"   : _area.AdaptiveOperationType.ClearingInside,
@@ -374,7 +508,6 @@ def generate(
     if min_face_area > 0:
         cut_area = _filter_faces_by_area(cut_area, min_face_area)
         if not cut_area:
-            Path.Log.warning(f"All faces filtered out at Z={round(z_target, 3)}.")
             return []
 
     # Apply cutting area offset
@@ -390,27 +523,12 @@ def generate(
             return []
 
     # -- Build 2D path lists --
-    path2d  = []
-    stock2d = []
-
-    for wire in cut_area.Wires:
-        if not wire.isClosed():
-            continue
-        pts = _wire_to_2d(wire)
-        if pts:
-            path2d.append(pts)
-
-    for wire in bb_face.Wires:
-        if not wire.isClosed():
-            continue
-        pts = _wire_to_2d(wire)
-        if pts:
-            stock2d.append(pts)
+    path2d  = _shape_to_2d_paths(cut_area)
+    stock2d = _shape_to_2d_paths(bb_face)
 
     if not path2d:
         Path.Log.warning(
-            f"adaptive_common.generate: No valid closed wires "
-            f"at Z={round(z_target, 3)} — skipping."
+            f"No valid closed wires at Z={round(z_target, 3)} — skipping."
         )
         return []
 
@@ -432,8 +550,7 @@ def generate(
         results = a2d.Execute(stock2d, path2d, [], lambda tpaths: False)
     except Exception as e:
         Path.Log.error(
-            f"adaptive_common.generate: Adaptive2d.Execute failed "
-            f"at Z={round(z_target, 3)}: {e}"
+            f"Adaptive2d algorithm failed at Z={round(z_target, 3)}: {e}"
         )
         return []
 
@@ -444,59 +561,22 @@ def generate(
         )
         return []
 
+    # Pre-cache the safe boundary limits ONLY if the geofence is enabled
+    safe_bb = bb_face.BoundBox if (enforce_geofence and bb_face and not bb_face.isNull()) else None
+
     # -- Convert results to G-code --
-    commands = []
-
-    for result in results:
-        if not result.AdaptivePaths:
-            continue
-
-        # Helix ramp entry for this region
-        commands.extend(
-            _generate_helix_entry(
-                region             = result,
-                z_target           = z_target,
-                prev_z             = prev_z,
-                safe_z             = safe_z,
-                radius             = radius,
-                feed_params        = feed_params,
-                helix_min_diameter = helix_min_diameter,
-                helix_angle        = helix_angle,
-                helix_cone_angle   = helix_cone_angle,
-            )
-        )
-
-        lz = prev_z
-
-        for idx, (motion_type, points) in enumerate(result.AdaptivePaths):
-            if not points:
-                continue
-
-            for pt in points:
-                x, y = pt[0], pt[1]
-
-                if motion_type == _area.AdaptiveMotionType.Cutting:
-                    z = z_target
-                    if z != lz:
-                        commands.append(Path.Command("G1", {"Z": z, "F": v_feed}))
-                    commands.append(Path.Command("G1", {"X": x, "Y": y, "F": h_feed}))
-
-                elif motion_type == _area.AdaptiveMotionType.LinkClear:
-                    # LinkClear: lift by lift_distance above cut depth.
-                    # Note: Adaptive2d's LinkClear classification can be
-                    # unreliable near convex corners. lift_distance provides
-                    # a safety margin — increase it if collisions occur.
-                    z = z_target + float(lift_distance)
-                    if z != lz:
-                        commands.append(Path.Command("G0", {"Z": z, "F": v_rapid}))
-                    commands.append(Path.Command("G0", {"X": x, "Y": y, "F": h_rapid}))
-
-                elif motion_type == _area.AdaptiveMotionType.LinkNotClear:
-                    z = safe_z
-                    if z != lz:
-                        commands.append(Path.Command("G0", {"Z": z, "F": v_rapid}))
-                    commands.append(Path.Command("G0", {"X": x, "Y": y, "F": h_rapid}))
-
-                lz = z
-
-    return commands
+    return _results_to_commands(
+        _area=_area,
+        results=results,
+        bb_face=bb_face,
+        z_target=z_target,
+        prev_z=prev_z,
+        safe_z=safe_z,
+        radius=radius,
+        feed_params=feed_params,
+        lift_distance=lift_distance,
+        helix_min_diameter=helix_min_diameter,
+        helix_angle=helix_angle,
+        helix_cone_angle=helix_cone_angle,
+        safe_bb=safe_bb,
+    )

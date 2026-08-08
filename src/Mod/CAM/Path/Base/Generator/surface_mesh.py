@@ -37,15 +37,15 @@ import Part
 import time
 import FreeCAD
 
-# Try to import mesh simplification library
+# Try to import PyVista for high-quality CAD mesh decimation
 try:
-    import fast_simplification
-
+    import pyvista as pv
+    import numpy as np
     _HAS_SIMPLIFICATION = True
-    Path.Log.info("surface_mesh: Using fast-simplification library for mesh optimization")
+    Path.Log.info("Using PyVista for high-quality mesh optimization")
 except ImportError:
     _HAS_SIMPLIFICATION = False
-    Path.Log.info("surface_mesh: fast-simplification not available, mesh optimization disabled")
+    Path.Log.info("PyVista not available, mesh optimization disabled. (pip install pyvista)")
 
 # Try to import C++ implementation
 try:
@@ -56,14 +56,20 @@ try:
     Path.Log.info("surface_mesh: Using C++ accelerated implementation")
 except ImportError as e:
     _HAS_CPP = False
-    Path.Log.info(f"surface_mesh: C++ not available ({e}), using Python fallback")
+    Path.Log.info(f"C++ not available ({e}), using Python fallback")
 except Exception as e:
     _HAS_CPP = False
-    Path.Log.info(f"surface_mesh: C++ import error ({e}), using Python fallback")
+    Path.Log.info(f"C++ import error ({e}), using Python fallback")
+
+if False:
+    Path.Log.setLevel(Path.Log.Level.DEBUG, Path.Log.thisModule())
+    Path.Log.trackModule(Path.Log.thisModule())
+else:
+    Path.Log.setLevel(Path.Log.Level.INFO, Path.Log.thisModule())
 
 
-def _apply_mesh_simplification(vertices, facets, simplification_level):
-    """Apply mesh simplification to reduce triangle count.
+def _apply_mesh_simplification(vertices, facets, simplification_level, silence):
+    """Apply topology-preserving mesh simplification to reduce triangle count.
 
     Args:
         vertices: List of vertex coordinates [[x,y,z], ...]
@@ -78,44 +84,65 @@ def _apply_mesh_simplification(vertices, facets, simplification_level):
         return vertices, facets
 
     # Map simplification level (1-7) to reduction ratios
-    # Based on PR #24450 performance analysis
-    reduction_ratios = {
-        1: 0.0,  # No reduction (highest accuracy)
-        2: 0.1,  # 10% reduction
-        3: 0.2,  # 20% reduction
-        4: 0.3,  # 30% reduction
-        5: 0.5,  # 50% reduction (moderate)
-        6: 0.7,  # 70% reduction (aggressive)
-        7: 0.9,  # 90% reduction (maximum speed)
+    reduction = 0.75  # 75% High reduction ratio at low angle to terget only flat surfaces
+    angle_level = {
+        1: 0.0,  # No reduction (Highest accuracy)
+        2: 1.0,  # 1 Degree (Extremely safe: merges ONLY perfectly flat surfaces)
+        3: 2.0,  # 2 Degrees
+        4: 3.0,  # 3 Degrees
+        5: 4.0,  # 4 Degrees
+        6: 5.0,  # 5 Degrees
+        7: 6.0,  # 6 Degrees (Fastest processing, might flatten very shallow curves)
     }
 
-    reduction = reduction_ratios.get(simplification_level, 0.0)
-    if reduction <= 0.0:
+    target_angle = angle_level.get(simplification_level, 0.0)
+    if target_angle < 1.0:
         return vertices, facets
 
     start_time = time.perf_counter()
     original_triangles = len(facets)
 
     try:
-        # Apply fast quadratic mesh simplification
-        simplified_vertices, simplified_facets = fast_simplification.simplify(
-            vertices, facets, reduction
+        # PyVista expects faces as a flat array: [3, v0, v1, v2, 3, v0, v1, v2...]
+        faces_pv = np.empty((len(facets), 4), dtype=int)
+        faces_pv[:, 0] = 3
+        faces_pv[:, 1:] = facets
+        faces_flat = faces_pv.flatten()
+
+        # Build the PyVista PolyData object
+        mesh = pv.PolyData(np.array(vertices), faces_flat)
+
+        # Apply decimate_pro: This is the VTK algorithm that respects CAD topology (preserve details)
+        simplified_mesh = mesh.decimate_pro(
+            reduction,
+            preserve_topology=True,
+            feature_angle=target_angle,  # Protects sharp corners (like walls and chamfers)
+            splitting=False,
+            boundary_vertex_deletion=False,
         )
+
+        # Extract the results back into standard Python lists
+        simplified_vertices = simplified_mesh.points.tolist()
+
+        # Unpack from VTK's [3, v1, v2, v3] format back to [[v1, v2, v3]]
+        sf = simplified_mesh.faces
+        simplified_facets = sf.reshape(-1, 4)[:, 1:].tolist()
 
         simplification_time = time.perf_counter() - start_time
         final_triangles = len(simplified_facets)
         actual_reduction = (original_triangles - final_triangles) / original_triangles * 100
 
-        Path.Log.info(
-            f"surface_mesh: Mesh simplification level {simplification_level}: "
-            f"{original_triangles} → {final_triangles} triangles "
-            f"({actual_reduction:.1f}% reduction, {simplification_time:.3f}s)"
-        )
+        if not silence:
+            Path.Log.info(
+                f"PyVista simplification level {simplification_level}: "
+                f"{original_triangles} → {final_triangles} triangles "
+                f"({actual_reduction:.1f}% reduction, {simplification_time:.3f}s)"
+            )
 
         return simplified_vertices, simplified_facets
 
     except Exception as e:
-        Path.Log.warning(f"Mesh simplification failed: {e}, using original mesh")
+        Path.Log.warning(f"PyVista mesh simplification failed: {e}, using original mesh")
         return vertices, facets
 
 
@@ -239,7 +266,7 @@ def _shape_to_stl_arrays(shape, linear_deflection, angular_deflection):
 
 
 def _shape_to_stl(
-    shape, linear_deflection, angular_deflection, mesh_simplification=1, use_cpp=False
+    shape, linear_deflection, angular_deflection, mesh_simplification=1, silence=False,
 ):
     """Convert a Part.Shape / Compound to ocl.STLSurf using raw arrays.
 
@@ -251,7 +278,6 @@ def _shape_to_stl(
         linear_deflection: Linear deflection for tessellation (mm).
         angular_deflection: Angular deflection for tessellation (degrees).
         mesh_simplification: Integer 1-7 for mesh simplification (1=highest accuracy, 7=fastest).
-        use_cpp: Use C++ accelerated shape to STL conversion.
 
     Returns:
         An ocl.STLSurf object.
@@ -271,7 +297,7 @@ def _shape_to_stl(
 
     # Tessellation phase
     tess_start = time.perf_counter()
-    if _HAS_CPP and use_cpp:  # use_cpp - Waterline and shape_to_stl_cpp issue not yet solved
+    if _HAS_CPP:
         try:
             verts, faces = _shape_to_stl_cpp(shape, linear_deflection, angular_deflection)
         except RuntimeError as e:
@@ -287,7 +313,7 @@ def _shape_to_stl(
 
     # Mesh simplification phase (if enabled)
     simp_start = time.perf_counter()
-    verts, faces = _apply_mesh_simplification(verts, faces, mesh_simplification)
+    verts, faces = _apply_mesh_simplification(verts, faces, mesh_simplification, silence)
     simp_time = time.perf_counter() - simp_start
     Path.Log.debug(f"surface_mesh._shape_to_stl: Mesh simplification time: {simp_time:.4f}s")
 
@@ -636,11 +662,25 @@ def _shape_to_safe_stl(
     # Fuse and create a coarse mesh
     safe_compound = Part.Compound(fused_shapes)
 
+    if _HAS_SIMPLIFICATION:
+        # PyVista will intelligently decimate flat areas, so we can afford
+        # a higher resolution base mesh to capture perfect boundary edges.
+        safe_lin_def = linear_deflection
+        safe_ang_def = angular_deflection
+    else:
+        # No PyVista: We must manually loosen the deflection to reduce
+        # triangle count and prevent the boundary calculations from lagging.
+        safe_lin_def = linear_deflection + 0.02
+        safe_ang_def = angular_deflection + 0.1
+
     try:
         safe_stl = _shape_to_stl(
-            safe_compound, linear_deflection + 0.02, angular_deflection + 0.1, mesh_simplification, use_cpp=True
+            safe_compound,
+            safe_lin_def,
+            safe_ang_def,
+            max(mesh_simplification, 2),
+            silence=True,
         )
-
         Path.Log.debug("surface_mesh._shape_to_safe_stl: Safe STL generated successfully.")
     except Exception as e:
         Path.Log.error(
@@ -700,7 +740,6 @@ def generate_stl(
                collision mesh (or a copy of stl if generation failed or wasn't needed).
     """
     stl = safe_stl = clipped_shape = optimized_shape = None
-    use_cpp = True
 
     if not base_objs:
         Path.Log.error("No 3D models were found in the Job. Please add a base model to the Job setup.")
@@ -755,7 +794,7 @@ def generate_stl(
             linear_deflection,
             angular_deflection,
             mesh_simplification,
-            use_cpp,
+            silence=False,
         )
 
         # Check if the STL object is None OR if it contains zero triangles.

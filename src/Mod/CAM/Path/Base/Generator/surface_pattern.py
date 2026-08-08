@@ -295,7 +295,7 @@ def _reorient_wire_start(wire, start_point):
         new_wire = Part.Wire(reordered_edges)
         return new_wire
     except Exception as e:
-        Path.Log.debug(f"Failed to reorient wire: {e}")
+        Path.Log.debug(f"surface_pattern._reorient_wire_start: Failed to reorient wire: {e}")
         return wire
 
 
@@ -325,8 +325,17 @@ def generate_offset_scan_lines(
 
     import FreeCAD
 
+    if hasattr(boundary_face, "removeSplitter"):
+        try:
+            cleaned_face = boundary_face.removeSplitter()
+            if cleaned_face and not cleaned_face.isNull():
+                boundary_face = cleaned_face
+        except Exception as e:
+            Path.Log.debug(f"generate_offset_scan_lines: removeSplitter ignored: {e}")
+
     offset_engine = Path.Area()
     offset_engine.setParams(Tolerance=0.01)
+    offset_engine.add(boundary_face)
 
     offset_lines = []
     current_offset = -0.005
@@ -334,7 +343,6 @@ def generate_offset_scan_lines(
     current_start_pt = None
 
     while True:
-        offset_engine.add(boundary_face)
         offset_engine.setParams(Offset=current_offset)
         try:
             offset_shape = offset_engine.getShape()
@@ -349,13 +357,16 @@ def generate_offset_scan_lines(
             break
 
         layer_lines = []
-        for wire in offset_shape.Wires:
+        wires = offset_shape.Wires
+        num_wires = len(wires)
+
+        for wire in wires:
             # Discard tiny fragments that are too small to be meaningful toolpaths.
             if wire.Length < min_path_length:
                 continue
 
             # TSP Optimization: Align the wire's seam to the tool's current location
-            if current_start_pt and wire.isClosed() and wire.BoundBox.DiagonalLength > 2.0:
+            if current_start_pt and wire.isClosed() and num_wires > 1 and wire.BoundBox.DiagonalLength > 2.0:
                 wire = _reorient_wire_start(wire, current_start_pt)
 
             # Discretize the wire into a smooth array of coordinates

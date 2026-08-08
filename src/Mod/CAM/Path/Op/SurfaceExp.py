@@ -81,7 +81,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "name": "Fastest",
             "angular_deflection": 0.5,  # Coarse chordal deviation for minimal mesh density
             "linear_deflection": 0.1,  # Relaxed for rough previews (avoids over-precision)
-            "mesh_simplification": 3,
+            "mesh_simplification": 7,
             "sample_interval": 1.5,  # Sparse sampling for fast computation
             "min_sample_interval": 0.3,  # Minimum sparse sampling for fast computation
             "description": "Quick verification and rough prototypes",
@@ -90,7 +90,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "name": "Very Fast",
             "angular_deflection": 0.4,
             "linear_deflection": 0.075,
-            "mesh_simplification": 2,
+            "mesh_simplification": 6,
             "sample_interval": 1.0,
             "min_sample_interval": 0.2,
             "description": "Rapid roughing with basic verification",
@@ -99,7 +99,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "name": "Fast",
             "angular_deflection": 0.3,
             "linear_deflection": 0.05,
-            "mesh_simplification": 1,
+            "mesh_simplification": 5,
             "sample_interval": 0.5,
             "min_sample_interval": 0.1,
             "description": "Efficient processing for initial prototypes",
@@ -108,7 +108,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "name": "Balanced",
             "angular_deflection": 0.2,
             "linear_deflection": 0.025,
-            "mesh_simplification": 1,
+            "mesh_simplification": 4,
             "sample_interval": 0.25,
             "min_sample_interval": 0.05,
             "description": "Good compromise for most commercial work",
@@ -117,7 +117,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "name": "Good",
             "angular_deflection": 0.15,
             "linear_deflection": 0.015,
-            "mesh_simplification": 1,
+            "mesh_simplification": 3,
             "sample_interval": 0.1,
             "min_sample_interval": 0.05,
             "description": "Reliable quality for commercial machines",
@@ -126,7 +126,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "name": "High",
             "angular_deflection": 0.1,
             "linear_deflection": 0.01,
-            "mesh_simplification": 1,
+            "mesh_simplification": 2,
             "sample_interval": 0.07,
             "min_sample_interval": 0.05,
             "description": "Detailed surfacing for typical commercial tolerances",
@@ -224,8 +224,10 @@ class ObjectSurface(PathOp.ObjectOp):
                 "Performance Optimization",
                 QT_TRANSLATE_NOOP(
                     "App::Property",
-                    "Mesh simplification level (1-7): 1=Highest accuracy, 7=Fastest processing. "
-                    "Higher values reduce triangle count for faster computation but lower accuracy.",
+                    "Mesh simplification level (1-7): 1=No reduction, 7=Fastest processing. "
+                    "Aggressively reduces triangle count on flat surfaces to speed up calculation, "
+                    "while safely preserving walls, fillets, and sharp edges. "
+                    "(Note: Requires the 'pyvista' Python library to be installed)."
                 ),
             ),
             (
@@ -712,7 +714,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "GapThreshold": 0.005,
             "AngularDeflection": 0.2,
             "LinearDeflection": 0.025,
-            "MeshSimplification": 1,  # Default to highest accuracy (no simplification)
+            "MeshSimplification": 4,
             "SamplingAccuracy": "4",
             "LeadInOut": False,
             "LeadFeed": 75,
@@ -1330,8 +1332,6 @@ class ObjectSurface(PathOp.ObjectOp):
         2. Run waterline_stack at multiple Z-heights
         3. Convert to G-code
         """
-        startTime = time.time()
-
         sample_interval = obj.SampleInterval.Value
         min_sampling = obj.MinSampleInterval.Value
         min_z = obj.FinalDepth.Value
@@ -1353,12 +1353,6 @@ class ObjectSurface(PathOp.ObjectOp):
 
         if obj.CutPatternReversed:
             cut_climb = not cut_climb
-
-        Path.Log.info(
-            "Waterline: min_z={:.2f}, max_z={:.2f}, step_down={:.2f}, is_truly_adaptive={}".format(
-                min_z, max_z, step_down, is_truly_adaptive
-            )
-        )
 
         wl_data = surface_waterline.waterline_stack(
             stl,
@@ -1395,11 +1389,6 @@ class ObjectSurface(PathOp.ObjectOp):
             cut_climb=cut_climb,
         )
 
-        elapsed = time.time() - startTime
-        Path.Log.info(
-            "Waterline strategy completed in {:.2f}s, {} commands".format(elapsed, len(cmds))
-        )
-
         return cmds
 
     def _executeZLevelHybrid(self, obj, job, shape, bb_face, tool_params):
@@ -1419,8 +1408,6 @@ class ObjectSurface(PathOp.ObjectOp):
         7. Convert the resulting geometry stack into optimized G-code Path commands.
         """
         import Path.Base.Generator.surface_zlevel as surface_zlevel
-
-        startTime = time.time()
 
         # 1. Extract and Validate Tool Parameters
         tool_diam = tool_params.get("diameter", 0.0)
@@ -1500,7 +1487,7 @@ class ObjectSurface(PathOp.ObjectOp):
             fill_holes_masks = surface_zlevel.fill_selected(base_prop)
 
         # 4. Boundary preparation
-        buffer = radius * 10.0
+        buffer = tool_diam
         border_poly = surface_zlevel.extendedBoundBox(job.Stock.Shape.BoundBox, buffer, 0.0)
         border_face = Part.makeFace(border_poly)
 
@@ -1540,11 +1527,6 @@ class ObjectSurface(PathOp.ObjectOp):
             is_adaptive,
             adaptive_params,
             bb_face,
-        )
-
-        elapsed = time.time() - startTime
-        Path.Log.info(
-            "Z-Level Hybrid strategy completed in {:.2f}s, {} commands".format(elapsed, len(cmds))
         )
 
         return cmds
@@ -1793,7 +1775,10 @@ class ObjectSurface(PathOp.ObjectOp):
         self.commandlist.extend(cmds)
 
         elapsed = time.time() - startTime
-        Path.Log.info("Surface operation completed in {:.2f}s".format(elapsed))
+        hours, remainder = divmod(elapsed, 3600)
+        minutes, seconds = divmod(remainder, 60)
+
+        Path.Log.info("Surface operation completed in {:02.0f}h:{:02.0f}m:{:05.2f}s".format(hours, minutes, seconds))
 
 
 def Create(name, obj=None, parentJob=None):
