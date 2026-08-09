@@ -89,8 +89,6 @@ def _apply_fill_hole_masks(
         tuple: (fill_mask_idx, fill_holes_masks, floor_geo, allPrevComp) — updated values
                for all four mutable state variables.
     """
-    import Path
-
     if status in ("Mixed", "Extra") and floor_geo is not None:
         merge_engine = Path.Area()
         merge_engine.setPlane(wpc)
@@ -449,11 +447,23 @@ def getTrimFace(border_face, bbFace, wpc):
     """
     trim_engine = Path.Area()
     trim_engine.setPlane(wpc)
-    trim_engine.add(border_face)
+
+    # We expand the canvas of the trim_face by 1.0mm so it completely engulfs
+    # the border_face during the subtraction in _calculate_cut_area.
+    bb = border_face.BoundBox
+    p1 = FreeCAD.Vector(bb.XMin - 1.0, bb.YMin - 1.0, 0)
+    p2 = FreeCAD.Vector(bb.XMax + 1.0, bb.YMin - 1.0, 0)
+    p3 = FreeCAD.Vector(bb.XMax + 1.0, bb.YMax + 1.0, 0)
+    p4 = FreeCAD.Vector(bb.XMin - 1.0, bb.YMax + 1.0, 0)
+    expanded_canvas = Part.makePolygon([p1, p2, p3, p4, p1])
+
+    trim_engine.add(expanded_canvas)
 
     if bbFace:
-        bbFace.translate(FreeCAD.Vector(0, 0, -bbFace.BoundBox.ZMin))
-        trim_engine.add(bbFace, op=1)
+        # Use a copy to avoid mutating the original reference
+        bbFace_copy = bbFace.copy()
+        bbFace_copy.translate(FreeCAD.Vector(0, 0, -bbFace_copy.BoundBox.ZMin))
+        trim_engine.add(bbFace_copy, op=1)
 
     try:
         trim_face = trim_engine.getShape()
@@ -999,7 +1009,7 @@ def _calculate_cut_area(
         if allPrevComp:
             layer_engine.add(allPrevComp, op=1)
 
-    # Apply the 'outside world' mask only in standard mode
+    # Apply the 'outside world' mask
     if trim_face:
         layer_engine.add(trim_face, op=1)
 
@@ -1560,24 +1570,35 @@ def _generatePattern(
 
 def _is_adaptive_outside(cut_area, bb_face):
     """
-    Analyzes the cut area against the stock boundary to determine
-    if this is an inside pocket or an outside boss operation.
+    Determines if an adaptive cut is an open pocket (breaches the stock boundary).
+    Optimized to prioritize the lightning-fast AABB check, falling back to
+    2D topology only for irregular stock shapes.
     """
     if not cut_area or cut_area.isNull() or not bb_face or bb_face.isNull():
         return True
 
-    cut_bb = cut_area.BoundBox
-    stock_bb = bb_face.BoundBox
+    c_bb = cut_area.BoundBox
+    s_bb = bb_face.BoundBox
     tol = 0.01
 
-    is_open = (
-        cut_bb.XMin <= stock_bb.XMin + tol or
-        cut_bb.XMax >= stock_bb.XMax - tol or
-        cut_bb.YMin <= stock_bb.YMin + tol or
-        cut_bb.YMax >= stock_bb.YMax - tol
-    )
-
-    if is_open:
+    # This instantly catches 95% of standard rectangular stock scenarios.
+    if (c_bb.XMin <= s_bb.XMin + tol or
+        c_bb.XMax >= s_bb.XMax - tol or
+        c_bb.YMin <= s_bb.YMin + tol or
+        c_bb.YMax >= s_bb.YMax - tol):
         return True
-    else:
-        return False
+
+    # it might still touch the physical edge. We do a 2D common intersection.
+    try:
+        intersection = cut_area.common(bb_face)
+        if intersection and not intersection.isNull():
+            if abs(cut_area.Area - intersection.Area) > 0.01:
+                return True
+
+            if abs(intersection.Length - cut_area.Length) > 0.01:
+                return True
+    except Exception:
+        # If the check fails, default to fencing it for safety
+        return True
+
+    return False

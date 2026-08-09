@@ -1487,7 +1487,7 @@ class ObjectSurface(PathOp.ObjectOp):
             fill_holes_masks = surface_zlevel.fill_selected(base_prop)
 
         # 4. Boundary preparation
-        buffer = tool_diam
+        buffer = tool_diam + obj.BoundaryAdjustment.Value
         border_poly = surface_zlevel.extendedBoundBox(job.Stock.Shape.BoundBox, buffer, 0.0)
         border_face = Part.makeFace(border_poly)
 

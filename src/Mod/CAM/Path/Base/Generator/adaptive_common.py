@@ -389,23 +389,33 @@ def _results_to_commands(
                     commands.append(Path.Command("G1", {"X": x, "Y": y, "F": h_feed}))
 
                 elif motion_type == _area.AdaptiveMotionType.LinkClear:
-                    # LinkClear: lift by lift_distance above cut depth.
-                    # GEOFENCE CHECK: If it leaves the stock boundary, force a full retract!
+                    # Geofence check
                     if _is_outside_geofence(x, y, safe_bb):
-                        z = safe_z
-                        emergency_retracted = True
-                    else:
-                        z = z_target + float(lift_distance)
+                        if not emergency_retracted:
+                            commands.append(Path.Command("G0", {"Z": safe_z, "F": v_rapid}))
+                            emergency_retracted = True
+                            lz = safe_z
+                        # Skip intermediate XY waypoint; we are above the part
+                        continue
 
+                    # If we are already retracted, ignore all further transit waypoints
+                    if emergency_retracted:
+                        continue
+
+                    # Standard micro-lift transit
+                    z = z_target + float(lift_distance)
                     if z != lz:
                         commands.append(Path.Command("G0", {"Z": z, "F": v_rapid}))
                     commands.append(Path.Command("G0", {"X": x, "Y": y, "F": h_rapid}))
 
                 elif motion_type == _area.AdaptiveMotionType.LinkNotClear:
-                    z = safe_z
-                    if z != lz:
-                        commands.append(Path.Command("G0", {"Z": z, "F": v_rapid}))
-                    commands.append(Path.Command("G0", {"X": x, "Y": y, "F": h_rapid}))
+                    # LinkNotClear inherently means we must retract to safe_z
+                    if not emergency_retracted:
+                        commands.append(Path.Command("G0", {"Z": safe_z, "F": v_rapid}))
+                        emergency_retracted = True
+                        lz = safe_z
+                    # Skip the intermediate XY waypoint and rapid straight to the next cut
+                    continue
 
                 lz = z
 
