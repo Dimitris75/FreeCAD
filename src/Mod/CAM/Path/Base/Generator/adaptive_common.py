@@ -376,6 +376,13 @@ def _results_to_commands(
                 x, y = pt[0], pt[1]
 
                 if motion_type == _area.AdaptiveMotionType.Cutting:
+                    # If the cut strays outside the stock boundary, force a retract and skip the point
+                    if _is_outside_geofence(x, y, safe_bb):
+                        if not emergency_retracted:
+                            commands.append(Path.Command("G0", {"Z": safe_z, "F": v_rapid}))
+                            emergency_retracted = True
+                            lz = safe_z
+                        continue
                     # If we were emergency retracted during transit, plunge back down safely
                     if emergency_retracted:
                         commands.append(Path.Command("G0", {"X": x, "Y": y, "F": h_rapid}))
