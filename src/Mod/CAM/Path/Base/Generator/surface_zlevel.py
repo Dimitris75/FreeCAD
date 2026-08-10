@@ -1085,6 +1085,7 @@ def zlevel_hybrid_to_gcode(
     is_adaptive,
     adaptive_params,
     bb_face,
+    enforce_geofence,
 ):
     """Converts the geometry stack into G-code Path Commands.
 
@@ -1151,9 +1152,9 @@ def zlevel_hybrid_to_gcode(
             from . import adaptive_common as _adaptive
 
             # This single call checks the topology, sets up the offsets,
-            # handles the finishing_profile override, and prints the warning!
+            # handles the finishing_profile override, and prints a warning!
             geofence, bb_offset = _setup_adaptive_geofence(
-                cutArea, bb_face, adaptive_params, radius, z_target
+                cutArea, bb_face, adaptive_params, radius, z_target, enforce_geofence
             )
 
             pattern_cmds = _adaptive.generate(
@@ -1254,7 +1255,7 @@ def zlevel_hybrid_to_gcode(
     return commands
 
 
-def _setup_adaptive_geofence(cut_area, bb_face, adaptive_params, radius, z_target):
+def _setup_adaptive_geofence(cut_area, bb_face, adaptive_params, radius, z_target, enforce_geofence):
     """
     Analyzes the geometric relationship between the cut area and the stock boundary
     to detect open pockets, and configures safety overrides for the Adaptive2d algorithm.
@@ -1271,14 +1272,15 @@ def _setup_adaptive_geofence(cut_area, bb_face, adaptive_params, radius, z_targe
                                 Modified in-place if overrides are required.
         radius (float): The tool radius in millimeters.
         z_target (float): The current Z-depth (used for contextual logging).
+        enforce_geofence (bool): The user's preference from the operation's Data tab.
+                                      If False, respects the power-user's choice to disable
+                                      geofence clipping on open pockets. Defaults to True.
 
     Returns:
         tuple: (geofence_active (bool), bb_offset (float))
                - geofence_active: True if transit moves should be strictly clipped.
                - bb_offset: The boundary offset applied for the Adaptive2d algorithm.
     """
-    import Path
-
     # Defaults for closed pockets
     force_insideout = adaptive_params.get("force_insideout", False)
     geofence = False
@@ -1300,7 +1302,7 @@ def _setup_adaptive_geofence(cut_area, bb_face, adaptive_params, radius, z_targe
         c_bb.YMax >= s_bb.YMax - tol):
         is_open = True
     else:
-        # Irregular Stock Check (Circles/Polygons)
+        # Irregular Stock Check
         try:
             intersection = cut_area.common(bb_face)
             if intersection and not intersection.isNull():
@@ -1309,20 +1311,21 @@ def _setup_adaptive_geofence(cut_area, bb_face, adaptive_params, radius, z_targe
                 elif abs(intersection.Length - cut_area.Length) > 0.01:
                     is_open = True
         except Exception:
-            is_open = True # Default to fenced on error
+            is_open = True
 
     # Apply Safety Overrides
     if is_open and not force_insideout:
-        geofence = True
+        # Respect the power-user toggle
+        geofence = True if enforce_geofence else False
         bb_offset = -0.01
-
-        # Modify the dictionary directly to force the finishing profile off
         adaptive_params["finishing_profile"] = False
+
+        status_text = "ENABLED" if geofence else "DISABLED (by user override)"
 
         Path.Log.warning(
             f"Z={round(z_target, 3)}: Outside adaptive cut detected.\n"
-            "The Adaptive2d algorithm can be unpredictable in open regions. "
-            "For safest results:\n"
+            f"Geofence clipping is {status_text}.\n"
+            "The Adaptive2d algorithm can be unpredictable in open regions. For safest results:\n"
             " - Inspect the toolpath closely for any anomalies.\n"
             " - Set your Boundary Box property to 'Stock' instead of 'BoundingBox'.\n"
             " - Adjust your 'Boundary Extension' manually if the tool overextends.\n"

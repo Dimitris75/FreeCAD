@@ -591,6 +591,16 @@ class ObjectSurface(PathOp.ObjectOp):
                     "App::Property", "Maximum (and nominal) helix entry diameter, as a percentage of the tool diameter",
                 ),
             ),
+            (
+                "App::PropertyBool",
+                "EnforceGeofence",
+                "AdaptivePatternSettings",
+                QT_TRANSLATE_NOOP(
+                    "App::Property",
+                    "WARNING: Disabling this allows the Adaptive2d algorithm to roam outside the stock boundary on open pockets. "
+                    "This can cause erratic plunges, unpredictable toolpaths, and machine crashes! Proceed with extreme caution.",
+                ),
+            ),
         ]
 
     @classmethod
@@ -727,6 +737,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "FinishingProfile": True,
             "HelixMaxRampAngle": 3.00,
             "HelixMaxDiameterPercent": 75,
+            "EnforceGeofence": True,
         }
 
         return defaults
@@ -806,6 +817,7 @@ class ObjectSurface(PathOp.ObjectOp):
         obj.setEditorMode("FinishingProfile", C)
         obj.setEditorMode("HelixMaxRampAngle", C)
         obj.setEditorMode("HelixMaxDiameterPercent", C)
+        obj.setEditorMode("EnforceGeofence", C)
 
         # Apply Visibility to Mesh/OCL Group (D)
         obj.setEditorMode("AngularDeflection", D)
@@ -1426,6 +1438,7 @@ class ObjectSurface(PathOp.ObjectOp):
         fill_holes_masks = []
 
         is_adaptive = getattr(obj, "CutPatternZLevel", "None") == "Adaptive"
+        enforce_goefence=getattr(obj, "EnforceGeofence", True)
         fill_selected_holes = getattr(obj, "FillSelectedHoles", False)
         clear_planar_only = getattr(obj, "ClearPlanarOnly", True)
         ignore_outer = getattr(obj, "IgnoreOuter", False)
@@ -1527,6 +1540,7 @@ class ObjectSurface(PathOp.ObjectOp):
             is_adaptive,
             adaptive_params,
             bb_face,
+            enforce_goefence,
         )
 
         return cmds
@@ -1743,9 +1757,10 @@ class ObjectSurface(PathOp.ObjectOp):
         self.commandlist.append(
             Path.Command("N (Tool diameter: {:.3f})".format(tool_params["diameter"]), {})
         )
-        self.commandlist.append(
-            Path.Command("N (Sample interval: {})".format(str(obj.SampleInterval.Value)), {})
-        )
+        if not is_zlevel:
+            self.commandlist.append(
+                Path.Command("N (Sample interval: {})".format(str(obj.SampleInterval.Value)), {})
+            )
         self.commandlist.append(Path.Command("N (Step over %: {})".format(str(obj.StepOver)), {}))
         self.commandlist.append(
             Path.Command("G0", {"Z": obj.ClearanceHeight.Value, "F": self.vertRapid})
@@ -1836,5 +1851,6 @@ def SetupProperties():
     setup.append("FinishingProfile")
     setup.append("HelixMaxRampAngle")
     setup.append("HelixMaxDiameterPercent")
+    setup.append("EnforceGeofence")
 
     return setup
