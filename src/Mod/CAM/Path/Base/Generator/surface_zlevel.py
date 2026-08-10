@@ -1149,16 +1149,12 @@ def zlevel_hybrid_to_gcode(
         # A: Adaptive Cut Pattern
         if is_adaptive:
             from . import adaptive_common as _adaptive
-            force_insideout = adaptive_params.get("force_insideout", False)
-            enforce_geofence = False
 
-            if _is_adaptive_outside(cutArea, bb_face) and not force_insideout:
-                enforce_geofence = True
-                Path.Log.warning(
-                    f"Z={round(z_target, 3)}: Outside adaptive cut detected. "
-                    "We do not have full control over the Adaptive2d algorithm in open regions. "
-                    "Please inspect the toolpath closely for errors and adjust the boundary manually if needed."
-                )
+            # This single call checks the topology, sets up the offsets,
+            # handles the finishing_profile override, and prints the warning!
+            geofence, bb_offset = _setup_adaptive_geofence(
+                cutArea, bb_face, adaptive_params, radius, z_target
+            )
 
             pattern_cmds = _adaptive.generate(
                 adaptive_params,
@@ -1171,10 +1167,11 @@ def zlevel_hybrid_to_gcode(
                 cutArea,
                 min_adaptive_area,
                 bb_face,
-                enforce_geofence,
+                enforce_geofence=geofence,
                 cut_area_offset=radius,
-                bb_face_offset=radius-0.01,
+                bb_face_offset=bb_offset,
             )
+
             commands.extend(pattern_cmds)
             if status not in ["Extra"]:
                 prev_z = z_target + 0.1  # Plus 0.1 for safety
@@ -1255,6 +1252,84 @@ def zlevel_hybrid_to_gcode(
     commands.append(Path.Command("G0", {"Z": clear_hght, "F": vert_rapid}))
 
     return commands
+
+
+def _setup_adaptive_geofence(cut_area, bb_face, adaptive_params, radius, z_target):
+    """
+    Analyzes the geometric relationship between the cut area and the stock boundary
+    to detect open pockets, and configures safety overrides for the Adaptive2d algorithm.
+
+    The libarea Adaptive2d algorithm is optimized for closed pockets and can produce
+    erratic toolpaths when encountering open boundaries. This function detects those
+    breaches using a two-pass check (AABB followed by topological intersection) and
+    applies geofencing and parameter overrides to ensure safe machining.
+
+    Args:
+        cut_area (Part.Shape): The 2D boundary of the area to be machined on this layer.
+        bb_face (Part.Shape): The 2D stock boundary (geofence limit).
+        adaptive_params (dict): The dictionary of adaptive routing parameters.
+                                Modified in-place if overrides are required.
+        radius (float): The tool radius in millimeters.
+        z_target (float): The current Z-depth (used for contextual logging).
+
+    Returns:
+        tuple: (geofence_active (bool), bb_offset (float))
+               - geofence_active: True if transit moves should be strictly clipped.
+               - bb_offset: The boundary offset applied for the Adaptive2d algorithm.
+    """
+    import Path
+
+    # Defaults for closed pockets
+    force_insideout = adaptive_params.get("force_insideout", False)
+    geofence = False
+    bb_offset = radius - 0.01
+
+    if not cut_area or cut_area.isNull() or not bb_face or bb_face.isNull():
+        return geofence, bb_offset
+
+    # Open Pocket Geometric Detection
+    c_bb = cut_area.BoundBox
+    s_bb = bb_face.BoundBox
+    tol = 0.01
+    is_open = False
+
+    # Fast AABB Check
+    if (c_bb.XMin <= s_bb.XMin + tol or
+        c_bb.XMax >= s_bb.XMax - tol or
+        c_bb.YMin <= s_bb.YMin + tol or
+        c_bb.YMax >= s_bb.YMax - tol):
+        is_open = True
+    else:
+        # Irregular Stock Check (Circles/Polygons)
+        try:
+            intersection = cut_area.common(bb_face)
+            if intersection and not intersection.isNull():
+                if abs(cut_area.Area - intersection.Area) > 0.01:
+                    is_open = True
+                elif abs(intersection.Length - cut_area.Length) > 0.01:
+                    is_open = True
+        except Exception:
+            is_open = True # Default to fenced on error
+
+    # Apply Safety Overrides
+    if is_open and not force_insideout:
+        geofence = True
+        bb_offset = -0.01
+
+        # Modify the dictionary directly to force the finishing profile off
+        adaptive_params["finishing_profile"] = False
+
+        Path.Log.warning(
+            f"Z={round(z_target, 3)}: Outside adaptive cut detected.\n"
+            "The Adaptive2d algorithm can be unpredictable in open regions. "
+            "For safest results:\n"
+            " - Inspect the toolpath closely for any anomalies.\n"
+            " - Set your Boundary Box property to 'Stock' instead of 'BoundingBox'.\n"
+            " - Adjust your 'Boundary Extension' manually if the tool overextends.\n"
+            "(Note: 'Finishing Profile' was automatically disabled for this layer to prevent edge artifacts.)"
+        )
+
+    return geofence, bb_offset
 
 
 def _find_start_point(wire, start_point, cut_climb):
@@ -1566,39 +1641,3 @@ def _generatePattern(
             )
 
     return commands
-
-
-def _is_adaptive_outside(cut_area, bb_face):
-    """
-    Determines if an adaptive cut is an open pocket (breaches the stock boundary).
-    Optimized to prioritize the lightning-fast AABB check, falling back to
-    2D topology only for irregular stock shapes.
-    """
-    if not cut_area or cut_area.isNull() or not bb_face or bb_face.isNull():
-        return True
-
-    c_bb = cut_area.BoundBox
-    s_bb = bb_face.BoundBox
-    tol = 0.01
-
-    # This instantly catches 95% of standard rectangular stock scenarios.
-    if (c_bb.XMin <= s_bb.XMin + tol or
-        c_bb.XMax >= s_bb.XMax - tol or
-        c_bb.YMin <= s_bb.YMin + tol or
-        c_bb.YMax >= s_bb.YMax - tol):
-        return True
-
-    # it might still touch the physical edge. We do a 2D common intersection.
-    try:
-        intersection = cut_area.common(bb_face)
-        if intersection and not intersection.isNull():
-            if abs(cut_area.Area - intersection.Area) > 0.01:
-                return True
-
-            if abs(intersection.Length - cut_area.Length) > 0.01:
-                return True
-    except Exception:
-        # If the check fails, default to fencing it for safety
-        return True
-
-    return False

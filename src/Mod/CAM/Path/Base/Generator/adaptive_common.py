@@ -326,7 +326,7 @@ def _results_to_commands(
     Converts Adaptive2d results into a list of Path.Command objects.
     Tracks Z-height changes to avoid redundant vertical moves.
     """
-    def _is_outside_geofence(x, y, bb, tol=0.01):
+    def _is_outside_geofence(x, y, bb, tol=-0.06):
         """
         Checks if a given coordinate is strictly outside the provided bounding box.
         """
@@ -375,14 +375,8 @@ def _results_to_commands(
             for pt in points:
                 x, y = pt[0], pt[1]
 
+                # Look for as much Adaptive2d's nonsense as possible.
                 if motion_type == _area.AdaptiveMotionType.Cutting:
-                    # If the cut strays outside the stock boundary, force a retract and skip the point
-                    if _is_outside_geofence(x, y, safe_bb):
-                        if not emergency_retracted:
-                            commands.append(Path.Command("G0", {"Z": safe_z, "F": v_rapid}))
-                            emergency_retracted = True
-                            lz = safe_z
-                        continue
                     # If we were emergency retracted during transit, plunge back down safely
                     if emergency_retracted:
                         commands.append(Path.Command("G0", {"X": x, "Y": y, "F": h_rapid}))
