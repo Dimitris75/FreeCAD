@@ -41,6 +41,7 @@ are ready to be projected onto the 3D model by the OCL drop-cutter engine.
 import math
 import Path
 import Part
+import FreeCAD
 
 try:
     import surface_generator as _pattern_cpp
@@ -260,144 +261,6 @@ def reconstruct_scan_lines(flat_points, gap_threshold):
 # ---------------------------------------------------------------------------
 
 
-def _reorient_wire_start(wire, start_point):
-    """
-    Rebuilds a closed wire so that its first edge begins at the vertex
-    closest to the provided start_point.
-    """
-    if not wire.isClosed():
-        return wire
-
-    edges = wire.Edges
-    if not edges:
-        return wire
-
-    closest_idx = 0
-    min_dist = float('inf')
-
-    for i, edge in enumerate(edges):
-        if not edge.Vertexes:
-            continue
-
-        v_start = edge.Vertexes[0].Point
-        dist = v_start.distanceToPoint(start_point)
-
-        if dist < min_dist:
-            min_dist = dist
-            closest_idx = i
-
-    if closest_idx == 0:
-        return wire
-
-    reordered_edges = edges[closest_idx:] + edges[:closest_idx]
-
-    try:
-        new_wire = Part.Wire(reordered_edges)
-        return new_wire
-    except Exception as e:
-        Path.Log.debug(f"surface_pattern._reorient_wire_start: Failed to reorient wire: {e}")
-        return wire
-
-
-def generate_offset_scan_lines(
-    boundary_face, stepover, tool_diam, sample_interval, reversed_pattern=False, climb=False
-):
-    """
-    Generates concentric toolpath rings that progressively shrink inwards from a boundary.
-
-    Unlike standard geometric patterns (which use C++), Offset patterns natively rely on
-    the shape of the boundary itself. This function uses Path.Area() to repeatedly
-    collapse the boundary geometry inward by the stepover amount.
-
-    Args:
-        boundary_face (Part.Face): The outermost boundary mask to shrink.
-        stepover (float): The radial distance to shrink the geometry for each subsequent pass.
-        tool_diam (float): The diameter of the tool.
-        sample_interval (float): The distance between points along the resulting rings.
-        reversed_pattern (bool): If True, cuts from the inside out (reverses the ring order).
-
-    Returns:
-        list: A nested list of scan lines, where each line is a list of (x, y, z) tuples
-              forming an offset ring.
-    """
-    if boundary_face is None or boundary_face.isNull():
-        return []
-
-    import FreeCAD
-
-    if hasattr(boundary_face, "removeSplitter"):
-        try:
-            cleaned_face = boundary_face.removeSplitter()
-            if cleaned_face and not cleaned_face.isNull():
-                boundary_face = cleaned_face
-        except Exception as e:
-            Path.Log.debug(f"generate_offset_scan_lines: removeSplitter ignored: {e}")
-
-    offset_engine = Path.Area()
-    offset_engine.setParams(Tolerance=0.01)
-    offset_engine.add(boundary_face)
-
-    offset_lines = []
-    current_offset = -0.005
-    min_path_length = tool_diam
-    current_start_pt = None
-
-    while True:
-        offset_engine.setParams(Offset=current_offset)
-        try:
-            offset_shape = offset_engine.getShape()
-        except Exception as e:
-            Path.Log.debug(
-                f"generate_offset_scan_lines: Offset layer failed: {e}."
-            )
-            break
-
-        # If the shape collapses entirely or errors out, we've reached the absolute center
-        if not offset_shape or offset_shape.isNull() or len(offset_shape.Wires) == 0:
-            break
-
-        layer_lines = []
-        wires = offset_shape.Wires
-        num_wires = len(wires)
-
-        for wire in wires:
-            # Discard tiny fragments that are too small to be meaningful toolpaths.
-            if wire.Length < min_path_length:
-                continue
-
-            # TSP Optimization: Align the wire's seam to the tool's current location
-            if current_start_pt and wire.isClosed() and num_wires > 1 and wire.BoundBox.DiagonalLength > 2.0:
-                wire = _reorient_wire_start(wire, current_start_pt)
-
-            # Discretize the wire into a smooth array of coordinates
-            pts = wire.discretize(Distance=sample_interval)
-            if len(pts) < 2:
-                continue
-            if not climb:
-                pts.reverse()
-
-            # Ensure perfectly closed loops by connecting the final point back to the start
-            if wire.isClosed() and (pts[0] - pts[-1]).Length > 1e-5:
-                pts.append(pts[0])
-
-            # We grab the very last point in the current
-            current_start_pt = FreeCAD.Vector(pts[-1].x, pts[-1].y, 0.0)
-
-            line_points = [(p.x, p.y, 0.0) for p in pts]
-            layer_lines.append(line_points)
-
-        if not layer_lines:
-            break
-
-        offset_lines.extend(layer_lines)
-        current_offset -= stepover
-
-    if reversed_pattern:
-        offset_lines.reverse()
-
-    return offset_lines
-
-
 def _extract_polygons_from_face(boundary_face, tolerance=0.005):
     """
     Converts the wires of a Part.Face into raw 2D point arrays for the C++ Ray-Caster.
@@ -464,6 +327,12 @@ def fast_generate_pattern(
         list: A nested list of successfully clipped and ordered scan lines, where each line
               is a list of (x, y, z) tuples.
     """
+    if stepover <= 0.0:
+        Path.Log.error(
+            f"fast_generate_pattern: stepover must be positive, got {stepover}. "
+            "Check the StepOver percentage and tool diameter."
+        )
+        return []
 
     polys = _extract_polygons_from_face(boundary_face, tolerance)
 
@@ -513,3 +382,261 @@ def fast_generate_pattern(
         )
 
     return []
+
+
+# ---------------------------------------------------------------------------
+# Offset Pattern Generator
+# ---------------------------------------------------------------------------
+
+
+def _reorient_wire_start(wire, start_point):
+    """
+    Rebuilds a closed wire so that its first edge begins at the vertex
+    closest to the provided start_point.
+
+    This is a travel-distance heuristic only (minimize rapid movement
+    between successive offset rings) — unlike Waterline's loop-start
+    search, there's no retract to avoid here, so the *exact* nearest
+    point doesn't matter, only a reasonable approximation of it. The
+    boundary face this wire comes from is always a flat 2D projection
+    onto the XY plane (see create_boundary_face), so Z is constant and
+    can be dropped from the comparison. We also compare squared distance
+    directly instead of true distance, since we only need the arg-min,
+    not the distance value itself — this skips a sqrt() per edge.
+    """
+    if not wire.isClosed():
+        return wire
+
+    edges = wire.Edges
+    if not edges:
+        return wire
+
+    closest_idx = 0
+    min_dist_sq = float('inf')
+    sx, sy = start_point.x, start_point.y
+
+    for i, edge in enumerate(edges):
+        if not edge.Vertexes:
+            continue
+
+        v_start = edge.Vertexes[0].Point
+        dx = v_start.x - sx
+        dy = v_start.y - sy
+        dist_sq = dx * dx + dy * dy
+
+        if dist_sq < min_dist_sq:
+            min_dist_sq = dist_sq
+            closest_idx = i
+
+    if closest_idx == 0:
+        return wire
+
+    reordered_edges = edges[closest_idx:] + edges[:closest_idx]
+
+    try:
+        new_wire = Part.Wire(reordered_edges)
+        return new_wire
+    except Exception as e:
+        Path.Log.debug(f"surface_pattern._reorient_wire_start: Failed to reorient wire: {e}")
+        return wire
+
+
+def _collect_offset_levels(face, stepover, tool_diam):
+    """
+    Steps a Path.Area offset inward over `face` until it collapses, returning
+    one list of (wire, xy_center) per step. Raw collection only — no
+    discretizing, no ordering.
+    """
+    offset_engine = Path.Area()
+    offset_engine.setParams(Tolerance=0.01)
+    offset_engine.add(face)
+
+    min_path_length = tool_diam
+    current_offset = -0.005
+    levels = []
+
+    while True:
+        offset_engine.setParams(Offset=current_offset)
+        try:
+            offset_shape = offset_engine.getShape()
+        except Exception as e:
+            Path.Log.debug(f"generate_offset_scan_lines: Offset layer failed: {e}.")
+            break
+
+        if not offset_shape or offset_shape.isNull() or len(offset_shape.Wires) == 0:
+            break
+
+        level_wires = []
+        for wire in offset_shape.Wires:
+            if wire.Length < min_path_length:
+                continue
+            bb = wire.BoundBox
+            level_wires.append((wire, FreeCAD.Vector(bb.Center.x, bb.Center.y, 0.0)))
+
+        if not level_wires:
+            break
+
+        levels.append(level_wires)
+        current_offset -= stepover
+
+    return levels
+
+
+def _chain_wires_into_zones(levels, sample_interval, stepover):
+    """
+    Groups wires across offset levels into zones (e.g. the outer boundary's
+    shrinking sequence, or one hole's growing sequence) by nearest XY-center
+    proximity. Heuristic, not exact topology tracking — Path.Area doesn't
+    expose wire lineage through splits/merges.
+    """
+    max_chain_gap = max(sample_interval, stepover) * 4.0
+
+    chains = [[w] for w in levels[0]]
+    chain_last_level = [0] * len(chains)
+
+    for level_idx in range(1, len(levels)):
+        unmatched = list(levels[level_idx])
+        for chain_pos, chain in enumerate(chains):
+            if chain_last_level[chain_pos] != level_idx - 1 or not unmatched:
+                continue
+            _, last_center = chain[-1]
+            nearest = min(unmatched, key=lambda w: (w[1] - last_center).Length)
+            if (nearest[1] - last_center).Length <= max_chain_gap:
+                chain.append(nearest)
+                chain_last_level[chain_pos] = level_idx
+                unmatched.remove(nearest)
+        for w in unmatched:
+            chains.append([w])
+            chain_last_level.append(level_idx)
+
+    return chains
+
+
+def _emit_zones_nearest_neighbor(chains, sample_interval, climb, current_start_pt):
+    """
+    Visits zones nearest-neighbor from the tool's current position, emitting
+    each zone's rings fully (outer-most to inner-most) before moving to the
+    next. Returns (line_points list, new current_start_pt).
+    """
+    region_lines = []
+    remaining = list(chains)
+
+    while remaining:
+        if current_start_pt is None:
+            # No established position yet — default to the outer boundary's
+            # zone (largest bounding box at level 0).
+            chain = max(remaining, key=lambda c: c[0][0].BoundBox.DiagonalLength)
+        else:
+            chain = min(remaining, key=lambda c: (c[0][1] - current_start_pt).Length)
+        remaining.remove(chain)
+
+        for wire, _center in chain:
+            if current_start_pt and wire.isClosed() and wire.BoundBox.DiagonalLength > 2.0:
+                wire = _reorient_wire_start(wire, current_start_pt)
+
+            pts = wire.discretize(Distance=sample_interval)
+            if len(pts) < 2:
+                continue
+            if not climb:
+                pts.reverse()
+            if wire.isClosed() and (pts[0] - pts[-1]).Length > 1e-5:
+                pts.append(pts[0])
+
+            current_start_pt = FreeCAD.Vector(pts[-1].x, pts[-1].y, 0.0)
+            region_lines.append([(p.x, p.y, 0.0) for p in pts])
+
+    return region_lines, current_start_pt
+
+
+def _offset_rings_for_region(face, stepover, tool_diam, sample_interval, climb, current_start_pt=None):
+    """
+    Generates concentric offset rings for one connected region (outer
+    boundary + any holes), keeping each hole's rings and the outer
+    boundary's rings grouped into their own zones instead of interleaving
+    them at every offset step. See _collect_offset_levels,
+    _chain_wires_into_zones, and _emit_zones_nearest_neighbor for the three
+    stages.
+
+    Returns:
+        tuple: (list of line_points lists for this region, the new current_start_pt)
+    """
+    levels = _collect_offset_levels(face, stepover, tool_diam)
+    if not levels:
+        return [], current_start_pt
+
+    chains = _chain_wires_into_zones(levels, sample_interval, stepover)
+    return _emit_zones_nearest_neighbor(chains, sample_interval, climb, current_start_pt)
+
+
+def generate_offset_scan_lines(
+    boundary_face, stepover, tool_diam, sample_interval, reversed_pattern=False, climb=False
+):
+    """
+    Generates concentric toolpath rings that progressively shrink inwards from a boundary,
+    using Path.Area() to repeatedly collapse the boundary geometry by the stepover amount.
+
+    Pipeline: split boundary_face into disjoint regions -> visit regions nearest-neighbor,
+    each fully cleared via _offset_rings_for_region (collect levels -> chain into zones ->
+    emit zones nearest-neighbor) -> optionally reverse the whole sequence.
+
+    Args:
+        boundary_face (Part.Face): The outermost boundary mask to shrink.
+        stepover (float): The radial distance to shrink the geometry for each subsequent pass.
+        tool_diam (float): The diameter of the tool.
+        sample_interval (float): The distance between points along the resulting rings.
+        reversed_pattern (bool): If True, cuts from the inside out (reverses the ring order).
+
+    Returns:
+        list: A nested list of scan lines, where each line is a list of (x, y, z) tuples
+              forming an offset ring.
+    """
+    if boundary_face is None or boundary_face.isNull():
+        return []
+
+    if stepover <= 0.0:
+        Path.Log.error(
+            f"generate_offset_scan_lines: stepover must be positive, got {stepover}. "
+            "Check the StepOver percentage and tool diameter."
+        )
+        return []
+
+    if hasattr(boundary_face, "removeSplitter"):
+        try:
+            cleaned_face = boundary_face.removeSplitter()
+            if cleaned_face and not cleaned_face.isNull():
+                boundary_face = cleaned_face
+        except Exception as e:
+            Path.Log.debug(f"generate_offset_scan_lines: removeSplitter ignored: {e}")
+
+    # .Faces splits any disjoint regions apart; for the common single-region
+    # case it just returns [boundary_face] unchanged.
+    regions = list(boundary_face.Faces)
+
+    if len(regions) > 1:
+        Path.Log.debug(
+            f"generate_offset_scan_lines: boundary is {len(regions)} disjoint region(s); "
+            "clearing each fully before moving to the next."
+        )
+        regions.sort(key=lambda f: f.BoundBox.DiagonalLength, reverse=True)
+
+    offset_lines = []
+    current_start_pt = None
+
+    while regions:
+        if current_start_pt is None:
+            region = regions.pop(0)
+        else:
+            # Nearest remaining region to the tool's last position; the exact
+            # entry point is refined afterwards by _reorient_wire_start.
+            region = min(regions, key=lambda f: (f.BoundBox.Center - current_start_pt).Length)
+            regions.remove(region)
+
+        region_lines, current_start_pt = _offset_rings_for_region(
+            region, stepover, tool_diam, sample_interval, climb, current_start_pt
+        )
+        offset_lines.extend(region_lines)
+
+    if reversed_pattern:
+        offset_lines.reverse()
+
+    return offset_lines

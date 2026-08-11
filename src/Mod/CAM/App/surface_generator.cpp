@@ -39,10 +39,13 @@
 #include <vector>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <stdexcept>
 #include <Python.h>
 #include <unordered_map>
 #include <limits>
+#include <cstdint>
+#include <functional>
 
 // Include the TopoShapePy header using the full path
 #include <Mod/Part/App/TopoShapePy.h>
@@ -97,13 +100,43 @@ std::pair<std::vector<std::array<double, 3>>, std::vector<std::array<int, 3>>> s
     std::vector<std::array<double, 3>> vertices;
     std::vector<std::array<int, 3>> facets;
 
-    // Map from vertex coordinates to vertex index for deduplication
-    std::unordered_map<std::string, int> vertex_map;
+    // Packed-integer key for vertex deduplication. Coordinates are rounded to
+    // the nearest micron and packed into three int64_t lanes, avoiding the
+    // per-vertex double-to-string formatting/concatenation that a
+    // std::string-keyed map would require in this hot loop.
+    struct VertexKey {
+        int64_t x, y, z;
+        bool operator==(const VertexKey& other) const noexcept {
+            return x == other.x && y == other.y && z == other.z;
+        }
+    };
+    struct VertexKeyHash {
+        std::size_t operator()(const VertexKey& k) const noexcept {
+            // boost::hash_combine-style mixing of the three lanes. The magic
+            // constant is 2^64 / golden_ratio (0x9e3779b97f4a7c15ULL), the
+            // standard "golden ratio" mixing constant used by
+            // boost::hash_combine: its bit pattern has no simple repeating
+            // structure, which spreads the combined bits evenly and avoids
+            // clustering for inputs that are already close together.
+            constexpr std::size_t kHashMix = 0x9e3779b97f4a7c15ULL;
+            std::size_t h = std::hash<int64_t>{}(k.x);
+            h ^= std::hash<int64_t>{}(k.y) + kHashMix + (h << 6) + (h >> 2);
+            h ^= std::hash<int64_t>{}(k.z) + kHashMix + (h << 6) + (h >> 2);
+            return h;
+        }
+    };
+
+    // Vertex coordinates are rounded to this resolution (mm) before hashing,
+    // so points within 1 micron of each other are treated as identical.
+    constexpr double kDedupScale = 1000000.0;
+
+    std::unordered_map<VertexKey, int, VertexKeyHash> vertex_map;
     auto get_vertex_index = [&](const gp_Pnt& p) -> int {
-        // Round coordinates to handle floating point precision issues
-        std::string key = std::to_string(std::round(p.X() * 1000000.0) / 1000000.0) + ","
-            + std::to_string(std::round(p.Y() * 1000000.0) / 1000000.0) + ","
-            + std::to_string(std::round(p.Z() * 1000000.0) / 1000000.0);
+        VertexKey key{
+            static_cast<int64_t>(std::llround(p.X() * kDedupScale)),
+            static_cast<int64_t>(std::llround(p.Y() * kDedupScale)),
+            static_cast<int64_t>(std::llround(p.Z() * kDedupScale)),
+        };
 
         auto it = vertex_map.find(key);
         if (it != vertex_map.end()) {
@@ -113,7 +146,7 @@ std::pair<std::vector<std::array<double, 3>>, std::vector<std::array<int, 3>>> s
         // Add new vertex
         int index = vertices.size();
         vertices.push_back({p.X(), p.Y(), p.Z()});
-        vertex_map[key] = index;
+        vertex_map.emplace(key, index);
         return index;
     };
 
@@ -324,6 +357,17 @@ std::vector<std::vector<std::array<double, 3>>> clip_polyline_bisection(
 // Fast Pattern Generators
 // -------------------------------------------------------------------------
 
+// All pattern generators below divide by `stepover` to determine how many
+// passes to generate.
+static void require_positive_stepover(double stepover)
+{
+    if (!(stepover > 0.0)) {
+        throw std::invalid_argument(
+            "stepover must be positive, got " + std::to_string(stepover)
+        );
+    }
+}
+
 std::vector<std::vector<std::array<double, 3>>> generate_linear_pattern_cpp(
     double xmin,
     double xmax,
@@ -336,6 +380,8 @@ std::vector<std::vector<std::array<double, 3>>> generate_linear_pattern_cpp(
     const std::vector<std::vector<std::array<double, 2>>>& polygons
 )
 {
+    require_positive_stepover(stepover);
+
     std::vector<std::vector<std::array<double, 3>>> final_endpoints;
     std::vector<PolyBounds> bounds = calculate_bounds(polygons);
 
@@ -422,6 +468,8 @@ std::vector<std::vector<std::array<double, 3>>> generate_circular_pattern_cpp(
     const std::vector<std::vector<std::array<double, 2>>>& polygons
 )
 {
+    require_positive_stepover(stepover);
+
     std::vector<std::vector<std::array<double, 3>>> scan_lines;
     std::vector<PolyBounds> bounds = calculate_bounds(polygons);
 
@@ -477,6 +525,8 @@ std::vector<std::vector<std::array<double, 3>>> generate_spiral_pattern_cpp(
     const std::vector<std::vector<std::array<double, 2>>>& polygons
 )
 {
+    require_positive_stepover(stepover);
+
     std::vector<std::vector<std::array<double, 3>>> scan_lines;
     std::vector<PolyBounds> bounds = calculate_bounds(polygons);
 
@@ -487,7 +537,7 @@ std::vector<std::vector<std::array<double, 3>>> generate_spiral_pattern_cpp(
     double max_radius = std::max({d1, d2, d3, d4}) + stepover;
 
     double b = stepover / (2.0 * M_PI);
-    double stop_radians = (b > 0) ? (max_radius / b) : 0;
+    double stop_radians = max_radius / b;
 
     std::vector<std::array<double, 3>> raw_points;
     double theta = 0.0;

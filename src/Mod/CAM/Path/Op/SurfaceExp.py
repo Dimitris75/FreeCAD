@@ -1016,9 +1016,7 @@ class ObjectSurface(PathOp.ObjectOp):
 
     def opUpdateDepths(self, obj):
         if hasattr(obj, "Base") and obj.Base:
-            base, sublist = obj.Base[0]
-            fbb = base.Shape.getElement(sublist[0]).BoundBox
-            zmin = fbb.ZMax
+            zmin = float("inf")
             for base, sublist in obj.Base:
                 for sub in sublist:
                     try:
@@ -1026,7 +1024,8 @@ class ObjectSurface(PathOp.ObjectOp):
                         zmin = min(zmin, fbb.ZMin)
                     except Part.OCCError as e:
                         Path.Log.error(e)
-            obj.OpFinalDepth = zmin
+            if zmin != float("inf"):
+                obj.OpFinalDepth = zmin
         elif self.job:
             if hasattr(obj, "BoundBox"):
                 if obj.BoundBox == "BaseBoundBox":
@@ -1192,7 +1191,7 @@ class ObjectSurface(PathOp.ObjectOp):
 
         if is_adaptive and not is_truly_adaptive:
             Path.Log.info(
-                f"SampleInterval ({sample_interval:.3f}mm) is below the adaptive threshold (0.25mm)."
+                f"SampleInterval ({sample_interval:.3f}mm) is below the adaptive threshold ({adaptive_threshold}mm)."
             )
             Path.Log.info("Switching to faster standard dropcutter for this high-density path.")
 

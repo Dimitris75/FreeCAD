@@ -393,14 +393,15 @@ def waterline_to_gcode(
                 commands.append(Path.Command("G0", {"X": first[0], "Y": first[1], "F": horiz_rapid}))
 
             # 4. Cut the loop
-            for pt in pts:
+            for i, pt in enumerate(pts):
                 # If we stayed down, this first command acts as a vertical G1 plunge to the new Z-depth
+                feed = vert_feed if i == 0 else horiz_feed
                 commands.append(
                     Path.Command(
                         "G1",
-                        {"X": pt[0], "Y": pt[1], "Z": pt[2], "F": vert_feed},
-                    )
-                )
+                        {"X": pt[0], "Y": pt[1], "Z": pt[2], "F": feed},
+                     )
+                 )
 
             # 5. Update magnet state
             current_tool_pos = (pts[-1][0], pts[-1][1])

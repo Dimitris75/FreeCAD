@@ -914,7 +914,7 @@ def scan_lines_to_gcode(
                     vert_rapid,
                     safe_pdc,
                     cutter,
-                    force_keep_down=False,
+                    force_keep_down,
                 )
 
             # Fallback Logic
