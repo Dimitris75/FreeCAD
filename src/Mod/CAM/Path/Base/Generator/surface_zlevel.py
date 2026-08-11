@@ -51,10 +51,10 @@ def _apply_fill_hole_masks(
     wpc,
     fill_holes_masks,
     fill_mask_idx,
-    currentSilhouette,
+    current_silhouette,
     status,
     floor_geo,
-    allPrevComp,
+    all_prev_comp,
     z_target,
     loose_tol,
 ):
@@ -67,7 +67,7 @@ def _apply_fill_hole_masks(
 
     Application logic:
     1. Permanent Retention: Every activated mask is unconditionally injected into
-       `allPrevComp`. This creates a permanent keep-out zone, ensuring the tool
+       `all_prev_comp`. This creates a permanent keep-out zone, ensuring the tool
        will not fall into the hole on this layer or any subsequent lower layers.
     2. Immediate Fusion: If the current layer is "Mixed" or "Extra" (a floor pass),
        the mask is simultaneously fused into `floor_geo`. This allows the clearing
@@ -78,15 +78,15 @@ def _apply_fill_hole_masks(
         wpc (Part.Circle): Workplane for Path.Area engine.
         fill_holes_masks (list): Sorted list of (max_z, Part.Face) tuples.
         fill_mask_idx (int): Current index into fill_holes_masks.
-        currentSilhouette (Part.Shape): Model silhouette at current depth.
+        current_silhouette (Part.Shape): Model silhouette at current depth.
         status (str): Current layer status — "Pure", "Mixed", or "Extra".
         floor_geo (Part.Shape): Floor geometry for this layer, or None.
-        allPrevComp (Part.Shape): Cumulative mask of previously cleared areas.
+        all_prev_comp (Part.Shape): Cumulative mask of previously cleared areas.
         z_target (float): Current layer Z height.
         loose_tol (float): Tolerance for mask activation threshold.
 
     Returns:
-        tuple: (fill_mask_idx, fill_holes_masks, floor_geo, allPrevComp) — updated values
+        tuple: (fill_mask_idx, fill_holes_masks, floor_geo, all_prev_comp) — updated values
                for all four mutable state variables.
     """
     if status in ("Mixed", "Extra") and floor_geo is not None:
@@ -99,8 +99,8 @@ def _apply_fill_hole_masks(
         mask = fill_holes_masks[fill_mask_idx][1]
 
         # 1.Permanent Retention
-        allPrevComp = _update_machining_mask(
-            wpc, allPrevComp, mask, status="Pure", floor_geo=None
+        all_prev_comp = _update_machining_mask(
+            wpc, all_prev_comp, mask, status="Pure", floor_geo=None
         )
 
         # 2.Immediate Fusion
@@ -116,11 +116,11 @@ def _apply_fill_hole_masks(
 
         fill_mask_idx += 1
 
-    # Discard processed masks safely because their geometry is now permanently baked into allPrevComp
+    # Discard processed masks safely because their geometry is now permanently baked into all_prev_comp
     fill_holes_masks = fill_holes_masks[fill_mask_idx:]
     fill_mask_idx = 0
 
-    return fill_mask_idx, fill_holes_masks, floor_geo, allPrevComp
+    return fill_mask_idx, fill_holes_masks, floor_geo, all_prev_comp
 
 
 def _fuse_coplanar_masks(fill_holes_masks):
@@ -574,9 +574,7 @@ def _get_fused_floor_geometry(shape, start_z, final_z, tolerance=0.001):
         try:
             result = fuse_engine.getShape()
         except:
-            result = faces[0]
-            for i in range(1, len(faces)):
-                result = result.fuse(faces[i])
+            result = faces[0].multiFuse(faces[1:])
         return result
 
     def is_planar(face):
@@ -650,7 +648,7 @@ def _get_fused_floor_geometry(shape, start_z, final_z, tolerance=0.001):
 
 def zlevel_hybrid_stack(
     shape,
-    categorizedSteps,
+    categorized_steps,
     border_face,
     trim_face,
     fill_holes_masks,
@@ -673,7 +671,7 @@ def zlevel_hybrid_stack(
 
     Args:
         shape: The source Part.Shape to be machined.
-        categorizedSteps: List of tuples (z_target, status, floor_geo) from categorization.
+        categorized_steps: List of tuples (z_target, status, floor_geo) from categorization.
         border_face: A Part.Face representing the stock or boundary footprint.
         trim_face: A Part.Face representing the 'Outside World' (forbidden zone).
         fill_holes_masks: A list of tuples, where each tuple is (max_z, mask_face_at_z0).
@@ -685,14 +683,14 @@ def zlevel_hybrid_stack(
         start_z: The Start Depth of the operation.
 
     Returns:
-        A list of tuples: (z_target, cutAreaShape, status).
+        A list of tuples: (z_target, cut_area_shape, status).
     """
     Path.Log.debug("surface_zlevel.zlevel_hybrid_stack: Starting geometric stack generation.")
 
     # 1. Initialization
     stack = []
 
-    sub_face = allPrevComp = None
+    sub_face = all_prev_comp = None
     tol = 0.0001
     loose_tol = 0.0002
     fill_mask_idx = 0  # Fill holes masks list pointer
@@ -711,7 +709,7 @@ def zlevel_hybrid_stack(
     # 3. Identify critical snapping depths (Top and floors)
     model_bottom, model_top = shape.BoundBox.ZMin, shape.BoundBox.ZMax
     critical_heights = {
-        round(h, 6) for h, status, _ in categorizedSteps if status in ["Mixed", "Extra"]
+        round(h, 6) for h, status, _ in categorized_steps if status in ["Mixed", "Extra"]
     }
 
     critical_heights.add(round(model_top, 6))
@@ -719,7 +717,7 @@ def zlevel_hybrid_stack(
         critical_heights.add(start_z - tol)
 
     # 4. Main layer loop
-    for z_target, status, floor_geo in categorizedSteps:
+    for z_target, status, floor_geo in categorized_steps:
 
         # Reject steps strictly above the model top
         if z_target > (model_top - tol):
@@ -761,39 +759,39 @@ def zlevel_hybrid_stack(
                 fusion.add(s)
 
         # D. Boolean resolution
-        currentSilhouette = None
+        current_silhouette = None
         try:
-            # currentSilhouette is the union of all 3D contact points at this depth
-            currentSilhouette = fusion.getShape()
+            # current_silhouette is the union of all 3D contact points at this depth
+            current_silhouette = fusion.getShape()
         except Exception as e:
             Path.Log.error(f"Silhouette fusion failed at Z={round(z_target, 3)}. Error: {str(e)}")
             continue
 
         # E. Process and apply active fill hole masks
         if fill_holes_masks:
-            fill_mask_idx, fill_holes_masks, floor_geo, allPrevComp = _apply_fill_hole_masks(
-                wpc, fill_holes_masks, fill_mask_idx, currentSilhouette,
-                status, floor_geo, allPrevComp, z_target, loose_tol
+            fill_mask_idx, fill_holes_masks, floor_geo, all_prev_comp = _apply_fill_hole_masks(
+                wpc, fill_holes_masks, fill_mask_idx, current_silhouette,
+                status, floor_geo, all_prev_comp, z_target, loose_tol
             )
 
         # F: Calculate the final cutting area using the new helper
-        cutArea = _calculate_cut_area(
-            wpc, status, currentSilhouette, floor_geo, border_face, trim_face, allPrevComp, z_target
+        cut_area = _calculate_cut_area(
+            wpc, status, current_silhouette, floor_geo, border_face, trim_face, all_prev_comp, z_target
         )
 
         # G: Finalize and store the result for this layer
-        if cutArea:
+        if cut_area:
             total_shift = z_target + z_offset
 
-            final_cut = cutArea.copy()
+            final_cut = cut_area.copy()
             final_cut.translate(FreeCAD.Vector(0, 0, total_shift))
 
             # Store target G-code depth, calculated geometry, and metadata
             stack.append((total_shift, final_cut, status))
 
             # Update Persistent Mask (strictly model silhouette to keep pockets open)
-            allPrevComp = _update_machining_mask(
-                wpc, allPrevComp, currentSilhouette, status, floor_geo
+            all_prev_comp = _update_machining_mask(
+                wpc, all_prev_comp, current_silhouette, status, floor_geo
             )
 
     return stack
@@ -960,11 +958,11 @@ def _generate_layer_slices(
 def _calculate_cut_area(
     wpc,
     status,
-    currentSilhouette,
+    current_silhouette,
     floor_geo,
     border_face,
     trim_face,
-    allPrevComp,
+    all_prev_comp,
     z_target,
 ):
     """
@@ -977,11 +975,11 @@ def _calculate_cut_area(
     Args:
         wpc (Part.Circle): The workplane for the Path.Area engine.
         status (str): The status of the layer ("Pure", "Mixed", "Extra").
-        currentSilhouette (Part.Shape): The tool-compensated model silhouette at Z=0.
+        current_silhouette (Part.Shape): The tool-compensated model silhouette at Z=0.
         floor_geo (Part.Shape): The detected physical floor geometry at Z=0.
         border_face (Part.Shape): The main stock boundary at Z=0.
         trim_face (Part.Shape): The "outside world" mask to clip the toolpath.
-        allPrevComp (Part.Shape): The cumulative mask of areas already machined in upper layers.
+        all_prev_comp (Part.Shape): The cumulative mask of areas already machined in upper layers.
         z_target (float): The current Z-height, used for logging errors.
 
     Returns:
@@ -996,33 +994,33 @@ def _calculate_cut_area(
         # Stock = Floor; Material = Stock - Model
         if floor_geo:
             layer_engine.add(floor_geo)
-            layer_engine.add(currentSilhouette, op=1)  # Subtract model
+            layer_engine.add(current_silhouette, op=1)  # Subtract model
 
     else:
         # Standard Mode: The area to machine is the stock boundary, minus the model,
         # minus any areas we've already cleared, and clipped by the trim mask.
         # Stock = Border; Material = (Stock - Model - PreviouslyCleared) - TrimMask
         layer_engine.add(border_face)
-        layer_engine.add(currentSilhouette, op=1)
+        layer_engine.add(current_silhouette, op=1)
 
         # Rest Machining: subtract material cleared in layers above
-        if allPrevComp:
-            layer_engine.add(allPrevComp, op=1)
+        if all_prev_comp:
+            layer_engine.add(all_prev_comp, op=1)
 
     # Apply the 'outside world' mask
     if trim_face:
         layer_engine.add(trim_face, op=1)
 
     try:
-        cutArea = layer_engine.getShape()
+        cut_area = layer_engine.getShape()
     except Exception as e:
         Path.Log.error(f"Layer engine failed at Z={round(z_target, 3)}. Error: {str(e)}")
-        cutArea = None
+        cut_area = None
 
-    return cutArea
+    return cut_area
 
 
-def _update_machining_mask(wpc, allPrevComp, currentSilhouette, status, floor_geo):
+def _update_machining_mask(wpc, all_prev_comp, current_silhouette, status, floor_geo):
     """Updates the persistent cumulative mask with new cleared areas.
 
     This function maintains a 'shadow' of all material processed in layers
@@ -1032,8 +1030,8 @@ def _update_machining_mask(wpc, allPrevComp, currentSilhouette, status, floor_ge
 
     Args:
         wpc (Part.Circle): The workplane for Path.Area operations.
-        allPrevComp (Part.Shape): The cumulative mask from previous layers.
-        currentSilhouette (Part.Shape): The tool-compensated footprint of
+        all_prev_comp (Part.Shape): The cumulative mask from previous layers.
+        current_silhouette (Part.Shape): The tool-compensated footprint of
             the current model slice.
         status (str): The layer status ("Pure", "Mixed", or "Extra").
         floor_geo (Part.Face): The physical floor geometry detected at this depth.
@@ -1046,11 +1044,11 @@ def _update_machining_mask(wpc, allPrevComp, currentSilhouette, status, floor_ge
     mask_engine.setPlane(wpc)
 
     # 1. Add the mask from all layers above
-    if allPrevComp and not allPrevComp.isNull():
-        mask_engine.add(allPrevComp)
+    if all_prev_comp and not all_prev_comp.isNull():
+        mask_engine.add(all_prev_comp)
 
     # 2. Add the current model silhouette (the walls/islands)
-    mask_engine.add(currentSilhouette)
+    mask_engine.add(current_silhouette)
 
     # 3. Add physical floors (Mixed or Extra)
     # This treats 'shelves' as solid barriers for all layers below
@@ -1060,11 +1058,11 @@ def _update_machining_mask(wpc, allPrevComp, currentSilhouette, status, floor_ge
 
     # 4. Extract the dissolved result
     try:
-        allPrevComp = mask_engine.getShape()
+        all_prev_comp = mask_engine.getShape()
     except Exception as e:
         Path.Log.error(f"Machining mask update failed: {str(e)}")
 
-    return allPrevComp
+    return all_prev_comp
 
 
 # ---------------------------------------------------------------------------
@@ -1095,7 +1093,7 @@ def zlevel_hybrid_to_gcode(
     and progress reporting.
 
     Args:
-        stack: A list of tuples (z_target, cutArea, status) representing layers.
+        stack: A list of tuples (z_target, cut_area, status) representing layers.
         feed_params: Dict containing 'horizFeed', 'vertFeed', 'horizRapid', 'vertRapid'.
         height_params: Dict containing 'safe_hght' and 'clearance_hght'.
         pattern_options: Dict containing 'cut_climb', 'cut_pattern', 'pattern_angle',
@@ -1139,9 +1137,9 @@ def zlevel_hybrid_to_gcode(
     keep_down_ratio = pattern_options.get("keep_down_ratio", 2.0) * tool_diam
 
     # 2. Main Layer Processing
-    for z_target, cutArea, status in stack:
+    for z_target, cut_area, status in stack:
 
-        if not cutArea or cutArea.isNull() or not cutArea.Wires:
+        if not cut_area or cut_area.isNull() or not cut_area.Wires:
             continue
 
         # Determine start index (0 = machine stock edge, 1 = ignore stock edge)
@@ -1154,7 +1152,7 @@ def zlevel_hybrid_to_gcode(
             # This single call checks the topology, sets up the offsets,
             # handles the finishing_profile override, and prints a warning!
             geofence, bb_offset = _setup_adaptive_geofence(
-                cutArea, bb_face, adaptive_params, radius, z_target, enforce_geofence
+                cut_area, bb_face, adaptive_params, radius, z_target, enforce_geofence
             )
 
             pattern_cmds = _adaptive.generate(
@@ -1165,7 +1163,7 @@ def zlevel_hybrid_to_gcode(
                 z_target,
                 safe_hght,
                 prev_z,
-                cutArea,
+                cut_area,
                 min_adaptive_area,
                 bb_face,
                 enforce_geofence=geofence,
@@ -1195,7 +1193,7 @@ def zlevel_hybrid_to_gcode(
 
             # Dispatch to the high-speed Path.Area pattern engine
             pattern_cmds = _generatePattern(
-                cutArea,
+                cut_area,
                 pattern_name,
                 pattern_angle,
                 cut_climb,
@@ -1214,11 +1212,11 @@ def zlevel_hybrid_to_gcode(
             commands.extend(pattern_cmds)
 
         # C: Perimeters (Waterline Walls)
-        if start_w_idx < len(cutArea.Wires):
+        if start_w_idx < len(cut_area.Wires):
             # Dynamic magnet point for the perimeter traveling salesperson
             current_peri_start = start_point
-            for w_idx in range(start_w_idx, len(cutArea.Wires)):
-                wire = cutArea.Wires[w_idx]
+            for w_idx in range(start_w_idx, len(cut_area.Wires)):
+                wire = cut_area.Wires[w_idx]
                 if not wire.isClosed() or wire.Length < min_path_length:
                     continue
 
@@ -1492,7 +1490,7 @@ Args:
 
 
 def _generatePattern(
-    cutArea,
+    cut_area,
     cut_pattern,
     pattern_angle,
     cut_climb,
@@ -1523,7 +1521,7 @@ def _generatePattern(
       zero-coordinate bugs within the downstream `_generate_wire_path` function.
 
     Args:
-        cutArea (Part.Shape): The boundary face or shape to clear.
+        cut_area (Part.Shape): The boundary face or shape to clear.
         cut_pattern (str): The infill strategy ("ZigZag", "Offset", "Line", "Grid").
         pattern_angle (float): The yaw angle (degrees) for scanline patterns.
         cut_climb (bool): If True, uses Climb milling; otherwise Conventional.
@@ -1548,7 +1546,7 @@ def _generatePattern(
     sort_mode = 3
 
     # 1. Validation Guards
-    if not cutArea or cutArea.isNull():
+    if not cut_area or cut_area.isNull():
         Path.Log.warning("Pattern generation skipped - Empty cutting area.")
         return []
 
@@ -1572,7 +1570,7 @@ def _generatePattern(
 
     extra_offset = radius - step_over
 
-    for face in cutArea.Faces:
+    for face in cut_area.Faces:
         if face.Area < 1e-7:
             continue
 
