@@ -369,6 +369,8 @@ def _mesh_to_stl(mesh_obj):
         Path.Log.error("The provided object is not a valid mesh or is empty.")
         return None
 
+    from . import surface_common
+
     mesh_start = time.perf_counter()
     mesh_data = mesh_obj.Mesh
     mesh_points = [tuple(p) for p in mesh_data.Points]
@@ -490,7 +492,7 @@ def _model_optimization(
     stl_filter_adj=0.0,
     tool_diam=0.0,
     final_depth=0.0,
-    normal_tolerance=0.01,
+    faces=None,
 ):
     """
     Filters the model's faces based on specific criteria to minimize the
@@ -504,19 +506,23 @@ def _model_optimization(
         stl_filter_adj (float): A positive offset value for the boundary adjustment of the face filter.
         tool_diam (float): The diameter of the active tool.
         final_depth (float): The lower Z-bound of the operation.
-        normal_tolerance (float): Tolerance for filtering vertical faces.
+        faces (list, optional): Pre-computed shape.Faces, if the caller already has
+            it (e.g. reused from boundary-face construction), to avoid re-deriving
+            FreeCAD's freshly-built face wrappers again here. Falls back to
+            shape.Faces if not provided.
 
     Returns:
         Part.Compound or Part.Shape: A compound of the filtered faces, or the original shape if no faces are filtered.
     """
     from . import surface_common
+
+    if faces is None:
+        faces = shape.Faces
+
     # Detect pre-triangulated models and skip optimization
-    if not exempt_faces:
-        if surface_common._is_triangulated_mesh(shape.Faces):
+    if not exempt_faces and surface_common._is_triangulated_mesh(faces):
             Path.Log.debug("surface_mesh._model_optimization: Pre-triangulated model detected. Skipping face optimization.")
             return shape
-
-    sample_faces = shape.Faces if not exempt_faces else exempt_faces
 
     filtered = []
     rejected = 0
@@ -537,7 +543,7 @@ def _model_optimization(
                 "YMax": bb.YMax + ba,
             }
 
-    for face in shape.Faces:
+    for face in faces:
         try:
             # SurfaceScan strategy with face selection
             # Exempt faces are always kept
@@ -558,18 +564,6 @@ def _model_optimization(
                     rejected += 1
                     continue
 
-            u1, u2, v1, v2 = face.ParameterRange
-            norm = face.normalAt((u1 + u2) / 2.0, (v1 + v2) / 2.0)
-            if face.Orientation == "Reversed":
-                norm = norm.multiply(-1)
-
-            normal_z = abs(norm.z)
-
-            # Reject truly vertical faces
-            if normal_z < normal_tolerance:
-                rejected += 1
-                continue
-
             filtered.append(face)
 
         except Exception as e:
@@ -585,11 +579,11 @@ def _model_optimization(
     Path.Log.debug(
         f"surface_mesh._filter_selected_faces: "
         f"Kept {len(filtered)} faces, rejected {rejected} "
-        f"(vertical or outside boundary)."
+        f"(below final depth or outside boundary)."
     )
 
     # All filtered! Return original
-    if len(filtered) == len(shape.Faces):
+    if len(filtered) == len(faces):
         return shape
 
     return Part.makeCompound(filtered)
@@ -626,7 +620,6 @@ def _shape_to_safe_stl(
         ocl.STLSurf: The generated safety mesh, or None on failure.
     """
     fused_shapes = []
-    offset_avoid = None
     bb = bb_safe.BoundBox
 
     fused_shapes.append(model_shape)
@@ -709,6 +702,7 @@ def generate_stl(
     linear_deflection,
     angular_deflection,
     mesh_simplification,
+    model_faces=None,
 ):
     """
     Orchestrates the creation of the primary (machining) and secondary (safety) STL meshes.
@@ -734,6 +728,9 @@ def generate_stl(
         linear_deflection (float): The user-set linear deflection for the primary mesh.
         angular_deflection (float): The user-set angular deflection for the primary mesh.
         mesh_simplification (int): The user-set simplification level for the primary mesh.
+        model_faces (list, optional): Pre-computed model_shape.Faces, if the caller
+            already has it (e.g. reused from boundary-face construction), to avoid
+            re-deriving FreeCAD's freshly-built face wrappers again here.
 
     Returns:
         tuple: (stl, safe_stl), where stl is the primary mesh and safe_stl is the
@@ -774,6 +771,7 @@ def generate_stl(
                 stl_filter_adj,
                 tool_diam,
                 final_depth,
+                faces=model_faces,
             )
             if optimized_shape and not optimized_shape.isNull():
                 model_shape = optimized_shape
