@@ -200,7 +200,7 @@ class TestSurfaceZLevel(PathTestUtils.PathTestBase):
 
         stack = zlevel_hybrid_stack(
             shape=self.test_model,
-            categorizedSteps=steps,
+            categorized_steps=steps,
             border_face=self.border_face,
             trim_face=self.trim_face,
             fill_holes_masks=self.fill_holes_masks,
@@ -265,6 +265,7 @@ class TestSurfaceZLevel(PathTestUtils.PathTestBase):
             is_adaptive=False,
             adaptive_params={},
             bb_face=self.border_face,
+            enforce_geofence=False,
         )
 
         self.assertGreater(len(cmds), 0, "G-code generation produced no commands")
@@ -389,7 +390,7 @@ class TestSurfaceZLevel(PathTestUtils.PathTestBase):
 
     def test43_apply_fill_hole_masks_pure_step(self):
         """
-        Tests _apply_fill_hole_masks adds mask to allPrevComp on a Pure step.
+        Tests _apply_fill_hole_masks adds mask to all_prev_comp on a Pure step.
 
         INPUT:
         - Function: _apply_fill_hole_masks()
@@ -397,7 +398,7 @@ class TestSurfaceZLevel(PathTestUtils.PathTestBase):
 
         EXPECTED OUTPUT:
         - fill_mask_idx incremented to 1 (mask consumed).
-        - allPrevComp is non-null (mask was added).
+        - all_prev_comp is non-null (mask was added).
         - floor_geo unchanged (None).
         """
         from Path.Base.Generator.surface_zlevel import _apply_fill_hole_masks
@@ -423,14 +424,14 @@ class TestSurfaceZLevel(PathTestUtils.PathTestBase):
         fill_holes_masks = [(10.0, mask_face)]
         wpc = Part.makeCircle(2.0)
 
-        idx, masks, floor_geo, allPrevComp = _apply_fill_hole_masks(
+        idx, masks, floor_geo, all_prev_comp = _apply_fill_hole_masks(
             wpc=wpc,
             fill_holes_masks=fill_holes_masks,
             fill_mask_idx=0,
-            currentSilhouette=silhouette,
+            current_silhouette=silhouette,
             status="Pure",
             floor_geo=None,
-            allPrevComp=None,
+            all_prev_comp=None,
             z_target=10.0,
             loose_tol=1e-4,
         )
@@ -438,7 +439,7 @@ class TestSurfaceZLevel(PathTestUtils.PathTestBase):
         self.assertEqual(idx, 0, "Index should reset to 0 after consuming")
         self.assertEqual(len(masks), 0, "Consumed masks should be removed from list")
         self.assertIsNone(floor_geo, "floor_geo should be unchanged for Pure step")
-        self.assertIsNotNone(allPrevComp, "allPrevComp should be updated for Pure step")
+        self.assertIsNotNone(all_prev_comp, "all_prev_comp should be updated for Pure step")
 
     def test44_stack_with_fill_holes(self):
         """
@@ -479,7 +480,7 @@ class TestSurfaceZLevel(PathTestUtils.PathTestBase):
 
         stack = zlevel_hybrid_stack(
             shape            = model,
-            categorizedSteps = steps,
+            categorized_steps = steps,
             border_face      = self.border_face,
             trim_face        = self.trim_face,
             fill_holes_masks = fill_holes_masks,
