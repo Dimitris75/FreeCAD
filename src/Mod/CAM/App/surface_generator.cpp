@@ -117,7 +117,8 @@ std::pair<std::vector<std::array<double, 3>>, std::vector<std::array<int, 3>>> s
             // standard "golden ratio" mixing constant used by
             // boost::hash_combine: its bit pattern has no simple repeating
             // structure, which spreads the combined bits evenly and avoids
-            // clustering for inputs that are already close together.
+            // clustering for inputs that are already close together — as our
+            // rounded-micron coordinates often are.
             constexpr std::size_t kHashMix = 0x9e3779b97f4a7c15ULL;
             std::size_t h = std::hash<int64_t>{}(k.x);
             h ^= std::hash<int64_t>{}(k.y) + kHashMix + (h << 6) + (h >> 2);
@@ -203,6 +204,59 @@ std::pair<std::vector<std::array<double, 3>>, std::vector<std::array<int, 3>>> s
     }
 
     return {vertices, facets};
+}
+
+// -------------------------------------------------------------------------
+// Scan Line Reconstruction
+// -------------------------------------------------------------------------
+
+/**
+ * Regroups a flat stream of (x, y, z) points — as returned by OCL's
+ * PathDropCutter — back into discrete scan lines, by detecting XY gaps
+ * larger than gap_threshold (points where the tool lifted and rapided to
+ * a new area). Mirrors surface_pattern.reconstruct_scan_lines() exactly.
+ *
+ * Distances are compared as squared values against gap_threshold^2
+ * rather than taking a sqrt per point. Since both sides are non-negative
+ * and sqrt is monotonic, dist > threshold is exactly equivalent to
+ * dist_sq > threshold_sq — this isn't an approximation, just a cheaper
+ * way to get the identical answer.
+ */
+std::vector<std::vector<std::array<double, 3>>> reconstruct_scan_lines_cpp(
+    const std::vector<std::array<double, 3>>& flat_points,
+    double gap_threshold
+)
+{
+    std::vector<std::vector<std::array<double, 3>>> lines;
+
+    if (flat_points.empty()) {
+        return lines;
+    }
+
+    const double gap_threshold_sq = gap_threshold * gap_threshold;
+
+    std::vector<std::array<double, 3>> current_line;
+    current_line.push_back(flat_points[0]);
+
+    for (size_t i = 1; i < flat_points.size(); ++i) {
+        const double dx = flat_points[i][0] - flat_points[i - 1][0];
+        const double dy = flat_points[i][1] - flat_points[i - 1][1];
+        const double dist_sq = dx * dx + dy * dy;
+
+        if (dist_sq > gap_threshold_sq) {
+            if (current_line.size() >= 2) {
+                lines.push_back(std::move(current_line));
+            }
+            current_line.clear();
+        }
+        current_line.push_back(flat_points[i]);
+    }
+
+    if (current_line.size() >= 2) {
+        lines.push_back(std::move(current_line));
+    }
+
+    return lines;
 }
 
 // -------------------------------------------------------------------------
@@ -358,7 +412,12 @@ std::vector<std::vector<std::array<double, 3>>> clip_polyline_bisection(
 // -------------------------------------------------------------------------
 
 // All pattern generators below divide by `stepover` to determine how many
-// passes to generate.
+// passes to generate. A non-positive stepover (e.g. a user-set StepOver of
+// 0%) would otherwise produce an infinite/NaN pass count and, since that
+// count is cast to `int`, undefined behavior rather than a clean failure.
+// Callers on the Python side are expected to validate this too, but every
+// entry point here guards independently since this module can be called
+// directly.
 static void require_positive_stepover(double stepover)
 {
     if (!(stepover > 0.0)) {
@@ -584,4 +643,5 @@ PYBIND11_MODULE(surface_generator, m)
     m.def("generate_linear_pattern_cpp", &generate_linear_pattern_cpp);
     m.def("generate_circular_pattern_cpp", &generate_circular_pattern_cpp);
     m.def("generate_spiral_pattern_cpp", &generate_spiral_pattern_cpp);
+    m.def("reconstruct_scan_lines_cpp", &reconstruct_scan_lines_cpp);
 }
