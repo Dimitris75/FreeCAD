@@ -491,6 +491,7 @@ SET(PathPythonBaseGenerator_SRCS
     Path/Base/Generator/toolchange.py
     Path/Base/Generator/surface_common.py
     Path/Base/Generator/surface_dropcutter.py
+    Path/Base/Generator/surface_finishing.py
     Path/Base/Generator/surface_pattern.py
     Path/Base/Generator/surface_mesh.py
     Path/Base/Generator/surface_waterline.py
@@ -703,6 +704,7 @@ SET(Tests_SRCS
     CAMTests/TestSurfacePostprocessGenerator.py
     CAMTests/TestSurfacePatternGenerator.py
     CAMTests/TestSurfaceDropCutterGenerator.py
+    CAMTests/TestSurfaceFinishingGenerator.py
     CAMTests/TestSurfaceMeshGenerator.py
     CAMTests/TestSurfaceWaterlineGenerator.py
     CAMTests/TestSurfaceZLevelGenerator.py
