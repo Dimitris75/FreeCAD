@@ -260,12 +260,14 @@ private:
 
     void NaiveOffset(double offset);
 
+    // Previous tagged offset implementation; used by Offset() for open curves
+    void OffsetNaive(double offset);
+
     Clipper2Lib::Path64 MakePoly(const CCurve& curve, ConversionMetadata& metadata) const;
 
     void SetFromResult(
         Clipper2Lib::Paths64& paths,
         bool isClosed,
-        bool assertOutputClosed,
         ConversionMetadata& metadata,
         std::optional<std::reference_wrapper<CArea>> cNeg = std::nullopt
     );
@@ -286,8 +288,7 @@ private:
         Clipper2Lib::FillRule fillType,
         bool reverseOpenPathContents = false,
         bool reverseOpenPathOrder = false,
-        std::optional<std::reference_wrapper<CArea>> cNeg = std::nullopt,
-        bool assertOutputClosed = false
+        std::optional<std::reference_wrapper<CArea>> cNeg = std::nullopt
     );
 };
 

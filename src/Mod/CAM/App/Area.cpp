@@ -124,6 +124,34 @@ FC_LOG_LEVEL_INIT("Path.Area", true, true)
 using namespace Path;
 using namespace heeks;
 
+// When set, addWire() discretizes free-form curves (B-splines, Beziers, conics) into line
+// segments instead of fitting biarcs. Area::project() (used by Outline mode) sets it: the HLR
+// silhouette curves it produces are approximations whose biarc fits are not reliable, and the
+// discretize route is what Outline used before biarc fitting was added.
+static thread_local bool s_discretizeFreeform = false;
+
+namespace
+{
+class DiscretizeFreeformGuard
+{
+public:
+    DiscretizeFreeformGuard()
+        : prev(s_discretizeFreeform)
+    {
+        s_discretizeFreeform = true;
+    }
+    ~DiscretizeFreeformGuard()
+    {
+        s_discretizeFreeform = prev;
+    }
+    DiscretizeFreeformGuard(const DiscretizeFreeformGuard&) = delete;
+    DiscretizeFreeformGuard& operator=(const DiscretizeFreeformGuard&) = delete;
+
+private:
+    bool prev;
+};
+}  // namespace
+
 CAreaParams::CAreaParams()
     : PARAM_INIT(PARAM_FNAME, AREA_PARAMS_CAREA)
 {}
@@ -485,7 +513,8 @@ void Area::addWire(CArea& area, const TopoDS_Wire& wire, const gp_Trsf* trsf, do
                 // Discretize instead of using biarcs for:
                 // - edges with only a pcurve (no 3D curve), which can't be fed to biarcs
                 // - degree 1 BSplines (polylines, no slope continuity at corners)
-                if (!curve.Is3DCurve()
+                // - Outline projection (see s_discretizeFreeform)
+                if (s_discretizeFreeform || !curve.Is3DCurve()
                     || (curve.GetType() == GeomAbs_BSplineCurve && curve.Degree() == 1)) {
                     appendDiscretized(curve);
                     break;
@@ -1769,6 +1798,9 @@ int Area::project(
 
     showShape(joiner.comp, "pre_project");
 
+    // Outline: use the discretize route for free-form HLR curves (no biarc fitting)
+    DiscretizeFreeformGuard discretizeFreeform;
+
     Area area(params);
     area.myParams.SectionCount = 0;
     area.myParams.Offset = 0.0;
@@ -2646,6 +2678,22 @@ TopoDS_Shape Area::makePocket(int index, PARAM_ARGS(PARAM_FARG, AREA_PARAMS_POCK
         case Area::PocketModeOffset: {
             PARAM_DECLARE_INIT(PARAM_FNAME, AREA_PARAMS_OFFSET);
             Offset = -tool_radius - extra_offset - shift;
+            // The offset pattern steps inward from the first pass until nothing is left, so the
+            // first pass (tool center) must lie inside the face boundary. Otherwise makeOffset()
+            // either silently returns nothing (first pass exactly on the boundary) or rejects it.
+            if (Offset > -Precision::Confusion()) {
+                char msg[256];
+                snprintf(
+                    msg,
+                    sizeof(msg),
+                    "Offset pattern: stock to leave (%.3f) must be greater than minus the tool "
+                    "radius (%.3f), otherwise the tool center would start on or outside the "
+                    "boundary",
+                    extra_offset,
+                    -tool_radius
+                );
+                throw Base::ValueError(msg);
+            }
             ExtraPass = -1;
             Stepover = -stepover;
             // make offset and make sure the loop is CW (i.e. inner wires)
@@ -2774,20 +2822,30 @@ TopoDS_Shape Area::toShape(const CCurve& _c, const gp_Trsf* trsf, int reorient)
             double r = center.Distance(pt);
             double r2 = center.Distance(pnext);
 
-            // Replace arcs with their chords if the radius is small (OCCT can't
-            // handle constructing arcs with radii near Precision::Confusion()).
-            // There is a wide range of plausibly acceptible thresholds to choose
-            // from for this; I have tentatively chosen diamter < m_accuracy.
-            //
-            // Also replace arcs if the chord is a very good representation of the
-            // arc (i.e. minor arc of with short cord).
-            //   Exact formula: r - sqrt(r² - d²/4)
-            //   Approximation for small d: d²/(8r)
+            // Degenerate arc: the whole arc fits within a couple of Precision::Confusion(),
+            // e.g. a slice taken exactly at the apex of a fillet/sphere/torus. OCC cannot build
+            // a circle this small, so replace it with its chord. The chord's deviation from the
+            // true arc is at most 2*r, which is below geometric tolerance, and keeping an edge
+            // (rather than dropping the arc) preserves wire connectivity.
+            if (std::max(r, r2) <= Precision::Confusion()) {
+                AREA_LOG(
+                    "Replacing degenerate arc (r=" << r << ", " << r2 << ") with chord at"
+                                                   << AREA_XYZ(center)
+                );
+                auto edge = BRepBuilderAPI_MakeEdge(pt, pnext).Edge();
+                hEdges->Append(edge);
+                pt = pnext;
+                continue;
+            }
+
+            // For short arcs, if the arc deviates from its chord by a tiny amount, replace it
+            // with the chord
+            // Exact formula: r - sqrt(r² - d²/4)
+            // Approximation for small d: d²/(8r)
             double d = pt.Distance(pnext);
+            double deviation = d * d / (8.0 * r);
             bool minorArc = IsLeft(pt, pnext, center) == (v.m_type > 0);
-            bool smallDeviation = d * d / (8.0 * r) < Precision::Confusion();
-            bool smallCircle = 2 * std::max(r, r2) < CArea::get_accuracy();
-            if ((minorArc && smallDeviation) || smallCircle) {
+            if (minorArc && deviation < Precision::Confusion()) {
                 auto edge = BRepBuilderAPI_MakeEdge(pt, pnext).Edge();
                 hEdges->Append(edge);
                 pt = pnext;
