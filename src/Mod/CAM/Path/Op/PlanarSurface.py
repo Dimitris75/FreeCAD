@@ -1925,7 +1925,7 @@ class ObjectSurface(PathOp.ObjectOp):
         is_surface_scan = strategy == "SurfaceScan"
         is_waterline = strategy == "Waterline"
         is_zlevel = strategy == "ZLevelHybrid"
-        if getattr(self, "_geometry_rotation", None) is not None and any(
+        is_three_plus_two = getattr(self, "_geometry_rotation", None)
         finish_steep = getattr(obj, "FinishSteepWalls", False)
         finish_fillets = getattr(obj, "FinishFillets", False)
         is_steep_op = finish_steep or finish_fillets
