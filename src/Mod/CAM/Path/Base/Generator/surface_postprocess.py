@@ -322,7 +322,7 @@ def _make_safe_pdc(safe_stl, cutter, final_z, sample_interval):
 # ---------------------------------------------------------------------------
 
 
-def _attempt_lead_arc(line, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_in):
+def _attempt_lead_arc(line, safe_pdc, cutter, lead_feed, lift_lead_z, depth_offset, is_lead_in):
     """
     Attempts multiple arc lead-in or lead-out strategies in order of preference,
     returning the first successful result.
@@ -347,6 +347,11 @@ def _attempt_lead_arc(line, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_in
         safe_pdc (ocl.PathDropCutter): Pre-configured, reusable drop-cutter.
         cutter (ocl.Cutter): Active cutter.
         lead_feed (float): Feed rate for the arc move (mm/min).
+        lift_lead_z (float): Vertical lift applied at the free end of the lead.
+        depth_offset (float): Global Z offset applied to the emitted G-code only.
+            Probing and the returned point stay in raw CL space, matching the
+            caller's convention of adding depth_offset when emitting Z.
+        is_lead_in (bool): True = lead-in; False = lead-out.
 
     Returns:
         tuple: (list_of_Path.Commands, entry_point) on success,
@@ -359,7 +364,9 @@ def _attempt_lead_arc(line, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_in
 
     # Strategy 1: Forward tangent arc (Lead-in and Lead-out)
     # Standard entry/exit — tangent to the cut direction at full radius.
-    cmds, lead = _generate_lead_arc(line, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_in)
+    cmds, lead = _generate_lead_arc(
+        line, safe_pdc, cutter, lead_feed, lift_lead_z, depth_offset, is_lead_in
+    )
     if lead:
         Path.Log.debug("LeadIn/LeadOut: forward tangent arc")
         return cmds, lead
@@ -379,7 +386,7 @@ def _attempt_lead_arc(line, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_in
             line_90_deg = [p_attach, p_perpendicular] + line[1:]
 
             cmds, lead = _generate_lead_arc(
-                line_90_deg, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_in=True
+                line_90_deg, safe_pdc, cutter, lead_feed, lift_lead_z, depth_offset, is_lead_in=True
             )
             if lead:
                 Path.Log.debug("LeadIn: Succeeded with 90-degree perpendicular arc.")
@@ -398,7 +405,7 @@ def _attempt_lead_arc(line, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_in
         ] + line[1:]
 
         cmds, lead = _generate_lead_arc(
-            reversed_line, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_in
+            reversed_line, safe_pdc, cutter, lead_feed, lift_lead_z, depth_offset, is_lead_in
         )
         if lead:
             Path.Log.debug("LeadIn: reverse tangent arc")
@@ -412,7 +419,10 @@ def _attempt_lead_arc(line, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_in
         lead = (p_prev[0], p_prev[1], p_attach[2] + radius)
         Path.Log.debug("LeadOut: retreat to previous point")
         return [
-            Path.Command("G1", {"X": lead[0], "Y": lead[1], "Z": lead[2], "F": lead_feed})
+            Path.Command(
+                "G1",
+                {"X": lead[0], "Y": lead[1], "Z": lead[2] + depth_offset, "F": lead_feed},
+            )
         ], lead
 
     # Note: Other strategies can be added here.
@@ -422,7 +432,7 @@ def _attempt_lead_arc(line, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_in
     return [], None
 
 
-def _generate_lead_arc(line, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_in):
+def _generate_lead_arc(line, safe_pdc, cutter, lead_feed, lift_lead_z, depth_offset, is_lead_in):
     """
     Generates a 90-degree tangent lead-in or lead-out arc at constant Z.
 
@@ -438,6 +448,9 @@ def _generate_lead_arc(line, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_i
         safe_pdc (ocl.PathDropCutter): Pre-configured drop-cutter for probing.
         cutter (ocl.Cutter): Active cutter — diameter used for arc radius.
         lead_feed (float): Feed rate for the arc move (mm/min).
+        lift_lead_z (float): Vertical lift applied at the free end of the arc.
+        depth_offset (float): Global Z offset applied to the emitted Z only;
+            the returned entry/exit point is left un-offset (raw CL space).
         is_lead_in (bool): True = lead-in arc; False = lead-out arc.
 
     Returns:
@@ -494,7 +507,7 @@ def _generate_lead_arc(line, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_i
                 {
                     "X": p_attach[0],
                     "Y": p_attach[1],
-                    "Z": cut_z,
+                    "Z": cut_z + depth_offset,
                     "I": i_offset,
                     "J": j_offset,
                     "F": lead_feed,
@@ -514,7 +527,7 @@ def _generate_lead_arc(line, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_i
                 {
                     "X": entry_exit_point[0],
                     "Y": entry_exit_point[1],
-                    "Z": cut_z + lift_lead_z,
+                    "Z": cut_z + lift_lead_z + depth_offset,
                     "I": i_offset,
                     "J": j_offset,
                     "F": lead_feed,
@@ -936,7 +949,7 @@ def scan_lines_to_gcode(
         # A. Generate Lead-in
         if use_smart_leads and safe_pdc:
             lead_in_cmds, lead_start = _attempt_lead_arc(
-                line, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_in=True
+                line, safe_pdc, cutter, lead_feed, lift_lead_z, depth_offset, is_lead_in=True
             )
             if lead_start:
                 first_point = lead_start
@@ -997,7 +1010,7 @@ def scan_lines_to_gcode(
         # F. Generate Lead-out
         if use_smart_leads and safe_pdc:
             lead_out_cmds, lead_end = _attempt_lead_arc(
-                line, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_in=False
+                line, safe_pdc, cutter, lead_feed, lift_lead_z, depth_offset, is_lead_in=False
             )
             commands.extend(lead_out_cmds)
             last_point = lead_end if lead_end else line[-1]
