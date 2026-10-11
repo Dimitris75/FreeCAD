@@ -253,6 +253,10 @@ public:
     {
         return m_ly;
     }
+    float LengthZ() const
+    {
+        return m_lz;
+    }
     float FloorZ() const
     {
         return m_pz;
