@@ -109,6 +109,8 @@ SET(PathPythonMainGui_SRCS
     Path/Main/Gui/PreferencesJob.py
     Path/Main/Gui/SanityCmd.py
     Path/Main/Gui/Simulator.py
+    Path/Main/Gui/SimulatorVtkView.py
+    Path/Main/Gui/SimulatorWindow.py
     Path/Main/Gui/SimulatorGL.py
 )
 
@@ -489,6 +491,7 @@ SET(PathPythonBaseGenerator_SRCS
     Path/Base/Generator/surface_common.py
     Path/Base/Generator/surface_dropcutter.py
     Path/Base/Generator/surface_pattern.py
+    Path/Base/Generator/surface_finishing.py
     Path/Base/Generator/surface_mesh.py
     Path/Base/Generator/surface_waterline.py
     Path/Base/Generator/surface_postprocess.py
@@ -694,6 +697,7 @@ SET(Tests_SRCS
     CAMTests/TestSurfaceCommonGenerator.py
     CAMTests/TestSurfacePostprocessGenerator.py
     CAMTests/TestSurfacePatternGenerator.py
+    CAMTests/TestSurfaceFinishingGenerator.py
     CAMTests/TestSurfaceDropCutterGenerator.py
     CAMTests/TestSurfaceMeshGenerator.py
     CAMTests/TestSurfaceWaterlineGenerator.py

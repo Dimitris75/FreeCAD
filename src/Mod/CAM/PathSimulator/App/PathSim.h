@@ -27,6 +27,7 @@
 #include <memory>
 #include <TopoDS_Shape.hxx>
 
+#include <Base/Matrix.h>
 #include <Mod/CAM/App/Command.h>
 #include <Mod/Part/App/TopoShape.h>
 #include <Mod/CAM/PathGlobal.h>
@@ -50,6 +51,35 @@ public:
     ~PathSim();
 
     void BeginSimulation(Part::TopoShape* stock, float resolution);
+    void ReseedFromMesh(
+        const Mesh::MeshObject& mesh,
+        float px,
+        float py,
+        float pz,
+        float lx,
+        float ly,
+        float lz,
+        float resolution
+    );
+    // Replaces the stock with a fresh grid holding the current one's
+    // material carried through `motion` (old working frame -> new), for a
+    // 3+2 workplane change. cStock::SeedFromStock does the work; unlike
+    // ReseedFromMesh there is no tessellation and no min/max fill.
+    //
+    // Throws Base::ValueError, leaving the stock untouched, unless
+    // `motion` is a proper rigid motion: SeedFromStock maps heights back
+    // through the transpose. Throws Base::RuntimeError with no stock.
+    cTransferReport ReseedFromStock(
+        const Base::Matrix4D& motion,
+        float px,
+        float py,
+        float pz,
+        float lx,
+        float ly,
+        float lz,
+        float resolution
+    );
+    double MaterialVolume() const;
     void SetToolShape(const TopoDS_Shape& toolShape, float resolution);
     Base::Placement* ApplyCommand(Base::Placement* pos, Command* cmd);
 

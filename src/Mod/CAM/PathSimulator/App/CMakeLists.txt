@@ -37,9 +37,11 @@ target_include_directories(
     ${CMAKE_CURRENT_BINARY_DIR}
 )
 target_link_libraries(PathSimulator ${PathSimulator_LIBS})
-target_compile_warn_error(PathSimulator)
+if (FREECAD_WARN_ERROR)
+    target_compile_warn_error(PathSimulator)
+endif()
 
-SET_BIN_DIR(PathSimulator)
+SET_BIN_DIR(PathSimulator PathSimulator /Mod/CAM)
 SET_PYTHON_PREFIX_SUFFIX(PathSimulator)
 
 install(TARGETS PathSimulator DESTINATION ${CMAKE_INSTALL_LIBDIR})

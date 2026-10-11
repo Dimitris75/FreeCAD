@@ -25,6 +25,7 @@ import FreeCAD
 import Part
 import Path
 import unittest
+import math
 import Path.Main.Workplane as PathWorkplane
 import Path.Main.Job as PathJob
 from CAMTests.PathTestUtils import PathTestWithAssets
@@ -763,3 +764,61 @@ class TestPlanarSurfaceOp(PathTestWithAssets):
         self.assertTrue(cut_z, "ZLevelHybrid should produce cutting moves")
         self.assertLess(max(cut_z), 16.0, "Cuts must not use the unrotated Z range (0..30)")
         self.assertLess(min(cut_z), -5.0, "Cuts must descend into the rotated Z range (-15..15)")
+
+    @unittest.skipUnless(_ocl_available, "OpenCamLib not available")
+    def test60(self):
+        """
+        Executes SurfaceScan with steep-wall finishing on a drafted boss.
+
+        INPUT:
+        - Function: ObjectSurface.opExecute()
+        - Parameters: Strategy=SurfaceScan, CutPattern=Line, FinishSteepWalls on/off
+        - Input data: 80x80x5 plate with a conical boss (R15 at Z=5 to R12 at
+          Z=25, about 8.5 deg draft), 5mm endmill
+
+        EXPECTED OUTPUT:
+        - With steep-wall finishing the path has more cutting moves.
+        - It contains contour moves around the boss: cuts between Z=8 and Z=22
+          one tool radius (2.5mm) outside the wall at their height.
+        """
+        plate = Part.makeBox(80, 80, 5, FreeCAD.Vector(-40, -40, 0))
+        boss = Part.makeCone(15.0, 12.0, 20.0, FreeCAD.Vector(0, 0, 5))
+        model = self.doc.addObject("Part::Feature", "TestBoss")
+        model.Shape = plate.fuse(boss).removeSplitter()
+
+        job = PathJob.Create("Job", [model])
+        toolbit = self.assets.get("toolbit://5mm_Endmill")
+        job.Tools.Group[0].Tool = toolbit.attach_to_doc(doc=self.doc)
+        self.doc.recompute()
+
+        ops = []
+        for finish_steep in (False, True):
+            op = FreeCAD.ActiveDocument.addObject("Path::FeaturePython", "PlanarSurface")
+            proxy = PathPlanarSurface.ObjectSurface(op, "PlanarSurface")
+            proxy.initOperation(op)
+            op.Strategy = "SurfaceScan"
+            op.CutPattern = "Line"
+            op.StepOver = 50.0
+            op.SampleInterval = 1.0
+            op.FinishSteepWalls = finish_steep
+            op.Base = job.Model.Group
+            job.Operations.addObject(op)
+            self.doc.recompute()
+            op.Proxy.execute(op)
+            ops.append(op)
+        plain, steep = ops
+
+        self.assertGreater(len(steep.Path.Commands), len(plain.Path.Commands))
+
+        # Cutting positions; G-code omits coordinates that do not change.
+        x = y = z = 0.0
+        on_wall = 0
+        for c in steep.Path.Commands:
+            x = c.Parameters.get("X", x)
+            y = c.Parameters.get("Y", y)
+            z = c.Parameters.get("Z", z)
+            if c.Name == "G1" and 8.0 < z < 22.0:
+                wall_radius = 15.0 - 3.0 * (z - 5.0) / 20.0
+                if abs(math.hypot(x, y) - (wall_radius + 2.5)) < 0.3:
+                    on_wall += 1
+        self.assertGreater(on_wall, 8, "Expected contour moves around the drafted wall")
