@@ -173,7 +173,7 @@ class TestSurfaceMesh(PathTestUtils.PathTestBase):
         - Input data: A 20x20x10 box as the model, with a separate 5x5
           flat face representing an already-built Avoid Faces keep-out
           boundary. _shape_to_safe_stl() expects this pre-built (see
-          surface_common.build_avoid_boundary(), tested separately) --
+          surface_boundary.build_avoid_boundary(), tested separately) --
           it just extrudes and fuses it, it doesn't build it.
 
         EXPECTED OUTPUT:
@@ -186,7 +186,7 @@ class TestSurfaceMesh(PathTestUtils.PathTestBase):
         # A pre-built avoid boundary -- a single flat face representing
         # the keep-out zone, exactly as _shape_to_safe_stl() expects to
         # receive it in production (built once, up front, by
-        # surface_common.build_avoid_boundary()).
+        # surface_boundary.build_avoid_boundary()).
         avoid_boundary_stl = Part.Face(
             Part.makePolygon(
                 [
@@ -209,7 +209,7 @@ class TestSurfaceMesh(PathTestUtils.PathTestBase):
             linear_deflection=0.1,
             angular_deflection=0.5,
             mesh_simplification=1,
-            use_cpp=True,
+            use_cpp_tessellation=True,
         )
 
         self.assertIsNotNone(safe_stl)

@@ -151,6 +151,7 @@
         <file>panels/PageOpRotarySurfaceEdit.ui</file>
         <file>panels/PageOpSurfaceEdit.ui</file>
         <file>panels/PageOpPlanarSurfaceEdit.ui</file>
+        <file>panels/PagePlanarSurfaceFeaturesEdit.ui</file>
         <file>panels/PageOpTappingEdit.ui</file>
         <file>panels/PageOpThreadMillingEdit.ui</file>
         <file>panels/PageOpWaterlineEdit.ui</file>

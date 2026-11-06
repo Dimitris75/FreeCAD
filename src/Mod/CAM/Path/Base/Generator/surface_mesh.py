@@ -273,7 +273,7 @@ def _shape_to_stl(
     angular_deflection,
     mesh_simplification=1,
     silence=False,
-    use_cpp=True,
+    use_cpp_tessellation=True,
 ):
     """Convert a Part.Shape / Compound to ocl.STLSurf using raw arrays.
 
@@ -285,7 +285,7 @@ def _shape_to_stl(
         linear_deflection: Linear deflection for tessellation (mm).
         angular_deflection: Angular deflection for tessellation (degrees).
         mesh_simplification: Integer 1-7 for mesh simplification (1=highest accuracy, 7=fastest).
-        use_cpp: Temporary Flag to disable C++ tessellation for 3+2 axis on Waterline Op (Default - True)
+        use_cpp_tessellation: Temporary Flag to disable C++ tessellation for 3+2 axis on Waterline Op (Default - True)
 
     Returns:
         An ocl.STLSurf object.
@@ -309,7 +309,7 @@ def _shape_to_stl(
 
     # Tessellation phase
     tess_start = time.perf_counter()
-    if _HAS_CPP and use_cpp:
+    if _HAS_CPP and use_cpp_tessellation:
         try:
             verts, faces = _shape_to_stl_cpp(shape, linear_deflection, angular_deflection)
         except RuntimeError as e:
@@ -507,6 +507,7 @@ def _model_optimization(
     tool_diam=0.0,
     final_depth=0.0,
     faces=None,
+    reach=None,
 ):
     """
     Filters the model's faces based on specific criteria to minimize the
@@ -524,12 +525,14 @@ def _model_optimization(
             it (e.g. reused from boundary-face construction), to avoid re-deriving
             FreeCAD's freshly-built face wrappers again here. Falls back to
             shape.Faces if not provided.
+        reach (surface_boundary.BoundaryClipper, optional): The area the cutter
+            can reach, e.g. a Custom boundary grown by the tool radius. When
+            given, faces whose bounds miss it are dropped, with or without a
+            face selection, and it replaces the selection-based clip box.
 
     Returns:
         Part.Compound or Part.Shape: A compound of the filtered faces, or the original shape if no faces are filtered.
     """
-    from . import surface_common
-
     if faces is None:
         faces = shape.Faces
 
@@ -542,7 +545,7 @@ def _model_optimization(
     if exempt_faces:
         exempt_set = {_face_fingerprint(f) for f in exempt_faces}
 
-        if bb_face is not None and tool_diam > 0 and strategy == "SurfaceScan":
+        if reach is None and bb_face is not None and tool_diam > 0 and strategy == "SurfaceScan":
             ba = stl_filter_adj
             bb = bb_face.BoundBox
             clip_bb = {
@@ -562,6 +565,11 @@ def _model_optimization(
 
             # Reject faces below final depth
             if face.BoundBox.ZMax < final_depth - 0.1:  # Plus a small buffer
+                rejected += 1
+                continue
+
+            # Reject faces the cutter cannot reach (Custom boundary)
+            if reach is not None and not reach.touches(face.BoundBox):
                 rejected += 1
                 continue
 
@@ -612,7 +620,7 @@ def _shape_to_safe_stl(
     linear_deflection,
     angular_deflection,
     mesh_simplification,
-    use_cpp,
+    use_cpp_tessellation,
 ):
     """
     Generates the secondary (safety) STL mesh for collision avoidance.
@@ -685,7 +693,7 @@ def _shape_to_safe_stl(
             safe_ang_def,
             max(mesh_simplification, 2),
             silence=True,
-            use_cpp=use_cpp,
+            use_cpp_tessellation=use_cpp_tessellation,
         )
         Path.Log.debug("surface_mesh._shape_to_safe_stl: Safe STL generated successfully.")
     except Exception as e:
@@ -716,7 +724,8 @@ def generate_stl(
     angular_deflection,
     mesh_simplification,
     model_faces=None,
-    use_cpp=True,
+    use_cpp_tessellation=True,
+    reach=None,
 ):
     """
     Orchestrates the creation of the primary (machining) and secondary (safety) STL meshes.
@@ -745,7 +754,10 @@ def generate_stl(
         model_faces (list, optional): Pre-computed model_shape.Faces, if the caller
             already has it (e.g. reused from boundary-face construction), to avoid
             re-deriving FreeCAD's freshly-built face wrappers again here.
-        use_cpp (bool): Temporary Flag to disable C++ tessellation for 3+2 axis on Waterline Op
+        use_cpp_tessellation (bool): Temporary Flag to disable C++ tessellation for 3+2 axis on Waterline Op
+        reach (surface_boundary.BoundaryClipper, optional): The area the cutter
+            can reach; faces outside it are left out of the mesh (see
+            _model_optimization).
 
     Returns:
         tuple: (stl, safe_stl), where stl is the primary mesh and safe_stl is the
@@ -789,6 +801,7 @@ def generate_stl(
                 tool_diam,
                 final_depth,
                 faces=model_faces,
+                reach=reach,
             )
             if optimized_shape and not optimized_shape.isNull():
                 model_shape = optimized_shape
@@ -810,7 +823,7 @@ def generate_stl(
             angular_deflection,
             mesh_simplification,
             silence=False,
-            use_cpp=use_cpp,
+            use_cpp_tessellation=use_cpp_tessellation,
         )
 
         # Check if the STL object is None OR if it contains zero triangles.
@@ -840,7 +853,7 @@ def generate_stl(
                 linear_deflection,
                 angular_deflection,
                 mesh_simplification=max(mesh_simplification, 2),
-                use_cpp=use_cpp,
+                use_cpp_tessellation=use_cpp_tessellation,
             )
 
         if safe_stl is None:

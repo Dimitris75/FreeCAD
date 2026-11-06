@@ -428,6 +428,7 @@ SET(PathPythonOpGui_SRCS
     Path/Op/Gui/Adaptive.py
     Path/Op/Gui/Array.py
     Path/Op/Gui/Base.py
+    Path/Op/Gui/BoundaryPreview.py
     Path/Op/Gui/CircularHoleBase.py
     Path/Op/Gui/Comment.py
     Path/Op/Gui/Copy.py
@@ -490,6 +491,7 @@ SET(PathPythonBaseGenerator_SRCS
     Path/Base/Generator/tapping.py
     Path/Base/Generator/threadmilling.py
     Path/Base/Generator/toolchange.py
+    Path/Base/Generator/surface_boundary.py
     Path/Base/Generator/surface_common.py
     Path/Base/Generator/surface_dropcutter.py
     Path/Base/Generator/surface_pattern.py
@@ -705,6 +707,7 @@ SET(Tests_SRCS
     CAMTests/TestAdaptiveCommonGenerator.py
     CAMTests/TestPlanarSurfaceOp.py
     CAMTests/TestSurfaceGenerator.py
+    CAMTests/TestSurfaceBoundaryGenerator.py
     CAMTests/TestSurfaceCommonGenerator.py
     CAMTests/TestSurfacePostprocessGenerator.py
     CAMTests/TestSurfacePatternGenerator.py

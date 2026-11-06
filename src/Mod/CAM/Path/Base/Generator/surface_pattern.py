@@ -115,74 +115,109 @@ class BBox:
 # ---------------------------------------------------------------------------
 
 
-def split_selected_features(base_property, avoid_count):
-    """
-    Extracts and splits face geometry from an operation's Base property.
+def _extract_elements(link_list, label, kind=Part.Face):
+    """Return the sub-elements of type *kind* (Part.Face, Part.Edge)
+    referenced by a (object, subnames) link list. Others are skipped."""
+    elements = []
+    for base, subs in link_list or []:
+        for sub in subs:
+            if not sub:
+                Path.Log.debug(
+                    f"surface_pattern.{label}: skipping empty sub-element for whole object"
+                )
+                continue
+            try:
+                shape = base.Shape.getElement(sub)
+            except Exception as e:
+                Path.Log.debug(f"surface_pattern.{label}: {base.Label}.{sub}: {e}")
+                continue
+            if shape and isinstance(shape, kind):
+                elements.append(shape)
+    return elements
 
-    This pure function takes the raw Base property and an integer, and it
-    separates the Part.Face objects it finds into two lists: those to be
-    machined and those to be avoided.
+
+def _extract_faces(link_list, label):
+    """Return the Part.Face objects referenced by a (object, subnames) link list."""
+    return _extract_elements(link_list, label, Part.Face)
+
+
+def _drop_avoided(base_property, avoid_property):
+    """
+    The Base links without the sub-elements also in Avoid, matched by object
+    and sub-element name (see split_selected_features), and how many were
+    dropped.
+    """
+    avoided = {(base.Name, sub) for base, subs in avoid_property or [] for sub in subs}
+    kept_links, dropped = [], 0
+    for base, subs in base_property or []:
+        kept = tuple(sub for sub in subs if (base.Name, sub) not in avoided)
+        dropped += len(subs) - len(kept)
+        if kept:
+            kept_links.append((base, kept))
+    return kept_links, dropped
+
+
+def split_selected_features(base_property, avoid_property):
+    """
+    Extracts the faces to machine and the faces to avoid.
+
+    The two lists come from separate link properties: ``Base`` defines what is
+    machined and ``AvoidFaces`` what must not be cut, so neither the order nor
+    the length of the Base list carries any meaning.
+
+    A face present in both lists is treated as avoided: avoiding is the safe
+    interpretation of a contradictory selection. Faces are matched by object
+    and sub-element name, not by geometry: under a 3+2 rotation, Base and
+    Avoid hold separately transformed copies of the model, so the same face
+    is never isSame() across the two lists.
 
     Args:
-        base_property (list): The operation's `obj.Base` list of (object, subnames).
-        avoid_count (int): The number of faces from the end of the list to treat as 'avoid'.
+        base_property (list): (object, subnames) tuples of the faces to machine.
+            Empty means "machine the whole model".
+        avoid_property (list): (object, subnames) tuples of the faces to avoid.
 
     Returns:
         tuple: (cutting_faces, avoid_faces)
     """
-
-    if not base_property:
-        Path.Log.debug(
-            "surface_pattern.split_selected_features: no Base geometry, using whole model"
+    # Drop Base faces that are also in Avoid Faces, by name
+    base_kept, dropped = _drop_avoided(base_property, avoid_property)
+    if dropped:
+        Path.Log.warning(
+            f"{dropped} face(s) are in both Base Geometry and Avoid Faces; they will be avoided."
         )
-        return [], []
 
-    all_selected = []
-    cutting_faces, avoid_faces = [], []
-    total_subs = 0
-    for base, subs in base_property:
-        Path.Log.debug(
-            "surface_pattern.split_selected_features: base={}, subs={}".format(base.Label, subs)
-        )
-        for sub in subs:
-            if not sub:
-                Path.Log.debug(
-                    "surface_pattern.split_selected_features: skipping empty sub-element for whole object"
-                )
-                continue
-            total_subs += 1
-            try:
-                shape = base.Shape.getElement(sub)
-                if shape and isinstance(shape, Part.Face):
-                    all_selected.append(shape)
-            except Exception as e:
-                Path.Log.debug(str(e))
-                continue
+    cutting_faces = _extract_faces(base_kept, "split_selected_features[Base]")
+    avoid_faces = _extract_faces(avoid_property, "split_selected_features[Avoid]")
 
     Path.Log.debug(
-        "surface_pattern.split_selected_features: extraction completed for {} subs, {} faces".format(
-            total_subs, len(all_selected)
-        )
-    )
-
-    if not all_selected:
-        return cutting_faces, avoid_faces
-
-    if avoid_count > 0 and avoid_count < len(all_selected):
-        cutting_faces = all_selected[:-avoid_count]
-        avoid_faces = all_selected[-avoid_count:]
-    elif avoid_count >= len(all_selected):
-        avoid_faces = all_selected
-    else:
-        cutting_faces = all_selected
-
-    Path.Log.debug(
-        "surface_pattern.split_selected_features: AvoidLastX_Faces process completed for {} cut, {} avoid faces".format(
+        "surface_pattern.split_selected_features: {} cut, {} avoid faces".format(
             len(cutting_faces), len(avoid_faces)
         )
     )
 
     return cutting_faces, avoid_faces
+
+
+def split_selected_edges(base_property, avoid_property):
+    """
+    Extracts the selected edges: Base edges outline areas to machine, Avoid
+    edges keep-out areas (as closed loops, see
+    surface_boundary.edge_loop_regions).
+
+    An edge in both lists is treated as avoided, matched by name like the
+    faces (see split_selected_features).
+
+    Args:
+        base_property (list): (object, subnames) tuples of the Base selection.
+        avoid_property (list): (object, subnames) tuples of the Avoid selection.
+
+    Returns:
+        tuple: (cutting_edges, avoid_edges)
+    """
+    base_kept, _ = _drop_avoided(base_property, avoid_property)
+    cutting_edges = _extract_elements(base_kept, "split_selected_edges[Base]", Part.Edge)
+    avoid_edges = _extract_elements(avoid_property, "split_selected_edges[Avoid]", Part.Edge)
+    return cutting_edges, avoid_edges
 
 
 def group_features(faces_to_group, handle_mode):
@@ -254,7 +289,7 @@ def _extract_polygons_from_face(boundary_face, tolerance=0.005):
     that can be instantly passed across the SWIG/PyBind boundary into C++ without heavy objects.
 
     Args:
-        boundary_face (Part.Face): The 2D boundary mask generated by surface_common.
+        boundary_face (Part.Face): The 2D boundary mask generated by surface_boundary.
         tolerance (float): The LinearDeflection accuracy. A tighter tolerance creates
                            smoother polygons, guaranteeing precision when C++ snaps to the edge.
 

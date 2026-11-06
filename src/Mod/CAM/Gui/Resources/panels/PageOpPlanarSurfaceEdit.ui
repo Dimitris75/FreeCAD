@@ -281,23 +281,13 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
        </widget>
       </item>
       <item row="4" column="0">
-       <widget class="QLabel" name="avoidLastX_Faces_label">
-        <property name="text">
-         <string>Avoid last X faces</string>
-        </property>
-       </widget>
-      </item>
-      <item row="4" column="1">
-       <widget class="QSpinBox" name="avoidLastX_Faces"/>
-      </item>
-      <item row="5" column="0">
        <widget class="QLabel" name="avoidFacesOverlap_label">
         <property name="text">
          <string>Avoid faces overlap</string>
         </property>
        </widget>
       </item>
-      <item row="5" column="1">
+      <item row="4" column="1">
        <widget class="Gui::InputField" name="avoidFacesOverlap">
         <property name="sizePolicy">
          <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
@@ -307,6 +297,36 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
         </property>
         <property name="unit" stdset="0">
          <string notr="true">mm</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="0" colspan="2">
+       <widget class="QCheckBox" name="boundaryOutline">
+        <property name="toolTip">
+         <string>Limit the scan by the outer outline of the selected faces only, machining over their holes. Off: holes in the selected faces are kept out.</string>
+        </property>
+        <property name="text">
+         <string>Outline only (ignore holes)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="7" column="0" colspan="2">
+       <widget class="QLabel" name="boundaryPreviewStatus">
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+        <property name="text">
+         <string notr="true"/>
+        </property>
+       </widget>
+      </item>
+      <item row="6" column="0" colspan="2">
+       <widget class="QCheckBox" name="showBoundaryPreview">
+        <property name="toolTip">
+         <string>Draws the operation's boundary in the 3D view while this panel is open: the outline (dashed), the region the tool center may visit (solid) and the Avoid Faces zones.</string>
+        </property>
+        <property name="text">
+         <string>Show boundary in 3D view</string>
         </property>
        </widget>
       </item>
@@ -399,13 +419,6 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
        <widget class="QCheckBox" name="ignoreOuter">
         <property name="text">
          <string>Ignore Outer</string>
-        </property>
-       </widget>
-      </item>
-      <item row="4" column="1">
-       <widget class="QCheckBox" name="fillSelectedHoles">
-        <property name="text">
-         <string>Fill selected holes</string>
         </property>
        </widget>
       </item>
@@ -608,14 +621,14 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
   <tabstop>boundaryAdjustment</tabstop>
   <tabstop>stockToLeave</tabstop>
   <tabstop>depthOffset</tabstop>
-  <tabstop>avoidLastX_Faces</tabstop>
   <tabstop>avoidFacesOverlap</tabstop>
+  <tabstop>boundaryOutline</tabstop>
+  <tabstop>showBoundaryPreview</tabstop>
   <tabstop>clearingOptionsGroup</tabstop>
   <tabstop>stepOver</tabstop>
   <tabstop>profileEdges</tabstop>
   <tabstop>optimizationGroup</tabstop>
   <tabstop>ignoreOuter</tabstop>
-  <tabstop>fillSelectedHoles</tabstop>
   <tabstop>clearPlanarOnly</tabstop>
   <tabstop>cutPatternReversed</tabstop>
   <tabstop>cutPatternAngle</tabstop>
