@@ -46,7 +46,7 @@ if ocl is None:
     raise ImportError(msg)
 
 import time
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NamedTuple
 
 # lazily loaded modules
 from lazy_loader.lazy_loader import LazyLoader
@@ -54,19 +54,44 @@ from PathScripts import PathUtils
 from PySide.QtCore import QT_TRANSLATE_NOOP
 
 import Path
+import Path.Base.Util as PathUtil
 import Path.Op.Base as PathOp
 from Path.Base.Generator import (
+    surface_boundary,
     surface_common,
     surface_dropcutter,
     surface_mesh,
     surface_pattern,
     surface_postprocess,
     surface_waterline,
+    surface_zlevel,
 )
 
 Part = LazyLoader("Part", globals(), "Part")
 
 Path.Log.setLevel(Path.Log.Level.INFO, Path.Log.thisModule())
+
+
+class MeshSettings(NamedTuple):
+    """
+    What one run needs from the OCL mesh (see ObjectSurface._meshSettings).
+
+    Attributes:
+        needs_stl (bool): Surface Scan and Waterline run on an OCL mesh (and
+            an OCL cutter); Z-Level works on the model itself.
+        needs_safe_stl (bool): The safe STL, probed by the lead arcs (both
+            mesh strategies) and Surface Scan's Keep Tool Down links.
+        use_cpp_tessellation (bool): C++ tessellation; off only for Waterline
+            without mesh optimization.
+        stl_filter_adj (float): How far beyond the boundary the mesh must
+            reach: Boundary Adjustment, or 1.5 * r with leads (a lead arc's end
+            sits up to sqrt(2) * r from the path).
+    """
+
+    needs_stl: bool
+    needs_safe_stl: bool
+    use_cpp_tessellation: bool
+    stl_filter_adj: float
 
 
 class ObjectSurface(PathOp.ObjectOp):
@@ -154,6 +179,7 @@ class ObjectSurface(PathOp.ObjectOp):
             | PathOp.FeatureStepDown
             | PathOp.FeatureCoolant
             | PathOp.FeatureBaseFaces
+            | PathOp.FeatureBaseEdges
         )
 
     def initOperation(self, obj):
@@ -262,12 +288,23 @@ class ObjectSurface(PathOp.ObjectOp):
             ),
             # -- Selected Geometry Settings --
             (
-                "App::PropertyInteger",
-                "AvoidLastX_Faces",
+                "App::PropertyLinkSubListGlobal",
+                "AvoidFaces",
                 "Selected Geometry Settings",
                 QT_TRANSLATE_NOOP(
                     "App::Property",
-                    "Avoid cutting the last 'N' faces in the Base Geometry list of selected faces.",
+                    "Surface Scan and Z-Level Hybrid: faces the tool must not cut. "
+                    "Kept separate from the Base Geometry, which defines the faces to machine.",
+                ),
+            ),
+            (
+                "App::PropertyLinkSubListGlobal",
+                "FillHoleFaces",
+                "Selected Geometry Settings",
+                QT_TRANSLATE_NOOP(
+                    "App::Property",
+                    "Z-Level Hybrid: wall faces of holes to fill (cap) so the tool does not enter them. "
+                    "Kept separate from the Base Geometry.",
                 ),
             ),
             (
@@ -304,6 +341,16 @@ class ObjectSurface(PathOp.ObjectOp):
                 QT_TRANSLATE_NOOP(
                     "App::Property",
                     "Positive values push the cutter toward, or beyond, the boundary. Negative values retract the cutter away from the boundary.",
+                ),
+            ),
+            (
+                "App::PropertyBool",
+                "BoundaryOutline",
+                "Selected Geometry Settings",
+                QT_TRANSLATE_NOOP(
+                    "App::Property",
+                    "Surface Scan: limit the scan by the outer outline of the Base Geometry faces "
+                    "only, machining over their holes. Off: holes in the selected faces are kept out.",
                 ),
             ),
             # -- Clearing Options --
@@ -439,15 +486,6 @@ class ObjectSurface(PathOp.ObjectOp):
                 "Clearing Options",
                 QT_TRANSLATE_NOOP("App::Property", "Ignore outer waterlines."),
             ),
-            (
-                "App::PropertyBool",
-                "FillSelectedHoles",
-                "Clearing Options",
-                QT_TRANSLATE_NOOP(
-                    "App::Property",
-                    "Selected vertical face(s) in the 'Base Geometry' will be filled/capped.",
-                ),
-            ),
             # -- Optimization --
             (
                 "App::PropertyBool",
@@ -494,8 +532,8 @@ class ObjectSurface(PathOp.ObjectOp):
                 "LeadIn/LeadOut",
                 QT_TRANSLATE_NOOP(
                     "App::Property",
-                    "Enable smart lead-in and lead-out moves for the Surface Scan strategy. "
-                    "Disables Keep Tool Down automatically when  is active.",
+                    "Enable smart lead-in and lead-out moves for the Surface Scan and Waterline "
+                    "strategies. Disables Keep Tool Down automatically when it is active.",
                 ),
             ),
             (
@@ -611,16 +649,6 @@ class ObjectSurface(PathOp.ObjectOp):
                     "Maximum (and nominal) helix entry diameter, as a percentage of the tool diameter",
                 ),
             ),
-            (
-                "App::PropertyBool",
-                "EnforceGeofence",
-                "AdaptivePatternSettings",
-                QT_TRANSLATE_NOOP(
-                    "App::Property",
-                    "WARNING: Disabling this allows the Adaptive2d algorithm to roam outside the stock boundary on open pockets. "
-                    "This can cause erratic plunges, unpredictable toolpaths, and machine crashes! Proceed with extreme caution.",
-                ),
-            ),
         ]
 
     @classmethod
@@ -729,7 +757,6 @@ class ObjectSurface(PathOp.ObjectOp):
             "PatternCenterCustom": FreeCAD.Vector(0.0, 0.0, 0.0),
             "ClearPlanarOnly": False,
             "IgnoreOuter": False,
-            "FillSelectedHoles": False,
             "StockToLeave": 0.0,
             "StepOver": 50.0,
             "CutPatternAngle": 0.0,
@@ -737,7 +764,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "SampleInterval": 0.25,
             "MinSampleInterval": 0.05,
             "BoundaryAdjustment": 0.0,
-            "AvoidLastX_Faces": 0,
+            "BoundaryOutline": False,
             "AvoidFacesOverlap": 0.0,
             "HandleMultipleFeatures": "Collectively",
             "ProfileEdges": "None",
@@ -756,7 +783,6 @@ class ObjectSurface(PathOp.ObjectOp):
             "FinishingProfile": True,
             "HelixMaxRampAngle": 3.00,
             "HelixMaxDiameterPercent": 75,
-            "EnforceGeofence": True,
         }
 
         return defaults
@@ -784,15 +810,26 @@ class ObjectSurface(PathOp.ObjectOp):
         F = hide if is_waterline else show
 
         # SurfaceScan specific contexts
-        obj.setEditorMode("AvoidLastX_Faces", A)
-        obj.setEditorMode("AvoidFacesOverlap", A)
+        # Base / Avoid Faces selection: every strategy
+        uses_selection = show
+        obj.setEditorMode("AvoidFaces", uses_selection)
+        # Overlap only applies to Avoid Faces: read-only (1) while the list is empty
+        read_only = 1
+        has_avoid = bool(getattr(obj, "AvoidFaces", None))
+        obj.setEditorMode(
+            "AvoidFacesOverlap",
+            uses_selection if (uses_selection == hide or has_avoid) else read_only,
+        )
         obj.setEditorMode("HandleMultipleFeatures", A)
         obj.setEditorMode("CutPattern", A)
         obj.setEditorMode("LayerMode", A)
         obj.setEditorMode("ProfileEdges", A)
-        obj.setEditorMode("LeadInOut", A)
-        obj.setEditorMode("LeadFeed", A)
-        obj.setEditorMode("LeadLiftDistance", A)
+        obj.setEditorMode("BoundaryOutline", A)
+        # Smart Lead-In/Lead-Out: Surface Scan and Waterline
+        leads_mode = show if (is_surface_scan or is_waterline) else hide
+        obj.setEditorMode("LeadInOut", leads_mode)
+        obj.setEditorMode("LeadFeed", leads_mode)
+        obj.setEditorMode("LeadLiftDistance", leads_mode)
         obj.setEditorMode("VolumetricFeedPercent", A)
 
         # Adaptive Sampling Logic
@@ -828,7 +865,7 @@ class ObjectSurface(PathOp.ObjectOp):
         obj.setEditorMode("StockToLeave", B)
         obj.setEditorMode("ClearPlanarOnly", B)
         obj.setEditorMode("IgnoreOuter", B)
-        obj.setEditorMode("FillSelectedHoles", B)
+        obj.setEditorMode("FillHoleFaces", B)
         obj.setEditorMode("SamplingAccuracy", B)
         obj.setEditorMode("StartPoint", B)
         obj.setEditorMode("UseStartPoint", B)
@@ -839,7 +876,6 @@ class ObjectSurface(PathOp.ObjectOp):
         obj.setEditorMode("FinishingProfile", C)
         obj.setEditorMode("HelixMaxRampAngle", C)
         obj.setEditorMode("HelixMaxDiameterPercent", C)
-        obj.setEditorMode("EnforceGeofence", C)
 
         # Apply Visibility to Mesh/OCL Group (D)
         obj.setEditorMode("AngularDeflection", D)
@@ -859,13 +895,14 @@ class ObjectSurface(PathOp.ObjectOp):
         obj.setEditorMode("CutPatternReversed", hide if is_waterline else show)
         obj.setEditorMode("KeepToolDown", show if not is_waterline else hide)
         obj.setEditorMode("KeepToolDownRatio", show if not is_waterline else hide)
-        obj.setEditorMode("BoundaryAdjustment", show if not is_waterline else hide)
+        # Waterline: Boundary Adjustment applies to its Base / Avoid boundary
+        obj.setEditorMode("BoundaryAdjustment", show)
         obj.setEditorMode("BoundBox", show if not is_waterline else hide)
 
     def opOnChanged(self, obj, prop):
         if not getattr(self, "propertiesReady", False):
             return
-        if prop in ["Strategy", "CutPattern", "CutPatternZLevel", "AdaptiveSampling"]:
+        if prop in ["Strategy", "CutPattern", "CutPatternZLevel", "AdaptiveSampling", "AvoidFaces"]:
             self.setEditorProperties(obj)
         elif prop == "MeshSimplification" and hasattr(obj, "MeshSimplification"):
             if obj.MeshSimplification < 1:
@@ -977,14 +1014,6 @@ class ObjectSurface(PathOp.ObjectOp):
         obj.StepOver = min(obj.StepOver, 100.0)
         obj.StepOver = max(obj.StepOver, 1.0)
 
-        # Limit AvoidLastX_Faces to zero and positive values
-        if obj.AvoidLastX_Faces < 0:
-            obj.AvoidLastX_Faces = 0
-            Path.Log.error("AvoidLastX_Faces: Value must be 0 or greater.")
-        if obj.AvoidLastX_Faces > 100:
-            obj.AvoidLastX_Faces = 100
-            Path.Log.error("AvoidLastX_Faces: Avoid last X faces count limited to 100.")
-
         # Limit Avoid Faces Overlap to zero and positive values
         if obj.AvoidFacesOverlap.Value < 0:
             obj.AvoidFacesOverlap.Value = 0.0
@@ -1032,21 +1061,95 @@ class ObjectSurface(PathOp.ObjectOp):
             return shape
         return shape.copy().transformShape(matrix, False, False)
 
+    # ---- Secondary feature lists (AvoidFaces, FillHoleFaces) ----
+
+    # Face lists kept beside obj.Base. Base defines the region to machine; these
+    # lists carry per-strategy modifiers so that Base keeps one meaning for all
+    # strategies.
+    FEATURE_LIST_PROPERTIES: ClassVar[tuple] = ("AvoidFaces", "FillHoleFaces")
+
+    def featureShapes(self, obj, prop):
+        """featureShapes(obj, prop) ... return (base, subs) tuples of a secondary
+        feature list, in the operation's working frame.
+
+        Counterpart of ``baseShapes()`` for ``AvoidFaces`` / ``FillHoleFaces``:
+        when a 3+2 rotation is active each base object is wrapped in the same
+        transformed-shape proxy, so the faces line up with Base and the model.
+        """
+        links = getattr(obj, prop, None) or []
+        matrix = getattr(self, "_geom_transform_matrix", None)
+        if matrix is None:
+            return list(links)
+
+        proxy_cache = {}
+        result = []
+        for base_obj, subs in links:
+            key = id(base_obj)
+            if key not in proxy_cache:
+                if getattr(base_obj, "Shape", None):
+                    shape = base_obj.Shape.copy().transformShape(matrix, False, False)
+                    proxy_cache[key] = PathOp._TransformedShapeProxy(base_obj, shape)
+                else:
+                    proxy_cache[key] = base_obj
+            result.append((proxy_cache[key], subs))
+        return result
+
+    def addFeature(self, obj, prop, base, sub):
+        """addFeature(obj, prop, base, sub) ... add one face to a secondary
+        feature list. Mirrors ``addBase()``: the selection is mapped to the
+        job's model clone so it resolves like Base Geometry does."""
+        if prop not in self.FEATURE_LIST_PROPERTIES:
+            raise ValueError(f"Unknown feature list property: {prop}")
+
+        base = PathUtil.getPublicObject(base)
+        if not self._setBaseAndStock(obj):
+            return False
+        for model in self.job.Model.Group:
+            if base == self.job.Proxy.baseObject(self.job, model):
+                base = model
+                break
+
+        links = list(getattr(obj, prop) or [])
+        for linked, subs in links:
+            if linked == base and sub in subs:
+                Path.Log.notice(
+                    translate("CAM_PlanarSurface", "%s.%s is already in the list")
+                    % (base.Label, sub)
+                    + "\n"
+                )
+                return False
+
+        links.append((base, sub))
+        setattr(obj, prop, links)
+        return True
+
     def opUpdateDepths(self, obj):
         # All Z values below are in the working frame: baseShapes() yields
         # transformed geometry when a workplane rotation is active, and model /
         # stock shapes are transformed explicitly via _rotatedShape().
-        if getattr(obj, "Base", None):
-            zmin = float("inf")
+        #
+        # Waterline ignores Base here: its contours are sliced from the whole
+        # model, and Base only chooses which of them are kept. Its Final Depth
+        # is therefore always the one it would have with nothing selected.
+        #
+        # Selected edges outline an area, not a floor: only faces (or whole
+        # objects) set the depth. With only edges selected, the depth is the one
+        # with nothing selected.
+        uses_base_depth = getattr(obj, "Strategy", None) != "Waterline"
+        zmin = float("inf")
+        if uses_base_depth and getattr(obj, "Base", None):
             for base, sublist in self.baseShapes(obj):
                 for sub in sublist:
+                    if sub.startswith(("Edge", "Vertex")):
+                        continue
                     try:
                         fbb = base.Shape.getElement(sub).BoundBox
                         zmin = min(zmin, fbb.ZMin)
-                    except Part.OCCError as e:
-                        Path.Log.error(e)
-            if zmin != float("inf"):
-                obj.OpFinalDepth = zmin
+                    except (Part.OCCError, IndexError, ValueError) as e:
+                        # A stale element name (the model changed) must not stop the op
+                        Path.Log.error(f"{base.Label}.{sub}: {e}")
+        if zmin != float("inf"):
+            obj.OpFinalDepth = zmin
         elif self.job and hasattr(obj, "BoundBox"):
             if obj.BoundBox == "BaseBoundBox":
                 models = getattr(self, "model", None) or self.job.Model.Group
@@ -1092,14 +1195,20 @@ class ObjectSurface(PathOp.ObjectOp):
             "length_offset": length_offset,
         }
 
-    def _generate_scan_lines(
-        self, obj, job, tool_diam, bb, bb_face, cutting_faces, avoid_boundary, is_whole_model_job
-    ):
-        """Generates the raw 2D scan line geometry for a given machining area."""
+    def _generate_scan_lines(self, obj, tool_diam, bb, boundary_face):
+        """Generates the raw 2D scan line geometry for a given machining area.
+
+        Args:
+            obj (Path::FeaturePython): The Planar Surface operation object.
+            tool_diam (float): The diameter of the active tool.
+            bb (BoundBox): The bounding box the pattern is laid out over.
+            boundary_face (Part.Face | None): The 2D mask built by ``opExecute()``
+                for this face group. Scan lines are clipped to it; None leaves
+                them unclipped within ``bb``.
+        """
 
         # 1. Gather parameters
         pattern = obj.CutPattern
-        boundary_adj = obj.BoundaryAdjustment.Value
         step_over = tool_diam * (obj.StepOver / 100.0)
         sample_interval = obj.SampleInterval.Value
         pattern_reverse = obj.CutPatternReversed
@@ -1107,23 +1216,9 @@ class ObjectSurface(PathOp.ObjectOp):
         if pattern_reverse:
             cut_climb = not cut_climb
 
-        # 2. Generate boundary mask
-        boundary_face = surface_common.generate_pattern_mask(
-            is_whole_model_job,
-            bb_face,
-            cutting_faces,
-            avoid_boundary,
-            tool_diam / 2.0,
-            boundary_adj,
-            obj.LinearDeflection.Value,
-        )
-
         scan_bb = surface_pattern.BBox.from_bbox(bb)
-        if not boundary_face and not cutting_faces:
-            Path.Log.error("Failed to generate a valid boundary mask for the selected faces.")
-            return []
 
-        # 3. Generate Scan Lines (Main Logic)
+        # 2. Generate Scan Lines (Main Logic)
         angle = obj.CutPatternAngle
         profile_mode = obj.ProfileEdges
         main_scan_lines = []
@@ -1231,9 +1326,8 @@ class ObjectSurface(PathOp.ObjectOp):
         safe_stl,
         cutter,
         tool_diam,
-        bb_face,
-        avoid_boundary=None,
-        cutting_faces=None,
+        scan_bb,
+        feature_masks,
     ):
         """
         Executes the Surface Scan (projection) strategy.
@@ -1249,17 +1343,17 @@ class ObjectSurface(PathOp.ObjectOp):
                                    collision-safe "Keep Tool Down" transitions.
             cutter (ocl.Cutter): The OCL representation of the tool.
             tool_diam (float): The diameter of the active tool.
-            bb (BoundBox): The bounding box of the entire operation area.
-            cutting_faces (list, optional): A list of Part.Face objects if the user
-                                             has made a specific selection. Defaults to None.
-            avoid_boundary (Part.Shape, optional): Pre-built Avoid Faces "keep-out" boundary.
+            scan_bb (BoundBox): The bounding box the scan pattern is laid out over.
+            feature_masks (list): 2D masks built by ``opExecute()``, one per
+                HandleMultipleFeatures group (a single entry for "Collectively").
+                Avoid Faces are already cut out. A None entry leaves that group's
+                pattern unclipped.
 
         Returns:
             list: A list of Path.Command objects representing the final G-code.
         """
         all_final_cmds = []
 
-        is_whole_model_job = not cutting_faces
         sample_interval = obj.SampleInterval.Value
         force_keep_down = obj.CutPattern in ("ZigZag", "CircularZigZag")
 
@@ -1277,42 +1371,12 @@ class ObjectSurface(PathOp.ObjectOp):
             "is_multipass": getattr(obj, "LayerMode", "Single-pass") == "Multi-pass",
         }
 
-        # Ensure we have cutting faces (Fallback to whole model if none selected)
-        if not cutting_faces:
-            if not bb_face:
-                Path.Log.error("Could not determine source faces for pattern generation.")
-                return []
-            cutting_faces = [bb_face]
-
-        if bb_face is None:
-            Path.Log.error(
-                "Could not generate the operation boundary. "
-                "Check the Base Geometry selection and the Boundary Adjustment value."
-            )
-            return []
-
-        # Determine the bounding box
-        group_bb = bb_face.BoundBox
-
-        # Construct the list of face groups to process based on user's choice
-        handle_mode = getattr(obj, "HandleMultipleFeatures", "Collectively")
-        feature_groups = surface_pattern.group_features(cutting_faces, handle_mode)
-
         # For "Collectively", this loop runs once with all faces.
         # For "Individually", this loop runs once for each face.
-        for i, face_group in enumerate(feature_groups):
+        for bb_face in feature_masks:
 
             # A. Generate all 2D scan lines for this group
-            raw_scan_lines = self._generate_scan_lines(
-                obj,
-                job,
-                tool_diam,
-                group_bb,
-                bb_face,
-                face_group,
-                avoid_boundary,
-                is_whole_model_job,
-            )
+            raw_scan_lines = self._generate_scan_lines(obj, tool_diam, scan_bb, bb_face)
             if not raw_scan_lines:
                 continue
 
@@ -1320,7 +1384,7 @@ class ObjectSurface(PathOp.ObjectOp):
             scan_lines = self._project_scan_lines(obj, stl, cutter, raw_scan_lines)
 
             # C. Add linking moves if we are in "Individual" mode
-            if all_final_cmds and len(feature_groups) > 1:
+            if all_final_cmds and len(feature_masks) > 1:
                 all_final_cmds.append(
                     Path.Command("G0", {"Z": obj.SafeHeight.Value, "F": self.vertRapid})
                 )
@@ -1356,13 +1420,26 @@ class ObjectSurface(PathOp.ObjectOp):
 
         return all_final_cmds
 
-    def _executeWaterline(self, obj, job, stl, cutter, tool_diam, is_adaptive=False):
+    def _executeWaterline(
+        self,
+        obj,
+        job,
+        stl,
+        cutter,
+        tool_diam,
+        is_adaptive=False,
+        safe_stl=None,
+        boundary_clipper=None,
+    ):
         """Execute the Waterline strategy using Phase 1 generators.
 
         Flow:
         1. Calculate Z-height range from depths
         2. Run waterline_stack at multiple Z-heights
-        3. Convert to G-code
+        3. Filter collinear points if optimization is enabled
+        4. Trim the contours to boundary_face
+        5. Add Smart Lead-In/Lead-Out
+        6. Convert to G-Code
         """
         sample_interval = obj.SampleInterval.Value
         min_sampling = obj.MinSampleInterval.Value
@@ -1371,6 +1448,7 @@ class ObjectSurface(PathOp.ObjectOp):
         depth_offset = obj.DepthOffset.Value
         step_down = obj.StepDown.Value
         cut_climb = obj.CutMode == "Climb"
+        needs_leadin = getattr(obj, "LeadInOut", False)
 
         # If SampleInterval is already this fine, standard dropcutter is faster
         adaptive_threshold = 0.25
@@ -1400,12 +1478,45 @@ class ObjectSurface(PathOp.ObjectOp):
             for zh in wl_data:
                 filter_loop = []
                 for loop in wl_data[zh]:
-                    # Filter out samll fragments
+                    # Filter out small fragments
                     if len(loop) < 3:
                         continue
                     filter_loop.append(surface_postprocess.filter_cl_points(loop, tolerance))
                 wl_data[zh] = filter_loop
 
+        # Base / Avoid selection: OCL traced the whole mesh, so trim the contours
+        # to boundary_face. Loops wholly inside stay closed; a loop crossing the
+        # boundary becomes open chains, cut from end to end.
+        open_data = None
+        if boundary_clipper is not None:
+            open_data = {}
+            for zh in wl_data:
+                closed, open_chains = [], []
+                for piece in boundary_clipper.trim_polylines(wl_data[zh], closed=True):
+                    if piece[0] == piece[-1]:
+                        closed.append(piece[:-1])
+                    elif len(piece) >= 2:
+                        open_chains.append(piece)
+                wl_data[zh] = closed
+                if open_chains:
+                    open_data[zh] = open_chains
+
+        # Smart Lead-In/Lead-Out, probed against the safe STL..
+        leads = None
+        if needs_leadin and safe_stl is not None:
+            leads = {
+                "safe_pdc": surface_postprocess._make_safe_pdc(
+                    safe_stl, cutter, obj.FinalDepth.Value, sample_interval
+                ),
+                "cutter": cutter,
+                "lead_feed": self.horizFeed * (obj.LeadFeed / 100.0),
+                "lift_lead_z": obj.LeadLiftDistance.Value,
+                # Run past the seam so it leaves no witness mark
+                "overlap": 0.1 * tool_diam,
+                "depth_offset": depth_offset,
+            }
+
+        # Convert to G-Code
         cmds = surface_waterline.waterline_to_gcode(
             wl_data,
             horiz_feed=self.horizFeed,
@@ -1415,6 +1526,8 @@ class ObjectSurface(PathOp.ObjectOp):
             safe_z=obj.SafeHeight.Value,
             clearance_z=obj.ClearanceHeight.Value,
             cut_climb=cut_climb,
+            open_data=open_data,
+            leads=leads,
         )
 
         return cmds
@@ -1426,17 +1539,21 @@ class ObjectSurface(PathOp.ObjectOp):
         B-Rep geometry. It combines constant-Z contouring with automatic floor
         detection and clearing.
 
+        Args:
+            bb_face (Part.Shape): The clean tool-centre region built by
+                ``opExecute()``: the Base Geometry faces (or the model/stock
+                boundary) minus the Avoid Faces zones.
+
         Flow:
         1. Extract ToolBit parameters for specific 3D profile math.
         2. Data preparation
         3. Generate mask for Fill selected holes feature
-        4. Generate master boundary (TrimFace) and stable background pool.
-        5. Categorize depths, reconciling standard steps with physical model floors.
-        6. Dispatch to surface_zlevel generator for C++ accelerated geometry stacking.
-        7. Convert the resulting geometry stack into optimized G-code Path commands.
+        4. Generate master boundary (TrimFace) from bb_face and stable background pool.
+        5. Generate real stock outline for Adaptive2d.
+        6. Categorize depths, reconciling standard steps with physical model floors.
+        7. Dispatch to surface_zlevel generator for C++ accelerated geometry stacking.
+        8. Convert the resulting geometry stack into optimized G-code Path commands.
         """
-        from Path.Base.Generator import surface_zlevel
-
         # 1. Extract and Validate Tool Parameters
         tool_diam = tool_params.get("diameter", 0.0)
         radius = tool_diam / 2.0
@@ -1456,8 +1573,6 @@ class ObjectSurface(PathOp.ObjectOp):
         fill_holes_masks = []
 
         is_adaptive = getattr(obj, "CutPatternZLevel", "None") == "Adaptive"
-        enforce_goefence = getattr(obj, "EnforceGeofence", True)
-        fill_selected_holes = getattr(obj, "FillSelectedHoles", False)
         clear_planar_only = getattr(obj, "ClearPlanarOnly", True)
         ignore_outer = getattr(obj, "IgnoreOuter", False)
 
@@ -1512,19 +1627,36 @@ class ObjectSurface(PathOp.ObjectOp):
             "helix_min_diameter": 10.0,  # Percent of tool diameter
         }
 
-        # 3. Fill selected holes
-        if fill_selected_holes:
-            base_prop = list(self.baseShapes(obj))
-            fill_holes_masks = surface_zlevel.fill_selected(base_prop)
+        # 3. Fill selected holes (own list, independent of Base Geometry)
+        fill_prop = self.featureShapes(obj, "FillHoleFaces")
+        if fill_prop:
+            fill_holes_masks = surface_zlevel.fill_selected(fill_prop)
 
         # 4. Boundary preparation
         buffer = tool_diam + obj.BoundaryAdjustment.Value
         border_poly = surface_zlevel.extendedBoundBox(self.stock.Shape.BoundBox, buffer, 0.0)
         border_face = Part.makeFace(border_poly)
 
+        # Everything outside bb_face (incl. Avoid Faces zones) is trimmed away
         trim_face = surface_zlevel.getTrimFace(border_face, bb_face, wpc)
 
-        # 5. Depth categorization
+        # 5. Real stock outline for Adaptive2d (see _resolve_adaptive_stock).
+        stock_face = None
+        if is_adaptive:
+            try:
+                stock_face = surface_boundary.create_boundary_face(self.stock.Shape.Faces, -0.02)
+            except Exception as e:
+                Path.Log.warning(f"Adaptive: could not build the stock outline: {e}")
+
+            if stock_face is not None:
+                valid, reason = surface_zlevel.validate_stock_outline(
+                    stock_face, self.stock.Shape.BoundBox, shape.BoundBox
+                )
+                if not valid:
+                    Path.Log.warning(f"Adaptive: stock outline rejected — {reason}.")
+                    stock_face = None
+
+        # 6. Depth categorization
         cat_steps = surface_zlevel.categorize_floor_steps(
             shape_copy,
             obj.StartDepth.Value,
@@ -1534,7 +1666,7 @@ class ObjectSurface(PathOp.ObjectOp):
             is_triangulated,
         )
 
-        # 6. Generate Geometry Stack
+        # 7. Generate Geometry Stack
         wl_data = surface_zlevel.zlevel_hybrid_stack(
             shape,
             cat_steps,
@@ -1549,7 +1681,7 @@ class ObjectSurface(PathOp.ObjectOp):
             start_z=obj.StartDepth.Value,
         )
 
-        # 7. Convert to G-Code
+        # 8. Convert to G-Code
         cmds = surface_zlevel.zlevel_hybrid_to_gcode(
             wl_data,
             feed_params,
@@ -1563,12 +1695,12 @@ class ObjectSurface(PathOp.ObjectOp):
             is_adaptive,
             adaptive_params,
             bb_face,
-            enforce_goefence,
+            stock_face,
         )
 
         return cmds
 
-    def _prepare_geometry(self, optimize_stl, is_three_plus_two):
+    def _prepare_geometry(self, optimize_stl):
         """
         Resolves the model bodies into one working shape, used
         throughout opExecute for boundary and STL generation.
@@ -1580,21 +1712,18 @@ class ObjectSurface(PathOp.ObjectOp):
 
         Vertical faces are excluded up front — Surface Scan, Waterline,
         and Z-Level all treat them as irrelevant for boundary and mesh
-        purposes. This filtering is skipped for 3+2 operations, for
-        triangulated (mesh-derived) models, and when STL optimization is
-        off. STL optimization is forced off for 3+2.
+        purposes. This filtering is skipped for triangulated (mesh-derived)
+        models, and when STL optimization is off.
 
         Args:
             optimize_stl (bool): The requested STL optimization setting.
-            is_three_plus_two (bool): True if a rotated 3+2 workplane is active.
 
         Returns:
             tuple: (model_shape, model_faces, optimized_shape,
                 optimize_stl, is_triangulated), or None if there is no
-                valid geometry to machine. For 3+2, triangulated models and
+                valid geometry to machine. For triangulated models and
                 when STL optimization is off, model_faces is None and
-                optimized_shape is model_shape. optimize_stl is the effective
-                value: False for 3+2, otherwise the requested one.
+                optimized_shape is model_shape.
         """
 
         # self.model / self.stock are provided by the base
@@ -1643,10 +1772,6 @@ class ObjectSurface(PathOp.ObjectOp):
         # Mesh-derived shapes are made of thousands of small planar triangles
         is_triangulated = surface_common._is_triangulated_mesh(model_shape.Faces)
 
-        if is_three_plus_two:
-            # Already in the rotated frame: keep every face and skip shape optimization
-            return model_shape, None, model_shape, False, is_triangulated
-
         if is_triangulated or not optimize_stl:
             # Nothing to filter: meshes have no meaningful vertical faces, and
             # without STL optimization the full model is meshed
@@ -1660,226 +1785,355 @@ class ObjectSurface(PathOp.ObjectOp):
 
         return model_shape, model_faces, optimized_shape, optimize_stl, is_triangulated
 
-    def opExecute(self, obj):
-        """Main execution method for Planar Surface operation.
-
-        This function orchestrates the entire toolpath generation process by following a
-        clean, multi-phase pipeline:
-
-        1.  Universal Setup: Initializes the Job, applies property limits, updates
-            depths from the Base geometry, and extracts core parameters like the
-            strategy and tool information. This phase runs for all strategies.
-        2.  Geometry Preparation: Resolves the model bodies into one working shape
-            (see _prepare_geometry), detects triangulated models and 3+2 operations,
-            and decides whether shape and STL optimization applies.
-        3.  Data Preparation: Intelligently prepares only the necessary geometric
-            data (STL meshes, OCL cutters, boundary boxes) based on the specific
-            requirements of the selected strategy.
-        4.  Strategy Dispatch: A simple, clean router that calls the appropriate
-            backend execution function (e.g., _executeSurfaceScan, _executeWaterline)
-            and passes it the prepared data.
-        5.  G-Code Finalization: Assembles the final command list by prepending
-            standard headers and startup moves to the commands returned by the
-            strategy function.
+    def buildBoundaries(
+        self,
+        obj,
+        model_shape,
+        optimized_shape,
+        is_triangulated,
+        tool_radius,
+        needs_safe_stl=False,
+    ):
         """
-        Path.Log.track()
+        Builds the 2D regions of one run, in the working frame.
 
-        startTime = time.time()
+        Reads the operation's settings and its Base / Avoid selection, through
+        baseShapes() / featureShapes() so a 3+2 rotation is applied when the
+        caller has set it up, and hands them to
+        surface_boundary.build_operation_boundaries(). Used by opExecute() and
+        by the task panel's boundary preview, so both always show the same
+        regions.
 
-        # Universal Setup
-        if not (JOB := PathUtils.findParentJob(obj)):
-            Path.Log.error(translate("CAM_PlanarSurface", "No JOB"))
-            return
+        Args:
+            obj: The operation object.
+            model_shape (Part.Shape): The fused model (see _prepare_geometry).
+            optimized_shape (Part.Shape): The model without vertical faces, or
+                model_shape (see _prepare_geometry).
+            is_triangulated (bool): The model is mesh-derived.
+            tool_radius (float): Cutter radius (mm).
+            needs_safe_stl (bool): Also build the Avoid Faces footprint for the
+                safe STL's keep-out lid.
 
-        # Impose property limits
-        self.opApplyPropertyLimits(obj)
+        Returns:
+            surface_boundary.Boundaries: The regions, or None when a boundary
+                the strategy needs could not be built (logged): the operation
+                must not machine.
+        """
+        base_prop = list(self.baseShapes(obj))
+        avoid_prop = self.featureShapes(obj, "AvoidFaces")
+        cutting_faces, avoid_faces = surface_pattern.split_selected_features(base_prop, avoid_prop)
+        cutting_edges, avoid_edges = surface_pattern.split_selected_edges(base_prop, avoid_prop)
+        boundaries = surface_boundary.build_operation_boundaries(
+            obj.Strategy,
+            cutting_faces,
+            avoid_faces,
+            model_shape,
+            optimized_shape,
+            is_triangulated,
+            stock_shape=getattr(self.stock, "Shape", None),
+            bound_box=obj.BoundBox,
+            tool_radius=tool_radius,
+            boundary_adjustment=obj.BoundaryAdjustment.Value,
+            avoid_overlap=obj.AvoidFacesOverlap.Value,
+            linear_deflection=obj.LinearDeflection.Value,
+            per_face=getattr(obj, "HandleMultipleFeatures", "Collectively") == "Individually",
+            scan_outline=getattr(obj, "BoundaryOutline", False),
+            needs_safe_stl=needs_safe_stl,
+            cutting_edges=cutting_edges,
+            avoid_edges=avoid_edges,
+            # OCL's contours deviate from the exact offset by up to ~5 % of
+            # the sample interval: the Avoid margin stays above that
+            contour_margin=max(0.1, 0.1 * obj.SampleInterval.Value),
+        )
+        if boundaries is not None and boundaries.open_chains:
+            Path.Log.warning(
+                translate(
+                    "CAM_PlanarSurface",
+                    "%d selected edge chain(s) do not form a closed loop and were ignored. "
+                    "Select the whole loop (CAM > Finish Selecting Loop helps).",
+                )
+                % boundaries.open_chains
+            )
+        self._boundaryFailure = None
+        if boundaries is None:
+            if cutting_edges and not cutting_faces:
+                self._boundaryFailure = translate(
+                    "CAM_PlanarSurface",
+                    "The selected Base edges do not form a closed loop: nothing will be cut. "
+                    "Select the whole loop (CAM > Finish Selecting Loop helps).",
+                )
+            else:
+                self._boundaryFailure = translate(
+                    "CAM_PlanarSurface",
+                    "Could not generate the operation boundary: nothing will be cut. "
+                    "Check the Base Geometry selection and the Boundary Adjustment value.",
+                )
+            Path.Log.error(self._boundaryFailure)
+        return boundaries
 
-        # Extract basic operation data
+    # ---- Task panel preview (runs outside execute()) ----
+
+    def previewBoundaries(self, obj):
+        """
+        The regions of the next run, for the task panel's boundary preview.
+
+        Runs outside execute(): sets up the work plane frame, and the Job's
+        model and stock in it, the way ObjectOp.execute() does, then builds
+        the regions with buildBoundaries(), exactly as opExecute() will. The
+        operation's state is restored afterwards.
+
+        Args:
+            obj: The operation object.
+
+        Returns:
+            surface_boundary.Boundaries: In the work plane frame, or None
+                when nothing can be built (no Job or model, or a boundary the
+                strategy needs failed: logged).
+        """
+        names = self._FRAME_ATTRS + ("job", "model", "stock")
+        saved = {name: getattr(self, name) for name in names if hasattr(self, name)}
+        self._previewNotes = []
+        try:
+            if not self._setBaseAndStock(obj, ignoreErrors=True):
+                return None
+            self._setup_workplane_transform(obj, warn=False)
+            matrix = getattr(self, "_geom_transform_matrix", None)
+            if matrix is not None:
+                # As ObjectOp.execute() wraps them for opExecute()
+                def to_frame(item):
+                    if not getattr(item, "Shape", None):
+                        return item
+                    shape = item.Shape.copy().transformShape(matrix, False, False)
+                    return PathOp._TransformedShapeProxy(item, shape)
+
+                self.model = [to_frame(m) for m in self.model]
+                if self.stock is not None:
+                    self.stock = to_frame(self.stock)
+
+            geometry = self._prepare_geometry(getattr(obj, "OptimizeMeshConversion", True))
+            if geometry is None:
+                return None
+            model_shape, _, optimized_shape, _, is_triangulated = geometry
+            tool_radius = self._extractToolParams(obj).get("diameter", 0.0) / 2.0
+            boundaries = self.buildBoundaries(
+                obj, model_shape, optimized_shape, is_triangulated, tool_radius
+            )
+            self._previewNotes = self._boundaryNotes(obj, boundaries)
+            return boundaries
+        finally:
+            for name in self._FRAME_ATTRS:
+                if hasattr(self, name):
+                    delattr(self, name)
+            for name, value in saved.items():
+                setattr(self, name, value)
+
+    def _boundaryNotes(self, obj, boundaries):
+        """Translated notes on built boundaries, for the preview's status."""
+        if boundaries is None:
+            failure = getattr(self, "_boundaryFailure", None)
+            return [failure] if failure else []
+        notes = []
+        if boundaries.open_chains:
+            notes.append(
+                translate(
+                    "CAM_PlanarSurface", "%d selected edge chain(s) are not closed and are ignored."
+                )
+                % boundaries.open_chains
+            )
+        if obj.Strategy == "Waterline" and boundaries.boundary_face is None:
+            notes.append(
+                translate(
+                    "CAM_PlanarSurface",
+                    "Waterline without a Base or Avoid selection: the whole model is contoured.",
+                )
+            )
+        return notes
+
+    def previewMessages(self, obj):
+        """Notes on the regions the last previewRegions() built (see
+        Path.Op.Gui.BoundaryPreview)."""
+        return list(getattr(self, "_previewNotes", []))
+
+    def previewRegions(self, obj):
+        """
+        The regions to draw in the task panel's boundary preview (see
+        Path.Op.Gui.BoundaryPreview), in the work plane frame.
+
+        - "outline": the outline the boundary starts from (bb_face). Left out
+          when it is the region itself, and for Waterline, whose outline is
+          only a frame around the model.
+        - "region": where the tool centre may go (boundary_face). None for
+          Waterline without a selection: nothing is drawn.
+        - "keepout": the Avoid Faces zones.
+
+        Returns:
+            list: (shape, role) tuples; empty when nothing can be built.
+        """
+        boundaries = self.previewBoundaries(obj)
+        if boundaries is None:
+            return []
+        regions = []
+        outline = boundaries.bb_face
+        if (
+            outline is not None
+            and not boundaries.limits_waterline
+            and outline is not boundaries.boundary_face
+        ):
+            regions.append((outline, "outline"))
+        if boundaries.boundary_face is not None:
+            regions.append((boundaries.boundary_face, "region"))
+        if boundaries.avoid_boundary is not None:
+            regions.append((boundaries.avoid_boundary, "keepout"))
+        return regions
+
+    # ---- Execution ----
+
+    def _meshSettings(self, obj, tool_radius):
+        """What this run needs from the OCL mesh (see MeshSettings)."""
         strategy = obj.Strategy
-        is_adaptive = getattr(obj, "AdaptiveSampling", False)
-        boundary_adjustment = obj.BoundaryAdjustment.Value
-
-        tool_params = self._extractToolParams(obj)
-        tool_diam = tool_params.get("diameter", 0.0)
-        tool_radius = tool_diam / 2.0
-        avoid_overlap = obj.AvoidFacesOverlap.Value
-
-        # Initialize geometric and OCL containers
-        cutter = stl = safe_stl = stl_faces = None
-        cutting_faces = avoid_faces = bb_face = None
-
-        # Base Strategy Flags
         is_surface_scan = strategy == "SurfaceScan"
         is_waterline = strategy == "Waterline"
-        is_zlevel = strategy == "ZLevelHybrid"
-        is_three_plus_two = getattr(self, "_geometry_rotation", None)
-        use_cpp = True
+        lead_in_out = getattr(obj, "LeadInOut", False)
+        keep_tool_down = getattr(obj, "KeepToolDown", False)
+        boundary_adjustment = obj.BoundaryAdjustment.Value
 
-        # Geometry & Generation Requirements
-        needs_face_selection = is_surface_scan
-        needs_boundary = is_surface_scan or is_zlevel
         needs_stl = is_surface_scan or is_waterline
-        needs_ocl_cutter = needs_stl
-
-        # Contextual Requirements
-        needs_safe_stl = (
-            getattr(obj, "KeepToolDown", False) or getattr(obj, "LeadInOut", False)
-        ) and is_surface_scan
-
-        # STL Mesh optimization
-        optimize_stl = getattr(obj, "OptimizeMeshConversion", True)
         stl_filter_adj = boundary_adjustment
-
-        if needs_stl and getattr(obj, "LeadInOut", False):
-            stl_filter_adj = max(tool_radius, boundary_adjustment)
-
-        # Override cutter length for Waterline Strategy
-        if is_waterline:
-            # Ensure the OCL cutter shaft is at least as long as the operation 'depth - edge_height'
-            # so it cannot pass through vertical walls removed by mesh optimization.
-            op_depth = obj.StartDepth.Value - obj.FinalDepth.Value
-            tool_params["length_offset"] = op_depth + tool_params["edge_height"]
-
-        # Geometry preperation
-        geometry = self._prepare_geometry(
-            optimize_stl,
-            is_three_plus_two,
+        if needs_stl and lead_in_out:
+            stl_filter_adj = max(1.5 * tool_radius, boundary_adjustment)
+        return MeshSettings(
+            needs_stl=needs_stl,
+            needs_safe_stl=needs_stl and (lead_in_out or (keep_tool_down and is_surface_scan)),
+            use_cpp_tessellation=needs_stl
+            and (getattr(obj, "OptimizeMeshConversion", True) or not is_waterline),
+            stl_filter_adj=stl_filter_adj,
         )
-        if geometry is None:
-            return
-        (
-            model_shape,
-            model_faces,
-            optimized_shape,
-            optimize_stl,
-            is_triangulated,
-        ) = geometry
 
-        # NOTE: C++ tessellation is disabled for Waterline on 3+2 operations
-        if is_three_plus_two:
-            use_cpp = not is_waterline
+    def _boundaryClipper(self, obj, boundaries, tool_radius, stl_filter_adj):
+        """
+        The area the cutter can reach from boundary_face, or None.
 
-        # Split selected features
-        if needs_face_selection:
-            base_prop = list(self.baseShapes(obj))
-            avoid_count = getattr(obj, "AvoidLastX_Faces", 0)
-            cutting_faces, avoid_faces = surface_pattern.split_selected_features(
-                base_prop, avoid_count
+        Built for Surface Scan with a Base selection and Waterline with a Base /
+        Avoid selection: the mesh is built only there, and Waterline's contours
+        are trimmed to boundary_face (see _executeWaterline).
+        """
+        uses_reach = boundaries.limits_waterline or (
+            obj.Strategy == "SurfaceScan" and boundaries.has_selection
+        )
+        if not uses_reach:
+            return None
+        return surface_boundary.BoundaryClipper(
+            boundaries.boundary_face,
+            reach=tool_radius + max(stl_filter_adj, 0.0) + 1.0,
+            tolerance=obj.LinearDeflection.Value,
+        )
+
+    def _makeCutter(self, obj, tool_params):
+        """
+        The OCL cutter for the Tool Controller's tool, or None (logged).
+
+        Waterline: the cutter's shaft spans the whole operation depth (plus its
+        cutting edge), so it cannot pass through vertical walls that mesh
+        optimization removed.
+        """
+        length_offset = tool_params["length_offset"]
+        if obj.Strategy == "Waterline":
+            op_depth = obj.StartDepth.Value - obj.FinalDepth.Value
+            length_offset = op_depth + tool_params["edge_height"]
+
+        cutter = surface_common.make_ocl_cutter(
+            tool_params["tool_type"],
+            tool_params["diameter"],
+            edge_height=tool_params["edge_height"],
+            corner_radius=tool_params["corner_radius"],
+            flat_radius=tool_params["flat_radius"],
+            edge_angle=tool_params["edge_angle"],
+            length_offset=length_offset,
+        )
+        if cutter is None:
+            Path.Log.error(
+                translate("CAM_PlanarSurface", "Error creating OCL cutter from tool parameters.")
             )
-            if obj.BoundBox not in ["Stock"]:
-                # Send selected faces to STL optimization filter
-                stl_faces = cutting_faces
+            return None
+        Path.Log.debug(
+            f"Surface OCL cutter created: getDiameter()={cutter.getDiameter()}, "
+            f"StepOver={obj.StepOver}%"
+        )
+        return cutter
 
-        # Create boundary face
-        if needs_boundary:
-            offset = obj.BoundaryAdjustment.Value - tool_radius - 0.01
+    def _buildMeshes(self, obj, geometry, boundaries, boundary_clipper, mesh_settings, tool_diam):
+        """
+        The primary and safe OCL meshes (Surface Scan, Waterline).
 
-            if obj.BoundBox == "Stock":
-                bb_face = surface_common.create_boundary_face(self.stock.Shape.Faces, offset)
-            elif cutting_faces:
-                # Combine bounding boxes and explicitly convert to a 2D Part.Face
-                from functools import reduce
+        Surface Scan with a face selection meshes the selected faces in full
+        and the rest of the model only where the cutter can reach; edge loops
+        select no faces, so the reach alone limits the mesh then.
 
-                combined_bb = reduce(lambda a, b: a.united(b), [f.BoundBox for f in cutting_faces])
+        Args:
+            geometry (tuple): _prepare_geometry()'s result.
+            boundaries (surface_boundary.Boundaries): This run's regions.
+            boundary_clipper (BoundaryClipper | None): The cutter's reach.
+            mesh_settings (MeshSettings): What the run needs from the mesh.
+            tool_diam (float): The OCL cutter's diameter.
 
-                p1 = FreeCAD.Vector(combined_bb.XMin - offset, combined_bb.YMin - offset, 0)
-                p2 = FreeCAD.Vector(combined_bb.XMax + offset, combined_bb.YMin - offset, 0)
-                p3 = FreeCAD.Vector(combined_bb.XMax + offset, combined_bb.YMax + offset, 0)
-                p4 = FreeCAD.Vector(combined_bb.XMin - offset, combined_bb.YMax + offset, 0)
+        Returns:
+            tuple: (stl, safe_stl). stl is None when no valid mesh could be
+                built (logged): OpenCamLib aborts the whole application,
+                without a Python exception, on a mesh with no triangles.
+        """
+        model_shape, model_faces, optimized_shape, optimize_stl, _ = geometry
+        stl_faces = None
+        if obj.Strategy == "SurfaceScan" and obj.BoundBox != "Stock":
+            stl_faces = boundaries.cutting_faces
 
-                bb_face = Part.Face(Part.makePolygon([p1, p2, p3, p4, p1]))
-            else:
-                # Create a boundary from model_shape
-                bb_face = surface_common.create_boundary_face(
-                    model_shape.Faces,
-                    offset,
-                    outline=True,
-                    compound=optimized_shape,
-                    is_triangulated=is_triangulated,
-                )
+        Path.Log.info(
+            f"STL creation — "
+            f"LinearDeflection={round(obj.LinearDeflection.Value, 4)}mm, "
+            f"AngularDeflection={round(obj.AngularDeflection.Value, 4)}°, "
+            f"MeshSimplification*={getattr(obj, 'MeshSimplification', 1)}, "
+        )
+        stl_start = time.time()
+        stl, safe_stl = surface_mesh.generate_stl(
+            model_shape=optimized_shape,
+            model_faces=model_faces,
+            base_objs=self.model,
+            optimize_stl=optimize_stl,
+            strategy=obj.Strategy,
+            stl_faces=stl_faces,
+            stl_filter_adj=mesh_settings.stl_filter_adj,
+            bb_face=boundaries.bb_face,
+            avoid_boundary_stl=boundaries.avoid_boundary_stl,
+            tool_diam=tool_diam,
+            needs_safe_stl=mesh_settings.needs_safe_stl,
+            boundary_adjustment=obj.BoundaryAdjustment.Value,
+            start_depth=obj.StartDepth.Value,
+            final_depth=obj.FinalDepth.Value,
+            linear_deflection=obj.LinearDeflection.Value,
+            angular_deflection=obj.AngularDeflection.Value,
+            mesh_simplification=getattr(obj, "MeshSimplification", 1),
+            use_cpp_tessellation=mesh_settings.use_cpp_tessellation,
+            reach=boundary_clipper,
+        )
+        Path.Log.info(f"STL creation took {time.time() - stl_start:.3f}s")
 
-        # Avoid Faces processing
-        avoid_boundary, avoid_boundary_stl = None, None
-
-        if avoid_faces:
-            avoid_boundary, avoid_boundary_stl = surface_common.build_avoid_boundary(
-                avoid_faces,
-                avoid_overlap,
-                tool_radius,
-                obj.LinearDeflection.Value,
-                needs_safe_stl,
+        if stl is not None and stl.size() == 0:
+            stl = None
+        if safe_stl is not None and safe_stl.size() == 0:
+            safe_stl = stl
+        if stl is None:
+            Path.Log.error(
+                "Failed to create a valid Mesh from the model (Check the Start and Final Depth)."
             )
+        return stl, safe_stl
 
-        # Create OCL cutter from tool parameters
-        if needs_ocl_cutter:
-            cutter = surface_common.make_ocl_cutter(
-                tool_params["tool_type"],
-                tool_params["diameter"],
-                edge_height=tool_params["edge_height"],
-                corner_radius=tool_params["corner_radius"],
-                flat_radius=tool_params["flat_radius"],
-                edge_angle=tool_params["edge_angle"],
-                length_offset=tool_params["length_offset"],
-            )
-            if cutter is None:
-                Path.Log.error(
-                    translate(
-                        "CAM_PlanarSurface", "Error creating OCL cutter from tool parameters."
-                    )
-                )
-                return
-
-            tool_diam = cutter.getDiameter()
-            Path.Log.debug(
-                f"Surface OCL cutter created: getDiameter()={tool_diam}, StepOver={obj.StepOver}%, "
-                f"stepover_dist={tool_diam * (obj.StepOver / 100.0)}"
-            )
-
-        # Generate primary and secondary STL meshes
-        if needs_stl:
-            Path.Log.info(
-                f"STL creation — "
-                f"LinearDeflection={round(obj.LinearDeflection.Value, 4)}mm, "
-                f"AngularDeflection={round(obj.AngularDeflection.Value, 4)}°, "
-                f"MeshSimplification*={getattr(obj, 'MeshSimplification', 1)}, "
-            )
-
-            stl_start = time.time()
-
-            stl, safe_stl = surface_mesh.generate_stl(
-                model_shape=optimized_shape,
-                model_faces=model_faces,
-                base_objs=self.model,
-                optimize_stl=optimize_stl,
-                strategy=strategy,
-                stl_faces=stl_faces,
-                stl_filter_adj=stl_filter_adj,
-                bb_face=bb_face,
-                avoid_boundary_stl=avoid_boundary_stl,
-                tool_diam=tool_diam,
-                needs_safe_stl=needs_safe_stl,
-                boundary_adjustment=boundary_adjustment,
-                start_depth=obj.StartDepth.Value,
-                final_depth=obj.FinalDepth.Value,
-                linear_deflection=obj.LinearDeflection.Value,
-                angular_deflection=obj.AngularDeflection.Value,
-                mesh_simplification=getattr(obj, "MeshSimplification", 1),
-                use_cpp=use_cpp,
-            )
-            stl_time = time.time() - stl_start
-
-            Path.Log.info(f"STL creation took {stl_time:.3f}s")
-            if stl is None:
-                Path.Log.error(
-                    "Failed to create a valid Mesh from the model (Check the Start and Final Depth)."
-                )
-                return
-
-        # Begin GCode for operation with basic information
+    def _appendHeader(self, obj, tool_params):
+        """The operation's opening comments and its move to Clearance Height
+        (and, for Z-Level, to its start point)."""
+        is_zlevel = obj.Strategy == "ZLevelHybrid"
         if obj.Comment != "":
             self.commandlist.append(Path.Command(f"N ({obj.Comment!s})", {}))
         self.commandlist.append(Path.Command(f"N ({obj.Label})", {}))
-        self.commandlist.append(Path.Command(f"N (Strategy: {strategy})", {}))
+        self.commandlist.append(Path.Command(f"N (Strategy: {obj.Strategy})", {}))
         self.commandlist.append(
             Path.Command("N (Tool diameter: {:.3f})".format(tool_params["diameter"]), {})
         )
@@ -1891,34 +2145,114 @@ class ObjectSurface(PathOp.ObjectOp):
         self.commandlist.append(
             Path.Command("G0", {"Z": obj.ClearanceHeight.Value, "F": self.vertRapid})
         )
-        # Z-Level only
         if obj.UseStartPoint and is_zlevel:
+            start = self.startPoint(obj)
             self.commandlist.append(
-                Path.Command(
-                    "G0",
-                    {
-                        "X": self.startPoint(obj).x,
-                        "Y": self.startPoint(obj).y,
-                        "F": self.horizRapid,
-                    },
-                )
+                Path.Command("G0", {"X": start.x, "Y": start.y, "F": self.horizRapid})
             )
 
-        # Dispatch to strategy
+    def opExecute(self, obj):
+        """
+        Generates the Planar Surface toolpath.
+
+        1. Setup: the Job, property limits, the tool, and what the strategy
+           needs from the OCL mesh (_meshSettings).
+        2. Geometry: the model bodies as one working shape (_prepare_geometry).
+        3. Boundaries: the Base / Avoid selection, the outline and the region
+           the tool centre may visit (buildBoundaries), and the cutter's reach
+           from it (_boundaryClipper).
+        4. Mesh strategies (Surface Scan, Waterline): the OCL cutter
+           (_makeCutter) and the primary and safe meshes (_buildMeshes).
+        5. G-code: the header (_appendHeader), then the strategy's commands
+           (_executeSurfaceScan, _executeWaterline, _executeZLevelHybrid).
+
+        Any step that cannot produce what the next one needs logs why and
+        stops: the operation then has no toolpath.
+        """
+        Path.Log.track()
+        start_time = time.time()
+
+        # 1. Setup
+        if not (job := PathUtils.findParentJob(obj)):
+            Path.Log.error(translate("CAM_PlanarSurface", "No JOB"))
+            return
+        self.opApplyPropertyLimits(obj)
+        strategy = obj.Strategy
+        tool_params = self._extractToolParams(obj)
+        tool_diam = tool_params.get("diameter", 0.0)
+        tool_radius = tool_diam / 2.0
+        mesh_settings = self._meshSettings(obj, tool_radius)
+
+        # 2. Geometry
+        geometry = self._prepare_geometry(getattr(obj, "OptimizeMeshConversion", True))
+        if geometry is None:
+            return
+        model_shape, _, optimized_shape, _, is_triangulated = geometry
+
+        # 3. Boundaries
+        boundaries = self.buildBoundaries(
+            obj,
+            model_shape,
+            optimized_shape,
+            is_triangulated,
+            tool_radius,
+            mesh_settings.needs_safe_stl,
+        )
+        if boundaries is None:
+            return
+        boundary_clipper = self._boundaryClipper(
+            obj, boundaries, tool_radius, mesh_settings.stl_filter_adj
+        )
+
+        # 4. OCL cutter and meshes
+        cutter = stl = safe_stl = None
+        if mesh_settings.needs_stl:
+            cutter = self._makeCutter(obj, tool_params)
+            if cutter is None:
+                return
+            tool_diam = cutter.getDiameter()
+            stl, safe_stl = self._buildMeshes(
+                obj, geometry, boundaries, boundary_clipper, mesh_settings, tool_diam
+            )
+            if stl is None:
+                return
+
+        # 5. G-code
+        self._appendHeader(obj, tool_params)
         cmds = []
         if strategy == "SurfaceScan":
+            # "Collectively": one group. "Individually": one group per face mask.
+            feature_masks = boundaries.face_masks
+            if feature_masks is None:
+                feature_masks = [boundaries.boundary_face]
             cmds = self._executeSurfaceScan(
-                obj, JOB, stl, safe_stl, cutter, tool_diam, bb_face, avoid_boundary, cutting_faces
+                obj,
+                job,
+                stl,
+                safe_stl,
+                cutter,
+                tool_diam,
+                boundaries.bb_face.BoundBox,
+                feature_masks,
             )
         elif strategy == "Waterline":
-            cmds = self._executeWaterline(obj, JOB, stl, cutter, tool_diam, is_adaptive)
+            cmds = self._executeWaterline(
+                obj,
+                job,
+                stl,
+                cutter,
+                tool_diam,
+                getattr(obj, "AdaptiveSampling", False),
+                safe_stl=safe_stl,
+                boundary_clipper=boundary_clipper,
+            )
         elif strategy == "ZLevelHybrid":
             cmds = self._executeZLevelHybrid(
-                obj, JOB, model_shape, bb_face, tool_params, is_triangulated
+                obj, job, model_shape, boundaries.boundary_face, tool_params, is_triangulated
             )
         self.commandlist.extend(cmds)
 
-        elapsed = time.strftime("%Hh:%Mm:%Ss", time.gmtime(time.time() - startTime))
+        elapsed = time.strftime("%Hh:%Mm:%Ss", time.gmtime(time.time() - start_time))
         Path.Log.info(f"Surface operation completed in {elapsed}")
 
 
@@ -1946,7 +2280,6 @@ def SetupProperties():
     setup.append("StockToLeave")
     setup.append("ClearPlanarOnly")
     setup.append("IgnoreOuter")
-    setup.append("FillSelectedHoles")
     setup.append("OptimizeLinearPaths")
     setup.append("OptimizeMeshConversion")
     setup.append("SampleInterval")
@@ -1958,9 +2291,9 @@ def SetupProperties():
     setup.append("HandleMultipleFeatures")
     setup.append("ProfileEdges")
     setup.append("BoundaryAdjustment")
+    setup.append("BoundaryOutline")
     setup.append("PatternCenterAt")
     setup.append("PatternCenterCustom")
-    setup.append("AvoidLastX_Faces")
     setup.append("AvoidFacesOverlap")
     setup.append("KeepToolDown")
     setup.append("KeepToolDownRatio")
@@ -1976,6 +2309,5 @@ def SetupProperties():
     setup.append("FinishingProfile")
     setup.append("HelixMaxRampAngle")
     setup.append("HelixMaxDiameterPercent")
-    setup.append("EnforceGeofence")
 
     return setup
