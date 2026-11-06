@@ -22,12 +22,13 @@
 
 import FreeCAD
 import FreeCADGui
-from PySide import QtCore
+from PySide import QtCore, QtGui
 from PySide.QtCore import QT_TRANSLATE_NOOP
 
 import Path
 import Path.Base.Gui.Util as PathGuiUtil
 import Path.Op.Gui.Base as PathOpGui
+import Path.Op.Gui.BoundaryPreview as BoundaryPreview
 import Path.Op.PlanarSurface as PathPlanarSurface
 
 __title__ = "CAM Planar Surface Operation UI"
@@ -40,14 +41,220 @@ translate = FreeCAD.Qt.translate
 Path.Log.setLevel(Path.Log.Level.INFO, Path.Log.thisModule())
 
 
+# Properties that change the boundary preview: a change redraws it
+PREVIEW_PROPERTIES = (
+    "Base",
+    "AvoidFaces",
+    "Strategy",
+    "BoundBox",
+    "BoundaryAdjustment",
+    "AvoidFacesOverlap",
+    "HandleMultipleFeatures",
+    "BoundaryOutline",
+    "LinearDeflection",
+    "OptimizeMeshConversion",
+    "ToolController",
+    "Workplane",
+    "SafeHeight",
+    "SampleInterval",
+)
+
+
+class TaskPanelBaseGeometryPage(PathOpGui.TaskPanelBaseGeometryPage):
+    """Base Geometry page with extra sub-tabs for the per-strategy face lists.
+
+    The stock Base Geometry form is loaded unchanged and placed on the first
+    sub-tab. One more sub-tab per face list kept beside ``obj.Base``; only the
+    one the current strategy uses is shown:
+
+    - "Avoid"       -> ``AvoidFaces``    (faces the tool must not cut): all strategies
+    - "Fill Holes"  -> ``FillHoleFaces`` (hole walls to cap): Z-Level Hybrid
+
+    ``self.form`` stays the original panel, so every inherited method that
+    reaches ``self.form.baseList`` etc. keeps working without changes.
+    """
+
+    # property -> (strategies, sub-tab title, hint text, accepted sub-elements)
+    FEATURE_LISTS = {
+        "AvoidFaces": (
+            ("SurfaceScan", "ZLevelHybrid", "Waterline"),
+            QT_TRANSLATE_NOOP("CAM_PlanarSurface", "Avoid"),
+            QT_TRANSLATE_NOOP(
+                "CAM_PlanarSurface",
+                "Faces, or closed loops of edges, the tool must not cut. "
+                "The area to machine is set on the Base Geometry sub-tab.",
+            ),
+            ("Face", "Edge"),
+        ),
+        "FillHoleFaces": (
+            ("ZLevelHybrid",),
+            QT_TRANSLATE_NOOP("CAM_PlanarSurface", "Fill Holes"),
+            QT_TRANSLATE_NOOP(
+                "CAM_PlanarSurface",
+                "Wall faces of holes to fill. Filled holes are capped so the tool does not enter them.",
+            ),
+            ("Face",),
+        ),
+    }
+
+    def getForm(self):
+        panel = super().getForm()
+
+        # Move the stock Base Geometry content, item by item with its grid
+        # position, onto the first sub-tab. Moving items (rather than the
+        # QLayout itself) keeps the widgets inside ``panel``'s tree, so the
+        # attribute names set by loadUi remain valid.
+        stock_layout = panel.layout()
+        base_tab = QtGui.QWidget()
+        base_layout = QtGui.QGridLayout(base_tab)
+        items = []
+        while stock_layout.count():
+            row, col, rspan, cspan = stock_layout.getItemPosition(0)
+            items.append((stock_layout.takeAt(0), row, col, rspan, cspan))
+        for item, row, col, rspan, cspan in items:
+            if item.widget():
+                base_layout.addWidget(item.widget(), row, col, rspan, cspan)
+            else:
+                base_layout.addItem(item, row, col, rspan, cspan)
+
+        self.subTabs = QtGui.QTabWidget()
+        self.subTabs.addTab(base_tab, translate("PathOp", "Base Geometry"))
+
+        # One form per face list, each with a fixed title. Tabs are shown or
+        # hidden per strategy, never renamed: QTabWidget does not re-measure a
+        # renamed tab that is off screen, which clips the new title.
+        self.featureForms = {}
+        for prop, (_, title, hint, _) in self.FEATURE_LISTS.items():
+            form = FreeCADGui.PySideUic.loadUi(":/panels/PagePlanarSurfaceFeaturesEdit.ui")
+            form.featureHint.setText(translate("CAM_PlanarSurface", hint))
+            self.subTabs.addTab(form, translate("CAM_PlanarSurface", title))
+            self.featureForms[prop] = form
+
+        stock_layout.addWidget(self.subTabs, 0, 0)
+        return panel
+
+    # ---- Helpers ----
+
+    def _setTabVisible(self, form, visible):
+        index = self.subTabs.indexOf(form)
+        if hasattr(self.subTabs, "setTabVisible"):  # Qt >= 5.15
+            self.subTabs.setTabVisible(index, visible)
+        else:
+            self.subTabs.setTabEnabled(index, visible)
+        if not visible and self.subTabs.currentIndex() == index:
+            self.subTabs.setCurrentIndex(0)
+
+    def _updateFeatureTabs(self, obj):
+        strategy = getattr(obj, "Strategy", "SurfaceScan")
+        for prop, (strategies, _, _, _) in self.FEATURE_LISTS.items():
+            self._setTabVisible(self.featureForms[prop], strategy in strategies)
+
+    def _fillFeatureList(self, obj, prop):
+        feature_list = self.featureForms[prop].featureList
+        feature_list.blockSignals(True)
+        feature_list.clear()
+        for base, subs in getattr(obj, prop, None) or []:
+            for sub in subs:
+                item = QtGui.QListWidgetItem(f"{base.Label}.{sub}")
+                item.setData(self.DataObject, base)
+                item.setData(self.DataObjectSub, sub)
+                feature_list.addItem(item)
+        feature_list.blockSignals(False)
+
+    # ---- Page interface ----
+
+    def setFields(self, obj):
+        super().setFields(obj)
+        for prop in self.featureForms:
+            self._fillFeatureList(obj, prop)
+        self._updateFeatureTabs(obj)
+
+    def registerSignalHandlers(self, obj):
+        super().registerSignalHandlers(obj)
+        for prop, form in self.featureForms.items():
+            form.featureList.itemSelectionChanged.connect(
+                lambda p=prop: self.featureItemActivated(p)
+            )
+            form.addFeature.clicked.connect(lambda _=False, p=prop: self.addFeature(p))
+            form.deleteFeature.clicked.connect(lambda _=False, p=prop: self.deleteFeature(p))
+            form.clearFeature.clicked.connect(lambda _=False, p=prop: self.clearFeature(p))
+
+    def pageUpdateData(self, obj, prop):
+        super().pageUpdateData(obj, prop)
+        if prop == "Strategy":
+            self._updateFeatureTabs(obj)
+        elif prop in self.featureForms:
+            self._fillFeatureList(obj, prop)
+
+    def updateSelection(self, obj, selection):
+        super().updateSelection(obj, selection)
+        subs = [sub for sel in selection for sub in (sel.SubElementNames or [])]
+        for prop, form in self.featureForms.items():
+            accepted = self.FEATURE_LISTS[prop][3]
+            form.addFeature.setEnabled(any(sub.startswith(accepted) for sub in subs))
+
+    # ---- List actions ----
+
+    def featureItemActivated(self, prop):
+        FreeCADGui.Selection.clearSelection()
+        for item in self.featureForms[prop].featureList.selectedItems():
+            FreeCADGui.Selection.addSelection(
+                item.data(self.DataObject), item.data(self.DataObjectSub)
+            )
+
+    def addFeature(self, prop):
+        added = False
+        for sel in FreeCADGui.Selection.getSelectionEx():
+            if not hasattr(sel.Object, "Shape"):
+                continue
+            accepted = self.FEATURE_LISTS[prop][3]
+            for sub in sel.SubElementNames:
+                if sub.startswith(accepted):
+                    added |= bool(self.obj.Proxy.addFeature(self.obj, prop, sel.Object, sub))
+        if added:
+            self._fillFeatureList(self.obj, prop)
+            self.setDirty()
+
+    def deleteFeature(self, prop):
+        feature_list = self.featureForms[prop].featureList
+        for item in feature_list.selectedItems():
+            feature_list.takeItem(feature_list.row(item))
+        links = []
+        for i in range(feature_list.count()):
+            item = feature_list.item(i)
+            links.append((item.data(self.DataObject), str(item.data(self.DataObjectSub))))
+        setattr(self.obj, prop, links)
+        self._fillFeatureList(self.obj, prop)
+        self.setDirty()
+
+    def clearFeature(self, prop):
+        setattr(self.obj, prop, [])
+        self._fillFeatureList(self.obj, prop)
+        self.setDirty()
+
+
 class TaskPanelOpPage(PathOpGui.TaskPanelPage):
     """Page controller class for the Surface operation."""
+
+    def taskPanelBaseGeometryPage(self, obj, features):
+        """taskPanelBaseGeometryPage(obj, features) ... Base Geometry page with the
+        per-strategy face lists (Avoid / Fill Holes) as extra sub-tabs."""
+        return TaskPanelBaseGeometryPage(obj, features)
 
     def initPage(self, obj):
         """initPage(obj) ... initialize the task panel page"""
         self.setTitle("Planar Surface - " + obj.Label)
         self.updateVisibility()
         self.form.accuracySlider.setPageStep(1)
+
+        # Boundary preview (see Path.Op.Gui.BoundaryPreview)
+        self.boundaryPreview = BoundaryPreview.BoundaryPreviewController(
+            obj,
+            self.form.showBoundaryPreview,
+            PREVIEW_PROPERTIES,
+            "PlanarSurfaceBoundaryPreview",
+            status=self.form.boundaryPreviewStatus,
+        )
 
     def getToolTipList(self):
         """getToolTipList() ... Collect list of tuples (widget_name: str, property_name: str)"""
@@ -61,9 +268,9 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         tuples.append(("minSampleInterval", "MinSampleInterval"))
         tuples.append(("boundBoxSelect", "BoundBox"))
         tuples.append(("boundaryAdjustment", "BoundaryAdjustment"))
+        tuples.append(("boundaryOutline", "BoundaryOutline"))
         tuples.append(("stockToLeave", "StockToLeave"))
         tuples.append(("depthOffset", "DepthOffset"))
-        tuples.append(("avoidLastX_Faces", "AvoidLastX_Faces"))
         tuples.append(("avoidFacesOverlap", "AvoidFacesOverlap"))
         tuples.append(("stepOver", "StepOver"))
         tuples.append(("profileEdges", "ProfileEdges"))
@@ -71,7 +278,6 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         tuples.append(("cutPatternReversed", "CutPatternReversed"))
         tuples.append(("clearPlanarOnly", "ClearPlanarOnly"))
         tuples.append(("ignoreOuter", "IgnoreOuter"))
-        tuples.append(("fillSelectedHoles", "FillSelectedHoles"))
         tuples.append(("useStartPoint", "UseStartPoint"))
         tuples.append(("keepToolDown", "KeepToolDown"))
         tuples.append(("optimizeEnabled", "OptimizeLinearPaths"))
@@ -127,10 +333,6 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         PathGuiUtil.updateInputField(obj, "BoundaryAdjustment", self.form.boundaryAdjustment)
         PathGuiUtil.updateInputField(obj, "StockToLeave", self.form.stockToLeave)
         PathGuiUtil.updateInputField(obj, "DepthOffset", self.form.depthOffset)
-
-        if obj.AvoidLastX_Faces != self.form.avoidLastX_Faces.value():
-            obj.AvoidLastX_Faces = self.form.avoidLastX_Faces.value()
-
         PathGuiUtil.updateInputField(obj, "AvoidFacesOverlap", self.form.avoidFacesOverlap)
 
         # -- Clearing Options --
@@ -150,8 +352,8 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         if obj.IgnoreOuter != self.form.ignoreOuter.isChecked():
             obj.IgnoreOuter = self.form.ignoreOuter.isChecked()
 
-        if obj.FillSelectedHoles != self.form.fillSelectedHoles.isChecked():
-            obj.FillSelectedHoles = self.form.fillSelectedHoles.isChecked()
+        if obj.BoundaryOutline != self.form.boundaryOutline.isChecked():
+            obj.BoundaryOutline = self.form.boundaryOutline.isChecked()
 
         if obj.UseStartPoint != self.form.useStartPoint.isChecked():
             obj.UseStartPoint = self.form.useStartPoint.isChecked()
@@ -213,14 +415,11 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         self.form.stockToLeave.setText(
             FreeCAD.Units.Quantity(obj.StockToLeave.Value, FreeCAD.Units.Length).UserString
         )
-        self.form.avoidLastX_Faces.setValue(obj.AvoidLastX_Faces)
-
-        self.form.avoidFacesOverlap.setText(
-            FreeCAD.Units.Quantity(obj.AvoidFacesOverlap.Value, FreeCAD.Units.Length).UserString
-        )
-
         self.form.depthOffset.setText(
             FreeCAD.Units.Quantity(obj.DepthOffset.Value, FreeCAD.Units.Length).UserString
+        )
+        self.form.avoidFacesOverlap.setText(
+            FreeCAD.Units.Quantity(obj.AvoidFacesOverlap.Value, FreeCAD.Units.Length).UserString
         )
 
         # -- Clearing Options --
@@ -246,10 +445,10 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         else:
             self.form.ignoreOuter.setCheckState(QtCore.Qt.Unchecked)
 
-        if obj.FillSelectedHoles:
-            self.form.fillSelectedHoles.setCheckState(QtCore.Qt.Checked)
+        if obj.BoundaryOutline:
+            self.form.boundaryOutline.setCheckState(QtCore.Qt.Checked)
         else:
-            self.form.fillSelectedHoles.setCheckState(QtCore.Qt.Unchecked)
+            self.form.boundaryOutline.setCheckState(QtCore.Qt.Unchecked)
 
         if obj.UseStartPoint:
             self.form.useStartPoint.setCheckState(QtCore.Qt.Checked)
@@ -310,7 +509,6 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         signals.append(self.form.boundaryAdjustment.editingFinished)
         signals.append(self.form.stockToLeave.editingFinished)
         signals.append(self.form.depthOffset.editingFinished)
-        signals.append(self.form.avoidLastX_Faces.editingFinished)
         signals.append(self.form.avoidFacesOverlap.editingFinished)
         # -- Clearing Options --
         signals.append(self.form.stepOver.editingFinished)
@@ -327,11 +525,11 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             # -- Performance and Accuracy
             signals.append(self.form.adaptiveSampling.checkStateChanged)
             # -- Boundary Control --
+            signals.append(self.form.boundaryOutline.checkStateChanged)
             # -- Clearing Options --
             signals.append(self.form.cutPatternReversed.checkStateChanged)
             signals.append(self.form.clearPlanarOnly.checkStateChanged)
             signals.append(self.form.ignoreOuter.checkStateChanged)
-            signals.append(self.form.fillSelectedHoles.checkStateChanged)
             signals.append(self.form.useStartPoint.checkStateChanged)
             # -- Optimization --
             signals.append(self.form.keepToolDown.checkStateChanged)
@@ -344,11 +542,11 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             # -- Performance and Accuracy
             signals.append(self.form.adaptiveSampling.stateChanged)
             # -- Boundary Control --
+            signals.append(self.form.boundaryOutline.stateChanged)
             # -- Clearing Options --
             signals.append(self.form.cutPatternReversed.stateChanged)
             signals.append(self.form.clearPlanarOnly.stateChanged)
             signals.append(self.form.ignoreOuter.stateChanged)
-            signals.append(self.form.fillSelectedHoles.stateChanged)
             signals.append(self.form.useStartPoint.stateChanged)
             # -- Optimization --
             signals.append(self.form.keepToolDown.stateChanged)
@@ -487,13 +685,37 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         is_waterline = strategy == "Waterline"
         is_zlevel = strategy == "ZLevelHybrid"
 
-        self.form.boundaryGroup.setVisible(not is_waterline)
+        is_surface_scan = strategy == "SurfaceScan"
+
+        # Waterline: Boundary adjustment, Depth offset and Avoid faces overlap
+        # apply to its Base / Avoid boundary; Boundary box has no meaning there.
+        self.form.boundaryGroup.setVisible(True)
+        self.form.boundBoxSelect.setVisible(not is_waterline)
+        self.form.boundBoxSelect_label.setVisible(not is_waterline)
         self.form.stockToLeave.setVisible(is_zlevel)
         self.form.stockToLeave_label.setVisible(is_zlevel)
-        self.form.avoidLastX_Faces.setVisible(not is_zlevel)
-        self.form.avoidLastX_Faces_label.setVisible(not is_zlevel)
-        self.form.profileEdges.setVisible(not is_zlevel)
-        self.form.profileEdges_label.setVisible(not is_zlevel)
+        self.form.profileEdges.setVisible(is_surface_scan)
+        self.form.profileEdges_label.setVisible(is_surface_scan)
+        self.form.boundaryOutline.setVisible(is_surface_scan)
+        self._updateAvoidOverlapWidget()
+
+    def _updateAvoidOverlapWidget(self):
+        """Avoid faces overlap only applies when there are Avoid Faces: grey it out otherwise."""
+        has_avoid = bool(getattr(self.obj, "AvoidFaces", None))
+        self.form.avoidFacesOverlap.setEnabled(has_avoid)
+        self.form.avoidFacesOverlap_label.setEnabled(has_avoid)
+
+    def updateData(self, obj, prop):
+        """updateData(obj, prop) ... the Avoid list is edited on the Base Geometry page."""
+        if prop == "AvoidFaces":
+            self._updateAvoidOverlapWidget()
+        if hasattr(self, "boundaryPreview"):
+            self.boundaryPreview.updateData(obj, prop)
+
+    def cleanupPage(self, obj):
+        """cleanupPage(obj) ... the boundary preview goes with the panel."""
+        if hasattr(self, "boundaryPreview"):
+            self.boundaryPreview.cleanup()
 
     def _updateClearingWidgets(self, strategy, cut_pattern, cut_pattern_zlevel):
         """Manages widgets in the 'Clearing Options' group."""
@@ -517,12 +739,7 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         # Z-Level specific checkboxes
         self.form.clearPlanarOnly.setVisible(is_zlevel)
         self.form.ignoreOuter.setVisible(is_zlevel)
-        self.form.fillSelectedHoles.setVisible(is_zlevel)
         self.form.useStartPoint.setVisible(is_zlevel)
-
-        # Surface Scan specific checkboxes
-        self.form.avoidFacesOverlap.setVisible(is_surface_scan)
-        self.form.avoidFacesOverlap_label.setVisible(is_surface_scan)
 
     def _updateOptimizationWidgets(self, strategy):
         """Manages widgets in the 'Optimization' group."""
