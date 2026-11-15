@@ -10,12 +10,9 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <cstdlib>
-#include <cstdio>
-#include <format>
+#include <map>
 #include <optional>
 #include <stdexcept>
-#include <string>
 #include <vector>
 
 using namespace heeks;
@@ -26,7 +23,7 @@ bool CArea::HolesLinked()
     return false;
 }
 
-double CArea::m_clipper_scale = CArea::default_clipper_scale;
+double CArea::m_clipper_scale = 10000.0;
 
 static const int min_arc_points = 4;
 
@@ -135,45 +132,9 @@ void CArea::_Clip(
     FillRule fillType,
     bool reverseOpenPathContents,
     bool reverseOpenPathOrder,
-    std::optional<std::reference_wrapper<CArea>> cNeg,
-    bool assertOutputClosed
+    std::optional<std::reference_wrapper<CArea>> cNeg
 )
 {
-    // Regardless of the provided value for assertOutputClosed, assert anyway if every input curve
-    // is exactly closed and all edge tags are the same (i.e. no closed curves will get split up).
-    {
-        bool forceAssertClosed = true;
-        std::optional<int> observedTag;
-        auto checkClosedAndKeepEdges = [&forceAssertClosed, &observedTag](const CArea& a) {
-            for (const CCurve& curve : a.m_curves) {
-                if (!curve.IsExactlyClosed()) {
-                    forceAssertClosed = false;
-                }
-                if (curve.m_edgeTags.empty()) {
-                    int tag = 1;
-                    if (observedTag && *observedTag != tag) {
-                        forceAssertClosed = false;
-                    }
-                    else {
-                        observedTag = tag;
-                    }
-                }
-                for (int tag : curve.m_edgeTags) {
-                    if (observedTag && tag != *observedTag) {
-                        forceAssertClosed = false;
-                    }
-                    else {
-                        observedTag = tag;
-                    }
-                }
-            }
-        };
-
-        checkClosedAndKeepEdges(*this);
-        checkClosedAndKeepEdges(clip_area);
-        assertOutputClosed |= forceAssertClosed;
-    }
-
     // Initialize a clipper object and populate it with subject/clip geometry
     Clipper64 c;
     ConversionMetadata metadata;
@@ -243,8 +204,8 @@ void CArea::_Clip(
     }
 
     m_curves.clear();
-    SetFromResult(closedPaths, /*is_closed=*/true, assertOutputClosed, metadata, cNeg);
-    SetFromResult(openPaths, /*is_closed=*/false, /*assertOutputClosed=*/false, metadata, cNeg);
+    SetFromResult(closedPaths, /*is_closed=*/true, metadata, cNeg);
+    SetFromResult(openPaths, /*is_closed=*/false, metadata, cNeg);
 }
 
 void CArea::Clip(ClipType op, const CArea& clip_area, FillRule fillType)
@@ -270,8 +231,8 @@ void CArea::ClipperNoop()
     }
 
     m_curves.clear();
-    SetFromResult(closed_paths, /*is_closed=*/true, /*assertOutputClosed=*/true, metadata);
-    SetFromResult(open_paths, /*is_closed=*/false, /*assertOutputClosed=*/false, metadata);
+    SetFromResult(closed_paths, /*is_closed=*/true, metadata);
+    SetFromResult(open_paths, /*is_closed=*/false, metadata);
 }
 
 void CArea::Debug_IntersectOpenPathReversal(
@@ -384,15 +345,12 @@ void CArea::NaiveOffset(double offset)
             const Point64 negBack64 = ToPoint64(
                 PointD(cNeg.m_vertices.back().m_p.x, cNeg.m_vertices.back().m_p.y, 0)
             );
-            if ((std::abs(posTarget64.x - posBack64.x) < 2 && std::abs(posTarget64.y - posBack64.y) < 2)
-                || (std::abs(negTarget64.x - negBack64.x) < 2
-                    && std::abs(negTarget64.y - negBack64.y) < 2)) {
-                // Skip the join if the points are already equal, or nearly equal. I chose
-                // `dx > 2 || dy > 2` to be sure that in segments we join, the process of rounding
-                // to integers does't move the points enough to change which side should be joined
-                // by an arc and which should be joined by lines to the center point. Without
-                // allowing this much slack, the decision is sometimes incorrect and the final
-                // output contains spikes to the arc center.
+            if ((posTarget64.x == posBack64.x && posTarget64.y == posBack64.y)
+                || (negTarget64.x == negBack64.x && negTarget64.y == negBack64.y)) {
+                // Skip join. I checked if either point is equal in clipper coordinates rather than
+                // both because, besides for rounding error, they should agree with each other, and
+                // I'm not interested in having single-unit clipper lines anyway. We can round
+                // within that range, and the curve data structure ensures connectivity
                 return;
             }
 
@@ -447,11 +405,11 @@ void CArea::NaiveOffset(double offset)
             const CVertex& v = *it;
 
             // Compute segment start and end normal and tangent directions. Normalize length to offset
-            double sTanX, sTanY;    // tangent vector at the start point
-            double sNormX, sNormY;  // normal vector at the start point
-            double eTanX, eTanY;    // tangent vector at the end point
-            double eNormX, eNormY;  // normal vector at the end point
-            double sRadius = 0;
+            double sTanX, sTanY;
+            double sNormX, sNormY;
+            double eTanX, eTanY;
+            double eNormX, eNormY;
+            double radius = 0;  // initialized below
             if (v.m_type == 0) {
                 const double dx = v.m_p.x - pPrev.x;
                 const double dy = v.m_p.y - pPrev.y;
@@ -467,31 +425,20 @@ void CArea::NaiveOffset(double offset)
             else {
                 assert(v.m_type == 1 || v.m_type == -1);
 
-                // Compute dx and dy at start and end points, p - center
-                const double sdx = v.m_type * (pPrev.x - v.m_c.x);
-                const double sdy = v.m_type * (pPrev.y - v.m_c.y);
-                const double edx = v.m_type * (v.m_p.x - v.m_c.x);
-                const double edy = v.m_type * (v.m_p.y - v.m_c.y);
-
-                // Compute the radius at the start and end points.
-                // These are nominally equal, but they can differ a little due to precision issues,
-                // and it is important to normalize each vector by the appropriate length
-                sRadius = std::hypot(sdx, sdy);
-                const double eRadius = std::hypot(edx, edy);
-                if (sRadius == 0 || eRadius == 0) {
+                const double sx = v.m_type * (pPrev.x - v.m_c.x);
+                const double sy = v.m_type * (pPrev.y - v.m_c.y);
+                const double ex = v.m_type * (v.m_p.x - v.m_c.x);
+                const double ey = v.m_type * (v.m_p.y - v.m_c.y);
+                radius = std::hypot(sx, sy);
+                if (radius == 0) {
                     continue;
                 }
 
-                // Rescale the start and end normal vectors to length = offset
-                sNormX = sdx / sRadius * offset;
-                sNormY = sdy / sRadius * offset;
-                eNormX = edx / eRadius * offset;
-                eNormY = edy / eRadius * offset;
+                std::tie(sNormX, sNormY) = std::make_pair(sx / radius * offset, sy / radius * offset);
+                std::tie(eNormX, eNormY) = std::make_pair(ex / radius * offset, ey / radius * offset);
 
-                sTanX = -sNormY;
-                sTanY = sNormX;
-                eTanX = -eNormY;
-                eTanY = eNormX;
+                std::tie(sTanX, sTanY) = std::make_pair(-sNormY, sNormX);
+                std::tie(eTanX, eTanY) = std::make_pair(-eNormY, eNormX);
             }
 
             // Compute the start and end points of the offset segment
@@ -502,7 +449,7 @@ void CArea::NaiveOffset(double offset)
 
             // If the output curves are empty, intialize the start point and direction
             const bool hasPrev = !cPos.m_vertices.empty();
-            double exitQ = v.m_type == 0 ? 0 : v.m_type / sRadius;
+            double exitQ = v.m_type == 0 ? 0 : v.m_type / radius;
             if (!hasPrev) {
                 cPos.m_vertices.emplace_back(0, pPosS, Point(0, 0));
                 cNeg.m_vertices.emplace_back(0, pNegS, Point(0, 0));
@@ -514,7 +461,7 @@ void CArea::NaiveOffset(double offset)
             if (hasPrev) {
                 addJoin(pPosS, pNegS, pPrev, prevDirX, prevDirY, sTanX, sTanY, enterQ, exitQ);
             }
-            enterQ = v.m_type == 0 ? 0 : v.m_type / sRadius;
+            enterQ = v.m_type == 0 ? 0 : v.m_type / radius;
 
             // Generate the positive and negative offset segments connecting pPosS to pPosE and
             // pNegS to pNegE
@@ -529,7 +476,7 @@ void CArea::NaiveOffset(double offset)
                 // segments back to the point).
                 assert(v.m_type == 1 || v.m_type == -1);
 
-                const bool posCollapse = sRadius + (offset * v.m_type) <= 0;
+                const bool posCollapse = radius + (offset * v.m_type) <= 0;
                 if (posCollapse) {
                     cPos.m_vertices.emplace_back(0, v.m_c, heeks::Point {0, 0});
                     cPos.m_vertices.emplace_back(0, pPosE, heeks::Point {0, 0});
@@ -538,7 +485,7 @@ void CArea::NaiveOffset(double offset)
                     cPos.m_vertices.emplace_back(v.m_type, pPosE, v.m_c);
                 }
 
-                const bool negCollapse = sRadius - (offset * v.m_type) <= 0;
+                const bool negCollapse = radius - (offset * v.m_type) <= 0;
                 if (negCollapse) {
                     cNeg.m_vertices.emplace_back(0, v.m_c, heeks::Point {0, 0});
                     cNeg.m_vertices.emplace_back(0, pNegE, heeks::Point {0, 0});
@@ -559,12 +506,6 @@ void CArea::NaiveOffset(double offset)
             const heeks::Point pPosStart = cPos.m_vertices.front().m_p;
             const heeks::Point pNegStart = cNeg.m_vertices.front().m_p;
             addJoin(pPosStart, pNegStart, pPrev, prevDirX, prevDirY, startDirX, startDirY, enterQ, startQex);
-
-            // curve.IsClosed() allows for start/end mismatch by some tolerance, but we really want
-            // to produce a curve that is actually closed here. Coerce the start point to match the
-            // end point (moving it by at most that tolerance).
-            cPos.m_vertices.front().m_p = cPos.m_vertices.back().m_p;
-            cNeg.m_vertices.front().m_p = cNeg.m_vertices.back().m_p;
 
             // Reverse the negative path so together cPos and cNeg enclose the area within `offset`
             // of the original curve
@@ -611,13 +552,6 @@ void CArea::NaiveOffset(double offset)
     }
 
     m_curves = std::move(offset_curves);
-
-    // Sanity check output: should be closed
-    for (const CCurve& c : m_curves) {
-        if (!c.IsExactlyClosed()) {
-            throw std::logic_error(std::format("NaiveOffset({}) produced an open curve", offset));
-        }
-    }
 }
 
 // Convert the input CCurve to clipper, populating metadata.
@@ -702,15 +636,11 @@ Path64 CArea::MakePoly(const CCurve& curve, ConversionMetadata& metadata) const
                 phi1 += 2 * M_PI;
             }
 
-            // The start and end points needn't be exactly the same distance from the center, so
-            // interpolate the radius from the start radius to the end radius along the arc
-            const double rStart = ptPrev.dist(vertex.m_c);
-            const double rEnd = vertex.m_p.dist(vertex.m_c);
-
-            // Compute the maximum angular step to achieve the required accuracy (using the larger
-            // radius, which needs the smaller step)
-            const double rMax = std::max(rStart, rEnd);
-            const double max_dphi = 2 * acos((rMax - CArea::m_accuracy) / rMax);
+            // Compute the maximum angular step to achieve the required accuracy
+            const double dx = ptPrev.x - vertex.m_c.x;
+            const double dy = ptPrev.y - vertex.m_c.y;
+            const double radius = sqrt(dx * dx + dy * dy);
+            const double max_dphi = 2 * acos((radius - CArea::m_accuracy) / radius);
 
             // Determine the number of segments
             const int num_segments
@@ -732,11 +662,9 @@ Path64 CArea::MakePoly(const CCurve& curve, ConversionMetadata& metadata) const
                     }
                 }
                 else {
-                    // Compute the interpolated point
-                    const double interp = (double)i / num_segments;
-                    const double r = rStart * (1 - interp) + rEnd * interp;
-                    const double px = vertex.m_c.x + r * cos(phi0 + dphi * i);
-                    const double py = vertex.m_c.y + r * sin(phi0 + dphi * i);
+                    // Compute the interpoalted point
+                    const double px = vertex.m_c.x + radius * cos(phi0 + dphi * i);
+                    const double py = vertex.m_c.y + radius * sin(phi0 + dphi * i);
                     newPt = getPoint64(px, py);
                     if (newPt == pPrev) {
                         continue;
@@ -778,7 +706,6 @@ const int tagSentinel = -2;
 void CArea::SetFromResult(
     Paths64& paths,
     bool isClosed,
-    bool assertOutputClosed,
     ConversionMetadata& metadata,
     std::optional<std::reference_wrapper<CArea>> cNeg
 )
@@ -815,16 +742,8 @@ void CArea::SetFromResult(
         // and update firstTag/firstCurve variables
         auto saveCurve = [&]() {
             if (!c.m_vertices.empty()) {
-                if (assertOutputClosed) {
-                    // Sanity check saved curve -- should be closed
-                    if (!c.IsExactlyClosed()) {
-                        throw std::logic_error(
-                            "SetFromResult saved an open curve from a closed clipper path"
-                        );
-                    }
-                }
-
                 CCurve* added = nullptr;
+
                 if (tag == 1 || tag == tagSentinel) {
                     m_curves.push_back(c);
                     added = &m_curves.back();
@@ -841,20 +760,12 @@ void CArea::SetFromResult(
             }
         };
 
-        // For closed paths, start at the smallest z-value of a segment that won't be skipped
+        // For closed paths, start at the smallest z-value
         size_t startVertex = 0;
-        const int skipDx = 2;
-        const int skipDy = skipDx;
         if (isClosed) {
-            bool bestSkip = true;
-            for (size_t i = 0; i < path.size(); i++) {
-                const Point64& v0 = path[i];
-                const Point64& v1 = path[(i + 1) % path.size()];
-
-                bool isSkip = std::abs(v1.x - v0.x) < skipDx && std::abs(v1.y - v0.y) < skipDy;
-                if (isSkip < bestSkip || (isSkip <= bestSkip && path[i].z <= path[startVertex].z)) {
+            for (size_t i = startVertex + 1; i < path.size(); i++) {
+                if (path[i].z < path[startVertex].z) {
                     startVertex = i;
-                    bestSkip = isSkip;
                 }
             }
         }
@@ -865,38 +776,6 @@ void CArea::SetFromResult(
             const size_t iEdge = (startVertex + edgeNum) % path.size();
             const Point64& v0 = path[iEdge];
             const Point64& v1 = path[(iEdge + 1) % path.size()];
-            const PointD endD = ToPointD(v1);
-            const heeks::Point end = {endD.x, endD.y};
-
-            // If length is tiny, skip the edge. This is important because clipper sometimes
-            // silently merges points that are only 1 unit away from each other (Clipper2 issue
-            // #1111), and this can result in incorrect tags on segments that short. Fortunately, it
-            // is acceptable to skip such short segments because it changes the output very little.
-            //
-            // When skipping the edge, amend the previous vertex to end at the new end location to
-            // keep the curve closed. This process may require extra handling if the adjustment
-            // terminates
-            //  the segment back at its start point.
-            if (std::abs(v1.x - v0.x) < skipDx && std::abs(v1.y - v0.y) < skipDy) {
-                if (c.m_vertices.size()) {
-                    const bool fullLoop = std::prev(c.m_vertices.end(), 2)->m_p.exactlyEquals(end);
-                    if (!fullLoop) {
-                        c.m_vertices.back().m_p = end;
-                    }
-                    else if (c.m_vertices.back().m_type == 0) {
-                        // Collapsed a line to its start point -- delete the vertex
-                        c.m_vertices.pop_back();
-                    }
-                    else {
-                        // Completed an arc -- change the representation to two semi-circles
-                        CVertex& prev = c.m_vertices.back();
-                        const heeks::Point mid {2 * prev.m_c.x - end.x, 2 * prev.m_c.y - end.y};
-                        prev.m_p = mid;
-                        c.m_vertices.emplace_back(prev.m_type, end, prev.m_c);
-                    }
-                }
-                continue;
-            }
 
             // Look up the segment data of the parent edge. Check for and handle the tag sentinel
             // value. The sentinel value is provided only when the parent edge lookup fails.
@@ -925,6 +804,7 @@ void CArea::SetFromResult(
             }
 
             // Construct the edge to be added based on the end point and the parent's type
+            const PointD end = ToPointD(v1);
             CVertex edge(parentData.orig.m_type, {end.x, end.y}, parentData.orig.m_c);
             if (!CArea::m_fit_arcs) {
                 edge.m_type = 0;
@@ -967,9 +847,7 @@ void CArea::SetFromResult(
 
         // Save the final curve
         if (isClosed && firstCurve && firstTag && tag == *firstTag) {
-            // For open offsets, the input curve is closed but edge tagging will split the curve
-            // into open sections. If the current/last section matches the tag of the first section,
-            // we join them here.
+            // Save the curve by joining it with the (distinct!) first curve
 
             // Remove the first curve's (now redundant) start point
             firstCurve->m_vertices.pop_front();
@@ -992,13 +870,13 @@ void CArea::SetFromResult(
                 }
             }
 
-            // Concatenate them
+            // ...and finally concatenate them
             firstCurve->m_vertices
                 .insert(firstCurve->m_vertices.begin(), c.m_vertices.begin(), c.m_vertices.end());
         }
         else if (!firstTag && isClosed && c.m_vertices.size() >= 3) {
-            // Similar to the above, but if the closed input curve has only one tag in it then no
-            // first curve will be saved yet, and the curve's end should be joined to its own beginning
+            // Same as above, but the first curve has not been saved yet because the current curve
+            // *is* the first curve. Merging the curve to itself requires some special handling
 
             // First check if the first CVertex of the curve can extend the last CVertex
             CVertex& first = *std::next(c.m_vertices.begin());
@@ -1025,7 +903,7 @@ void CArea::SetFromResult(
             saveCurve();
         }
         else {
-            // None of the above -- the curve does not need to be joined to any curve. Just save it
+            // Save it as a new curve
             saveCurve();
         }
     }
@@ -1081,21 +959,754 @@ void CArea::CorrectArcCenters()
 }
 
 
+// ---------------------------------------------------------------------------------------------
+// Snap-based closed offset
+//
+// Geometry is computed by Clipper2's native polygon offset (ClipperOffset, round joins) on a
+// discretized copy of the input. No metadata is carried through Clipper: Clipper is free to
+// merge, drop or create vertices, and the result is always a valid region.
+//
+// Arcs are then recovered by snapping the output to the only circles that can legitimately
+// appear in an offset result:
+//   - every input arc (center c, radius r) offset to radii r + |d| and r - |d|
+//   - the round join around every input vertex (center = vertex, radius |d|)
+// A run of consecutive output edges whose vertices all lie on one candidate circle (within
+// m_accuracy), turning consistently in one direction, becomes a single arc with that circle's
+// exact center and radius. Anything that does not snap stays as line segments.
+//
+// Failure mode: a missed snap yields line segments (still within tolerance of the true offset),
+// never an invalid or wrong-sized region. A wrong snap is bounded too, because every snapped edge
+// must be a chord of the candidate circle with sagitta <= m_accuracy.
+// ---------------------------------------------------------------------------------------------
+
+namespace
+{
+
+struct SnapCircle
+{
+    double cx, cy, r;
+    double xmin, ymin, xmax, ymax;  // bbox inflated by tolerance, for cheap rejection
+};
+
+class SnapIndex
+{
+public:
+    SnapIndex(double tol)
+        : m_tol(tol)
+    {}
+
+    // Arc candidates: few, arbitrary radii
+    void addCircle(double cx, double cy, double r)
+    {
+        if (r <= 2 * m_tol) {
+            return;
+        }
+        m_circles.push_back(
+            {cx, cy, r, cx - r - m_tol, cy - r - m_tol, cx + r + m_tol, cy + r + m_tol}
+        );
+    }
+
+    // Join candidates: many, all the same radius. Stored in a uniform grid.
+    void setJoinRadius(double r)
+    {
+        m_joinR = r;
+        m_cell = r + m_tol;
+    }
+    void addJoinCenter(double cx, double cy)
+    {
+        if (m_joinR <= 2 * m_tol) {
+            return;
+        }
+        m_joins.push_back({cx, cy});
+        m_grid[cellKey(cx, cy)].push_back(static_cast<int>(m_joins.size() - 1));
+    }
+
+    size_t numCircles() const
+    {
+        return m_circles.size();
+    }
+
+    // Candidate ids near p. Ids < numCircles() are arc circles, the rest are joins.
+    void query(double x, double y, std::vector<int>& out) const
+    {
+        out.clear();
+        for (size_t i = 0; i < m_circles.size(); ++i) {
+            const SnapCircle& c = m_circles[i];
+            if (x < c.xmin || x > c.xmax || y < c.ymin || y > c.ymax) {
+                continue;
+            }
+            if (std::fabs(std::hypot(x - c.cx, y - c.cy) - c.r) <= m_tol) {
+                out.push_back(static_cast<int>(i));
+            }
+        }
+        if (m_joins.empty()) {
+            return;
+        }
+        const int64_t ix = cellIndex(x), iy = cellIndex(y);
+        for (int64_t gx = ix - 1; gx <= ix + 1; ++gx) {
+            for (int64_t gy = iy - 1; gy <= iy + 1; ++gy) {
+                auto it = m_grid.find({gx, gy});
+                if (it == m_grid.end()) {
+                    continue;
+                }
+                for (int j : it->second) {
+                    const PointD& c = m_joins[j];
+                    if (std::fabs(std::hypot(x - c.x, y - c.y) - m_joinR) <= m_tol) {
+                        out.push_back(static_cast<int>(m_circles.size()) + j);
+                    }
+                }
+            }
+        }
+        std::sort(out.begin(), out.end());
+    }
+
+    void get(int id, double& cx, double& cy, double& r) const
+    {
+        if (id < static_cast<int>(m_circles.size())) {
+            const SnapCircle& c = m_circles[id];
+            cx = c.cx;
+            cy = c.cy;
+            r = c.r;
+        }
+        else {
+            const PointD& c = m_joins[id - m_circles.size()];
+            cx = c.x;
+            cy = c.y;
+            r = m_joinR;
+        }
+    }
+
+private:
+    int64_t cellIndex(double v) const
+    {
+        return static_cast<int64_t>(std::floor(v / m_cell));
+    }
+    std::pair<int64_t, int64_t> cellKey(double x, double y) const
+    {
+        return {cellIndex(x), cellIndex(y)};
+    }
+
+    double m_tol;
+    double m_joinR = 0;
+    double m_cell = 1;
+    std::vector<SnapCircle> m_circles;
+    std::vector<PointD> m_joins;
+    std::map<std::pair<int64_t, int64_t>, std::vector<int>> m_grid;
+};
+
+// Discretize a closed CCurve into a Clipper path (no z data, no closing duplicate).
+// Arcs are split so the chord deviation stays below discTol.
+Path64 closedCurveToPath64(const CCurve& curve, double discTol)
+{
+    Path64 path;
+    auto push = [&](double x, double y) {
+        const Point64 p = ToPoint64(PointD(x, y, 0));
+        if (path.empty() || path.back().x != p.x || path.back().y != p.y) {
+            path.push_back(p);
+        }
+    };
+
+    bool first = true;
+    heeks::Point prev(0, 0);
+    for (const CVertex& v : curve.m_vertices) {
+        if (first) {
+            first = false;
+            push(v.m_p.x, v.m_p.y);
+            prev = v.m_p;
+            continue;
+        }
+        if (v.m_type == 0) {
+            push(v.m_p.x, v.m_p.y);
+        }
+        else {
+            const double r = std::hypot(prev.x - v.m_c.x, prev.y - v.m_c.y);
+            const double a0 = std::atan2(prev.y - v.m_c.y, prev.x - v.m_c.x);
+            double a1 = std::atan2(v.m_p.y - v.m_c.y, v.m_p.x - v.m_c.x);
+            if (v.m_type > 0 && a1 <= a0) {
+                a1 += 2 * M_PI;
+            }
+            if (v.m_type < 0 && a1 >= a0) {
+                a1 -= 2 * M_PI;
+            }
+            double step = M_PI / 2;
+            if (r > discTol) {
+                step = std::min(step, 2 * std::acos(1 - discTol / r));
+            }
+            const int n = std::max(1, static_cast<int>(std::ceil(std::fabs(a1 - a0) / step)));
+            for (int i = 1; i < n; ++i) {
+                const double a = a0 + (a1 - a0) * i / n;
+                push(v.m_c.x + r * std::cos(a), v.m_c.y + r * std::sin(a));
+            }
+            push(v.m_p.x, v.m_p.y);
+        }
+        prev = v.m_p;
+    }
+    if (path.size() > 1 && path.front().x == path.back().x && path.front().y == path.back().y) {
+        path.pop_back();
+    }
+    return path;
+}
+
+struct EdgeMatch
+{
+    int id;      // candidate circle id
+    int dir;     // +1 CCW, -1 CW
+    double ang;  // absolute sweep of the edge around the circle
+    double err;  // radial error of the edge's end vertex
+};
+
+struct SnapSeg
+{
+    bool arc;
+    int id, dir;
+    size_t first, count;  // edges [first, first + count) (cyclic)
+};
+
+// Junction between two segments: a is where the first ends, b where the second starts. When
+// they differ, the gap is bridged by a line, or by a round-join arc around c (direction dir).
+struct SnapJoint
+{
+    heeks::Point a, b;
+    bool joinArc = false;
+    heeks::Point c;
+    int dir = 0;
+};
+
+// Foot of the perpendicular from (cx, cy) on the line through a and b, if a != b
+std::optional<heeks::Point> footOnLine(
+    double cx,
+    double cy,
+    const heeks::Point& a,
+    const heeks::Point& b
+)
+{
+    const double dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
+    if (l2 < 1e-24) {
+        return std::nullopt;
+    }
+    const double t = ((cx - a.x) * dx + (cy - a.y) * dy) / l2;
+    return heeks::Point(a.x + t * dx, a.y + t * dy);
+}
+
+// Closest point on circle (cx, cy, r) to p
+heeks::Point projectToCircle(double cx, double cy, double r, const heeks::Point& p)
+{
+    const double dx = p.x - cx, dy = p.y - cy;
+    const double l = std::hypot(dx, dy);
+    if (l < 1e-12) {
+        return heeks::Point(cx + r, cy);
+    }
+    return heeks::Point(cx + dx * r / l, cy + dy * r / l);
+}
+
+// Intersection of two circles closest to p, if one exists within maxDist of p
+std::optional<heeks::Point> circleIntersection(
+    double x1,
+    double y1,
+    double r1,
+    double x2,
+    double y2,
+    double r2,
+    const heeks::Point& p
+)
+{
+    const double dx = x2 - x1, dy = y2 - y1;
+    const double d = std::hypot(dx, dy);
+    // Tangent circles (e.g. an offset arc meeting a round join) rarely intersect exactly in
+    // floating point; accept a gap up to kTangentGap and use the tangent point
+    constexpr double kTangentGap = 1e-8;
+    if (d < 1e-12 || d > r1 + r2 + kTangentGap || d < std::fabs(r1 - r2) - kTangentGap) {
+        return std::nullopt;
+    }
+    const double a = (r1 * r1 - r2 * r2 + d * d) / (2 * d);
+    const double h = std::sqrt(std::max(0.0, r1 * r1 - a * a));
+    const double mx = x1 + a * dx / d, my = y1 + a * dy / d;
+    const heeks::Point s1(mx - h * dy / d, my + h * dx / d);
+    const heeks::Point s2(mx + h * dy / d, my - h * dx / d);
+    const double d1 = std::hypot(s1.x - p.x, s1.y - p.y);
+    const double d2 = std::hypot(s2.x - p.x, s2.y - p.y);
+    return d1 <= d2 ? s1 : s2;
+}
+
+// Convert one closed Clipper output path into a CCurve, snapping runs to candidate circles
+CCurve snapClosedPath(
+    const Path64& path,
+    const SnapIndex& index,
+    double tol,
+    double minSagitta,
+    bool fitArcs
+)
+{
+    const size_t n = path.size();
+    std::vector<heeks::Point> pts(n);
+    for (size_t i = 0; i < n; ++i) {
+        const PointD p = ToPointD(path[i]);
+        pts[i] = heeks::Point(p.x, p.y);
+    }
+
+    auto linesOnly = [&]() {
+        CCurve c;
+        for (const heeks::Point& p : pts) {
+            c.m_vertices.emplace_back(p);
+        }
+        c.m_vertices.emplace_back(pts[0]);
+        return c;
+    };
+    if (!fitArcs || n < 3) {
+        return linesOnly();
+    }
+
+    // Candidates per vertex, then per edge
+    std::vector<std::vector<int>> vc(n);
+    for (size_t i = 0; i < n; ++i) {
+        index.query(pts[i].x, pts[i].y, vc[i]);
+    }
+    std::vector<std::vector<EdgeMatch>> em(n);
+    for (size_t i = 0; i < n; ++i) {
+        const size_t j = (i + 1) % n;
+        const heeks::Point& a = pts[i];
+        const heeks::Point& b = pts[j];
+        const double L = std::hypot(b.x - a.x, b.y - a.y);
+        for (int id : vc[i]) {
+            if (!std::binary_search(vc[j].begin(), vc[j].end(), id)) {
+                continue;
+            }
+            double cx, cy, r;
+            index.get(id, cx, cy, r);
+            // The edge must be a short chord of the circle: sagitta within tolerance
+            if (L >= 2 * r || r - std::sqrt(r * r - L * L / 4) > tol) {
+                continue;
+            }
+            const double ax = a.x - cx, ay = a.y - cy, bx = b.x - cx, by = b.y - cy;
+            const double cross = ax * by - ay * bx;
+            if (cross == 0) {
+                continue;
+            }
+            const double ang = std::fabs(std::atan2(cross, ax * bx + ay * by));
+            const double err = std::fabs(std::hypot(bx, by) - r);
+            em[i].push_back({id, cross > 0 ? 1 : -1, ang, err});
+        }
+    }
+
+    auto hasMatch = [&](size_t e, int id, int dir) -> const EdgeMatch* {
+        for (const EdgeMatch& m : em[e]) {
+            if (m.id == id && m.dir == dir) {
+                return &m;
+            }
+        }
+        return nullptr;
+    };
+
+    // Full circle: every edge on the same circle in the same direction
+    for (const EdgeMatch& m0 : em[0]) {
+        bool all = true;
+        for (size_t e = 1; e < n && all; ++e) {
+            all = hasMatch(e, m0.id, m0.dir) != nullptr;
+        }
+        if (all) {
+            double cx, cy, r;
+            index.get(m0.id, cx, cy, r);
+            const heeks::Point p0 = projectToCircle(cx, cy, r, pts[0]);
+            const heeks::Point pm(2 * cx - p0.x, 2 * cy - p0.y);
+            CCurve c;
+            c.m_vertices.emplace_back(p0);
+            c.m_vertices.emplace_back(m0.dir, pm, heeks::Point(cx, cy));
+            c.m_vertices.emplace_back(m0.dir, p0, heeks::Point(cx, cy));
+            return c;
+        }
+    }
+
+    // Start at an edge that cannot continue a run from the previous edge, so runs are not
+    // split by the arbitrary start vertex Clipper picked
+    size_t start = 0;
+    for (size_t e = 0; e < n; ++e) {
+        const size_t prevE = (e + n - 1) % n;
+        bool continues = false;
+        for (const EdgeMatch& m : em[e]) {
+            if (hasMatch(prevE, m.id, m.dir)) {
+                continues = true;
+                break;
+            }
+        }
+        if (!continues) {
+            start = e;
+            break;
+        }
+    }
+
+    // Greedy segmentation: at each edge take the candidate giving the longest run
+    std::vector<SnapSeg> segs;
+    size_t done = 0;
+    while (done < n) {
+        const size_t e0 = (start + done) % n;
+        SnapSeg best {false, -1, 0, e0, 1};
+        double bestErr = 0;
+        for (const EdgeMatch& m : em[e0]) {
+            size_t count = 0;
+            double sweep = 0, errSum = 0;
+            while (done + count < n) {
+                const EdgeMatch* mm = hasMatch((e0 + count) % n, m.id, m.dir);
+                if (!mm || sweep + mm->ang >= 2 * M_PI - 1e-9) {
+                    break;
+                }
+                sweep += mm->ang;
+                errSum += mm->err;
+                ++count;
+            }
+            if (count == 0) {
+                continue;
+            }
+            // Only emit arcs that are distinguishable from their chord at the discretization
+            // tolerance. Smaller "arcs" (tiny round joins, noise on dense input) are within
+            // tolerance as lines, and emitting them only produces micro-arcs.
+            double cx, cy, r;
+            index.get(m.id, cx, cy, r);
+            if (r * (1 - std::cos(std::min(sweep, M_PI) / 2)) <= minSagitta) {
+                continue;
+            }
+            // Prefer the longest run; break ties by the smallest total radial error
+            if (!best.arc || count > best.count || (count == best.count && errSum < bestErr)) {
+                best = {true, m.id, m.dir, e0, count};
+                bestErr = errSum;
+            }
+        }
+        segs.push_back(best);
+        done += best.count;
+    }
+
+    // Distance from q to the Clipper edges covered by segments A and B
+    auto distToRuns = [&](const SnapSeg& A, const SnapSeg& B, const heeks::Point& q) {
+        double best = 1e300;
+        auto edgeDist = [&](size_t e) {
+            const heeks::Point& a = pts[e];
+            const heeks::Point& b = pts[(e + 1) % n];
+            const double dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
+            double t = l2 > 0 ? ((q.x - a.x) * dx + (q.y - a.y) * dy) / l2 : 0;
+            t = std::clamp(t, 0.0, 1.0);
+            best = std::min(best, std::hypot(q.x - (a.x + t * dx), q.y - (a.y + t * dy)));
+        };
+        for (size_t i = 0; i < A.count; ++i) {
+            edgeDist((A.first + i) % n);
+        }
+        for (size_t i = 0; i < B.count; ++i) {
+            edgeDist((B.first + i) % n);
+        }
+        return best;
+    };
+
+    // Where an arc meets a line it is tangent to, the joint is the tangent point: the foot of
+    // the perpendicular from the circle's center on the line. The Clipper vertex at the run
+    // switch can be up to a discretization step away from it, on either side.
+    auto tangentPoint = [&](double cx,
+                            double cy,
+                            double r,
+                            const heeks::Point& l0,
+                            const heeks::Point& l1,
+                            const heeks::Point& p) -> std::optional<heeks::Point> {
+        const auto f = footOnLine(cx, cy, l0, l1);
+        if (!f || std::fabs(std::hypot(f->x - cx, f->y - cy) - r) > tol) {
+            return std::nullopt;
+        }
+        const double step = std::sqrt(8 * r * tol) + tol;  // longest chord within tol
+        if (std::hypot(f->x - p.x, f->y - p.y) > 2 * step) {
+            return std::nullopt;
+        }
+        return projectToCircle(cx, cy, r, *f);
+    };
+
+    // A round join of the offset around an input vertex between two arcs on different circles:
+    // present when the Clipper edges at the run switch lie on that vertex's join circle (a
+    // convex corner; a concave one has no such edge, its arcs simply intersect). Returns the
+    // join circle's id, or -1.
+    const int numArcCircles = static_cast<int>(index.numCircles());
+    auto roundJoinAt = [&](const SnapSeg& A, const SnapSeg& B, const heeks::Point& p) {
+        std::vector<int> ids;
+        index.query(p.x, p.y, ids);
+        for (int id : ids) {
+            if (id < numArcCircles) {
+                continue;
+            }
+            const size_t edges[] = {
+                (A.first + A.count + n - 1) % n,
+                (A.first + A.count + n - 2) % n,
+                B.first,
+                (B.first + 1) % n
+            };
+            for (size_t e : edges) {
+                for (const EdgeMatch& m : em[e]) {
+                    if (m.id == id) {
+                        return id;
+                    }
+                }
+            }
+        }
+        return -1;
+    };
+
+    // Junction between segment A (ending at vertex p) and segment B (starting at p).
+    // a and b differ only when two arcs on different circles meet: across a round join (an arc
+    // around the input vertex) or, on non-intersecting circles, a short connecting line.
+    auto junction = [&](const SnapSeg& A, const SnapSeg& B, const heeks::Point& p) {
+        auto at = [](const heeks::Point& q) {
+            return SnapJoint {q, q};
+        };
+        double ax = 0, ay = 0, ar = 0, bx = 0, by = 0, br = 0;
+        if (A.arc) {
+            index.get(A.id, ax, ay, ar);
+        }
+        if (B.arc) {
+            index.get(B.id, bx, by, br);
+        }
+        if (!A.arc && !B.arc) {
+            return at(p);
+        }
+        if (A.arc && !B.arc) {
+            if (auto q = tangentPoint(ax, ay, ar, pts[B.first], pts[(B.first + 1) % n], p)) {
+                return at(*q);
+            }
+            return at(projectToCircle(ax, ay, ar, p));
+        }
+        if (!A.arc && B.arc) {
+            const size_t e = (A.first + A.count + n - 1) % n;
+            if (auto q = tangentPoint(bx, by, br, pts[e], pts[(e + 1) % n], p)) {
+                return at(*q);
+            }
+            return at(projectToCircle(bx, by, br, p));
+        }
+        if (A.id == B.id) {
+            return at(projectToCircle(ax, ay, ar, p));
+        }
+        if (A.id < numArcCircles && B.id < numArcCircles) {
+            const int j = roundJoinAt(A, B, p);
+            if (j >= 0) {
+                double jx, jy, jr;
+                index.get(j, jx, jy, jr);
+                const auto qa = circleIntersection(ax, ay, ar, jx, jy, jr, p);
+                const auto qb = circleIntersection(bx, by, br, jx, jy, jr, p);
+                if (qa && qb && std::hypot(qa->x - qb->x, qa->y - qb->y) > tol) {
+                    const double cross = (qa->x - jx) * (qb->y - jy) - (qa->y - jy) * (qb->x - jx);
+                    SnapJoint joint {*qa, *qb, true, heeks::Point(jx, jy), cross > 0 ? 1 : -1};
+                    return joint;
+                }
+            }
+        }
+        if (auto q = circleIntersection(ax, ay, ar, bx, by, br, p)) {
+            // Accept the exact junction only if it lies on the Clipper boundary covered by the
+            // two runs (near a tangent point the run switch can happen well before the junction)
+            if (distToRuns(A, B, *q) <= tol) {
+                return at(*q);
+            }
+        }
+        const heeks::Point qa = projectToCircle(ax, ay, ar, p);
+        const heeks::Point qb = projectToCircle(bx, by, br, p);
+        if (std::hypot(qa.x - qb.x, qa.y - qb.y) < 1e-9) {
+            return at(qa);
+        }
+        return SnapJoint {qa, qb};
+    };
+
+    // Merge neighbouring arc segments on the same circle and direction (including across the
+    // ring's start), e.g. when the start edge happened to fall inside an arc
+    auto mergeable = [&](const SnapSeg& a, const SnapSeg& b) {
+        return a.arc && b.arc && a.id == b.id && a.dir == b.dir && a.count + b.count < n;
+    };
+    {
+        std::vector<SnapSeg> merged;
+        for (const SnapSeg& sg : segs) {
+            if (!merged.empty() && mergeable(merged.back(), sg)) {
+                merged.back().count += sg.count;
+            }
+            else {
+                merged.push_back(sg);
+            }
+        }
+        if (merged.size() > 1 && mergeable(merged.back(), merged.front())) {
+            merged.front().first = merged.back().first;
+            merged.front().count += merged.back().count;
+            merged.pop_back();
+        }
+        segs.swap(merged);
+    }
+
+    // Sweep actually covered by the edges of an arc segment
+    auto runSweep = [&](const SnapSeg& s) {
+        double sw = 0;
+        for (size_t i = 0; i < s.count; ++i) {
+            sw += hasMatch((s.first + i) % n, s.id, s.dir)->ang;
+        }
+        return sw;
+    };
+    // Sweep of the arc from a to b around the segment's circle, in the segment's direction
+    auto arcSweep = [&](const SnapSeg& s, const heeks::Point& a, const heeks::Point& b) {
+        double cx, cy, r;
+        index.get(s.id, cx, cy, r);
+        double a0 = std::atan2(a.y - cy, a.x - cx), a1 = std::atan2(b.y - cy, b.x - cx);
+        double sw = s.dir > 0 ? a1 - a0 : a0 - a1;
+        while (sw <= 0) {
+            sw += 2 * M_PI;
+        }
+        while (sw > 2 * M_PI) {
+            sw -= 2 * M_PI;
+        }
+        return sw;
+    };
+
+    // Compute joints; demote to lines any arc whose endpoints make it sweep differently from the
+    // edges it replaces (e.g. a joint that landed past the end of a very short arc, which would
+    // otherwise produce an arc going the long way around). Repeat until stable.
+    size_t ns = 0;
+    std::vector<SnapJoint> joints;
+    for (int iter = 0; iter < 8; ++iter) {
+        ns = segs.size();
+        joints.assign(ns, {});
+        for (size_t k = 0; k < ns; ++k) {
+            const SnapSeg& A = segs[(k + ns - 1) % ns];
+            const SnapSeg& B = segs[k];
+            joints[k] = junction(A, B, pts[B.first]);
+        }
+        bool demoted = false;
+        std::vector<SnapSeg> next;
+        for (size_t k = 0; k < ns; ++k) {
+            const SnapSeg& s = segs[k];
+            if (s.arc) {
+                const double expect = runSweep(s);
+                if (expect >= 2 * M_PI - 1e-6) {
+                    // Would be a full circle in one CVertex; split in two halves by edge count
+                    const size_t half = s.count / 2;
+                    next.push_back({true, s.id, s.dir, s.first, half});
+                    next.push_back({true, s.id, s.dir, (s.first + half) % n, s.count - half});
+                    demoted = true;
+                    continue;
+                }
+                const double got = arcSweep(s, joints[k].b, joints[(k + 1) % ns].a);
+                if (std::fabs(got - expect) > 0.25 * expect + 1e-3) {
+                    for (size_t i = 0; i < s.count; ++i) {
+                        next.push_back({false, -1, 0, (s.first + i) % n, 1});
+                    }
+                    demoted = true;
+                    continue;
+                }
+            }
+            next.push_back(s);
+        }
+        segs.swap(next);
+        if (!demoted) {
+            break;
+        }
+    }
+    // Final joints for the final segmentation (also covers hitting the iteration cap)
+    ns = segs.size();
+    joints.assign(ns, {});
+    for (size_t k = 0; k < ns; ++k) {
+        joints[k] = junction(segs[(k + ns - 1) % ns], segs[k], pts[segs[k].first]);
+    }
+
+    CCurve c;
+    c.m_vertices.emplace_back(joints[0].b);
+    for (size_t k = 0; k < ns; ++k) {
+        const SnapSeg& s = segs[k];
+        const auto& endJoint = joints[(k + 1) % ns];
+        if (s.arc) {
+            double cx, cy, r;
+            index.get(s.id, cx, cy, r);
+            c.m_vertices.emplace_back(s.dir, endJoint.a, heeks::Point(cx, cy));
+        }
+        else {
+            // Line segments: interior vertices of the run, then the end joint
+            for (size_t i = 1; i < s.count; ++i) {
+                c.m_vertices.emplace_back(pts[(s.first + i) % n]);
+            }
+            c.m_vertices.emplace_back(endJoint.a);
+        }
+        if (endJoint.a.x != endJoint.b.x || endJoint.a.y != endJoint.b.y) {
+            if (endJoint.joinArc) {
+                c.m_vertices.emplace_back(endJoint.dir, endJoint.b, endJoint.c);
+            }
+            else {
+                c.m_vertices.emplace_back(endJoint.b);
+            }
+        }
+    }
+    return c;
+}
+
+}  // namespace
+
 void CArea::Offset(double offset)
 {
     if (offset == 0) {
         return;
     }
 
-    // Sanity check inputs -- should be closed
-    for (const CCurve& c : m_curves) {
-        if (!c.IsClosed()) {
-            std::fprintf(
-                stderr,
-                "WARNING: CArea::Offset input curve is open (%zu vertices)\n",
-                c.m_vertices.size()
-            );
+    // Open curves need the tagged (one-sided) machinery; keep the existing implementation
+    for (const CCurve& curve : m_curves) {
+        if (curve.m_vertices.size() > 1 && !curve.IsClosed()) {
+            OffsetNaive(offset);
+            return;
         }
+    }
+
+    // Same orientation convention as NaiveOffset: CCW = positive area, but accept all-reversed
+    if (GetArea() < 0) {
+        for (CCurve& curve : m_curves) {
+            curve.Reverse();
+        }
+    }
+
+    // Genuine offset arcs come out of Clipper within discTol of their circle (input chords and
+    // round-join steps are both generated at discTol), plus integer rounding. Snapping tolerance
+    // is kept just above that so that noise is not mistaken for arcs.
+    const double discTol = m_accuracy * 0.25;
+    const double tol = discTol * 1.2 + 2.0 / m_clipper_scale;
+    const double d = std::fabs(offset);
+
+    // Candidate circles, from the input geometry
+    SnapIndex index(tol);
+    index.setJoinRadius(d);
+    Paths64 paths;
+    for (const CCurve& curve : m_curves) {
+        if (curve.m_vertices.empty()) {
+            continue;
+        }
+        heeks::Point prev(0, 0);
+        bool first = true;
+        for (const CVertex& v : curve.m_vertices) {
+            index.addJoinCenter(v.m_p.x, v.m_p.y);
+            if (!first && v.m_type != 0) {
+                const double r = std::hypot(prev.x - v.m_c.x, prev.y - v.m_c.y);
+                index.addCircle(v.m_c.x, v.m_c.y, r + d);
+                index.addCircle(v.m_c.x, v.m_c.y, r - d);
+            }
+            first = false;
+            prev = v.m_p;
+        }
+        Path64 p = closedCurveToPath64(curve, discTol);
+        if (!p.empty()) {
+            paths.push_back(std::move(p));
+        }
+    }
+
+    ClipperOffset co(2.0, discTol * m_clipper_scale);
+    co.AddPaths(paths, JoinType::Round, EndType::Polygon);
+    Paths64 result;
+    co.Execute(offset * m_clipper_scale, result);
+
+    m_curves.clear();
+    for (const Path64& path : result) {
+        if (path.size() < 2) {
+            continue;
+        }
+        m_curves.push_back(snapClosedPath(path, index, tol, discTol, m_fit_arcs));
+    }
+
+    this->Reorder();
+}
+
+// Previous implementation: per-edge offset + tagged union. Still used for open curves.
+void CArea::OffsetNaive(double offset)
+{
+    if (offset == 0) {
+        return;
     }
 
     // Perform the naive offset, offsetting each edge and joining
@@ -1110,43 +1721,23 @@ void CArea::Offset(double offset)
         }
     }
 
-    // Proactively remove curves that have the wrong tag, and fix orientation.
+    // Union (fill rule positive), keeping positive edges and dropping negative edges
+    _Clip(ClipType::Union, CArea {}, FillRule::Positive);
+
+    // Note that this code currently has no impact because we call Reorder afterwards, but
+    // (to be vetted in a future PR) I think the curves from the previous step have known
+    // orientation and this simpler/lighter loop should replace the Reorder call
     //
-    // In principle this will be done by the subsequent union operation, and since the positive-side
-    // and negative-side offsets of a closed shape do not intersect, it should be equivalent to
-    // filter out the unwanted side before or after the union. However, I found a test case where
-    // the positive and negative offsets of a 2-3 clipper unit thick pair of arcs do intersect
-    // because of the error in approximating arcs to segments. Doing the filtering ahead of time
-    // works around this problem. Note that this situation can still be an issue for open offsets.
-    for (auto it = m_curves.begin(); it != m_curves.end();) {
-        if (std::ranges::find(it->m_edgeTags, 1) == it->m_edgeTags.end()) {
-            it = m_curves.erase(it);
-            continue;
-        }
-
-        if (offset < 0) {
-            it->Reverse();
-        }
-        ++it;
-    }
-
-    // Union, keeping positive edges and dropping negative edges
-    _Clip(ClipType::Union, CArea {}, FillRule::Positive, false, false, std::nullopt, true);
+    // // If negative offset, reverse the curves to put them in the forward direction
+    // if (offset < 0) {
+    //     for (CCurve& c : m_curves) {
+    //         c.Reverse();
+    //     }
+    // }
 
     // I'm preserving this Reorder() call to preserve old behavior, but imo this should not be part
     // of Offset's spec
-    // Update: also now that I'm reversing the negative offset curves above, this reorder command
-    // should never update curve orientation (just perhaps reorder them). But I don't want to rock
-    // the boat by removing it until all these clipper changes are stable and bugs are no longer
-    // materializing.
     this->Reorder();
-
-    // Sanity check outputs -- should be closed
-    for (const CCurve& c : m_curves) {
-        if (!c.IsExactlyClosed()) {
-            throw std::logic_error(std::format("CArea::Offset({}) produced an open curve", offset));
-        }
-    }
 }
 
 CArea CArea::OpenOffset(double offset)
@@ -1185,15 +1776,8 @@ void CArea::Thicken(double value)
         curve.m_edgeTags.clear();
     }
 
-    // Union (fill rule positive), keeping all edges
-    _Clip(ClipType::Union, CArea {}, FillRule::Positive, false, false, std::nullopt, true);
-
-    // Sanity check outputs -- should be closed
-    for (const CCurve& c : m_curves) {
-        if (!c.IsExactlyClosed()) {
-            throw std::logic_error(std::format("CArea::Thicken({}) produced an open curve", value));
-        }
-    }
+    // Union (fill rule positive), keeping positive edges and dropping negative edges
+    _Clip(ClipType::Union, CArea {}, FillRule::Positive);
 }
 
 SegmentData CArea::getParentMetadataFallback(

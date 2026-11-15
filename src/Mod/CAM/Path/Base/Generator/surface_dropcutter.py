@@ -40,7 +40,7 @@ else:
     Path.Log.setLevel(Path.Log.Level.INFO, Path.Log.thisModule())
 
 
-from Path.Base.Generator.surface_common import _get_ocl
+from Path.Base.Generator.surface_common import get_ocl
 
 # ---------------------------------------------------------------------------
 # BatchDropCutter — grid-based surface scan
@@ -64,7 +64,7 @@ def batch_dropcutter(stl, cutter, polylines, min_z, threads=None):
     Returns:
         A list of (x, y, z) tuples with Z-heights set by the drop-cutter
     """
-    ocl = _get_ocl()
+    ocl = get_ocl()
 
     bdc = ocl.BatchDropCutter()
     bdc.setSTL(stl)
@@ -115,7 +115,7 @@ def path_dropcutter(stl, cutter, polylines, min_z, sampling):
     Returns:
         List of ``(x, y, z)`` tuples.
     """
-    ocl = _get_ocl()
+    ocl = get_ocl()
 
     ocl_path = ocl.Path()
     for line in polylines:
@@ -166,7 +166,7 @@ def adaptive_path_dropcutter(stl, cutter, polylines, min_z, sampling, min_sampli
     Returns:
         List of ``(x, y, z)`` tuples.
     """
-    ocl = _get_ocl()
+    ocl = get_ocl()
 
     ocl_path = ocl.Path()
     for line in polylines:

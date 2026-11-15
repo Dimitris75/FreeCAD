@@ -32,7 +32,6 @@ import math
 import FreeCAD
 import Path
 import Part
-from Path.Tool.shape import ToolBitShape
 
 if False:
     Path.Log.setLevel(Path.Log.Level.DEBUG, Path.Log.thisModule())
@@ -44,6 +43,11 @@ else:
 # ---------------------------------------------------------------------------
 # Fill selected holes
 # ---------------------------------------------------------------------------
+
+
+# Geometric tolerance of the Z-Level Hybrid engine (slicing, depth snapping).
+# Also passed as the boundary tolerance, which gives the 0.01 mm minimum inset.
+GEOMETRY_TOLERANCE = 0.0001
 
 
 def _apply_fill_hole_masks(
@@ -165,10 +169,10 @@ def _fuse_coplanar_masks(fill_holes_masks):
 
 def _get_selected_faces(base_property):
     """
-    Parses the Path operation's 'Base' property to extract all selected Part.Face objects.
+    Parses a link list (e.g. the operation's 'FillHoleFaces') to extract all selected Part.Face objects.
 
     Args:
-        base_property (list): The operation's `obj.Base` list of (object, subnames) tuples.
+        base_property (list): A list of (object, subnames) tuples.
 
     Returns:
         list: A flat list of all valid Part.Face objects found in the selection.
@@ -198,7 +202,7 @@ def fill_selected(base_property):
     tool from plunging into specified holes or pockets.
 
     The generation process follows a strict topographical hierarchy:
-    1. Extraction: Parses the operation's Base property for valid Part.Face objects.
+    1. Extraction: Parses the operation's FillHoleFaces list for valid Part.Face objects.
     2. Z-Grouping: Groups all faces strictly by their absolute maximum Z-height
        to prevent cross-elevation merging.
     3. Separation: At each Z-level, separates faces into touching groups
@@ -210,7 +214,7 @@ def fill_selected(base_property):
        unified Part.Shape.
 
     Args:
-        base_property (list): The operation's `obj.Base` property containing
+        base_property (list): The operation's `obj.FillHoleFaces` property containing
             the selected geometry tuples.
 
     Returns:
@@ -218,7 +222,7 @@ def fill_selected(base_property):
             descending order. Returns an empty list on failure or if no valid
             faces are found.
     """
-    from . import surface_common
+    from . import surface_boundary
 
     selected_faces = _get_selected_faces(base_property)
     if not selected_faces:
@@ -238,14 +242,16 @@ def fill_selected(base_property):
     # Process faces at each Z-level
     for z_level, faces_at_z in faces_by_z.items():
         if len(faces_at_z) > 1:
-            touching_groups, isolated_faces = surface_common._separate_touching_faces([faces_at_z])
+            touching_groups, isolated_faces = surface_boundary._separate_touching_faces(
+                [faces_at_z]
+            )
         else:
             touching_groups = []
             isolated_faces = faces_at_z
 
         # 1. Process touching group faces collectively
         for group in touching_groups:
-            cap_face = surface_common.create_boundary_face(group, offset=0.0)
+            cap_face = surface_boundary.create_boundary_face(group, offset=0.0)
             if cap_face and not cap_face.isNull():
                 cap_face.translate(FreeCAD.Vector(0, 0, -cap_face.BoundBox.ZMin))
                 fill_holes_masks.append((z_level, cap_face))
@@ -265,7 +271,27 @@ def fill_selected(base_property):
         return []
 
     Path.Log.debug(f"Generated {len(fill_holes_masks)} mask(s).")
-    return _fuse_coplanar_masks(fill_holes_masks)
+    return _fuse_coplanar_masks([(z, _facing_up(mask)) for z, mask in fill_holes_masks])
+
+
+def _facing_up(cap):
+    """
+    The cap with every face's normal pointing up (+Z).
+
+    A cap built from a rim wire takes the wire's direction, which mirrored
+    geometry (a PartDesign Mirrored, a mirrored pattern) reverses: such caps
+    face down. Path.Area then fails on them when they are fused with the
+    rest, and the preview shades them from behind.
+    """
+    faces = []
+    for face in cap.Faces:
+        u0, u1, v0, v1 = face.ParameterRange
+        if face.normalAt((u0 + u1) / 2, (v0 + v1) / 2).z < 0:
+            face = face.reversed()
+        faces.append(face)
+    if cap.ShapeType == "Face" and len(faces) == 1:
+        return faces[0]
+    return Part.makeCompound(faces)
 
 
 def _process_isolated_face(face, z_level):
@@ -280,7 +306,7 @@ def _process_isolated_face(face, z_level):
     Returns:
         list: A list of (z_level, mask_face) tuples.
     """
-    from . import surface_common
+    from . import surface_boundary
 
     masks = []
     is_flat = face.BoundBox.ZLength < 1e-5
@@ -288,7 +314,7 @@ def _process_isolated_face(face, z_level):
     if is_flat:
         if len(face.Wires) == 1:
             # Simple single flat cap (e.g., flat pocket floor)
-            cap_face = surface_common.create_boundary_face([face], offset=0.0)
+            cap_face = surface_boundary.create_boundary_face([face], offset=0.0)
             if cap_face and not cap_face.isNull():
                 cap_face.translate(FreeCAD.Vector(0, 0, -cap_face.BoundBox.ZMin))
                 masks.append((z_level, cap_face))
@@ -311,7 +337,7 @@ def _cap_flat_face_holes(face, cap_z):
     Scenario A: Capping inner holes on a mathematically flat surface.
     Sorts wires by size; the largest is the outer boundary, the rest are holes.
     """
-    from . import surface_common
+    from . import surface_boundary
 
     masks = []
     # BoundingBox DiagonalLength is a fast, crash-proof way to sort wire size
@@ -323,7 +349,7 @@ def _cap_flat_face_holes(face, cap_z):
     for wire in inner_wires:
         if not wire.isClosed():
             continue
-        cap_face = surface_common.flatten_wire_to_cap(wire, cap_z, translate_to_zero=True)
+        cap_face = surface_boundary.flatten_wire_to_cap(wire, cap_z, translate_to_zero=True)
         if cap_face:
             masks.append((cap_z, cap_face))
 
@@ -335,15 +361,15 @@ def _cap_3d_wall(face):
     Scenario B: Extracting and capping the top rim of a 3D wall (e.g., sloped holes).
     Safely ignores vertical seams and crushes 3D splines into flat 2D polygons.
     """
-    from . import surface_common
+    from . import surface_boundary
 
     face_zmax = round(face.BoundBox.ZMax, 4)
 
-    top_wire = surface_common._extract_top_rim_wire(face)
+    top_wire = surface_boundary._extract_top_rim_wire(face)
     if top_wire is None:
         return None
 
-    cap_face = surface_common.flatten_wire_to_cap(top_wire, face_zmax, translate_to_zero=True)
+    cap_face = surface_boundary.flatten_wire_to_cap(top_wire, face_zmax, translate_to_zero=True)
     if cap_face:
         return (face_zmax, cap_face)
 
@@ -427,6 +453,88 @@ def getTrimFace(border_face, bbFace, wpc):
         return None
 
     return trim_face
+
+
+# ---------------------------------------------------------------------------
+# Adaptive2d real stock outline
+# ---------------------------------------------------------------------------
+
+
+def validate_stock_outline(stock_face, stock_bb, model_bb, tol=0.5):
+    """
+    Sanity check of the 2D stock outline handed to Adaptive2d.
+
+    Adaptive2d treats everything outside this outline as air, so an outline
+    that is misplaced or in another coordinate frame (e.g. a 3+2 setup)
+    would send the tool through real material. The outline must:
+      - span the stock's XY bounding box (it was built from the stock, shrunk
+        by a few hundredths of a millimetre), and
+      - enclose the XY bounding box of the model being machined.
+
+    Args:
+        stock_face (Part.Shape or None): The 2D stock outline.
+        stock_bb (FreeCAD.BoundBox): Bounding box of the job stock.
+        model_bb (FreeCAD.BoundBox or None): Bounding box of the machined model.
+        tol (float): Allowed mismatch in mm.
+
+    Returns:
+        tuple: (valid (bool), reason (str))
+    """
+    if not stock_face or stock_face.isNull() or not stock_face.Faces:
+        return False, "the stock outline is empty"
+
+    f_bb = stock_face.BoundBox
+    if (
+        abs(f_bb.XMin - stock_bb.XMin) > tol
+        or abs(f_bb.XMax - stock_bb.XMax) > tol
+        or abs(f_bb.YMin - stock_bb.YMin) > tol
+        or abs(f_bb.YMax - stock_bb.YMax) > tol
+    ):
+        return False, "the stock outline does not match the stock's bounding box"
+
+    if model_bb is not None and (
+        model_bb.XMin < f_bb.XMin - tol
+        or model_bb.XMax > f_bb.XMax + tol
+        or model_bb.YMin < f_bb.YMin - tol
+        or model_bb.YMax > f_bb.YMax + tol
+    ):
+        return False, "the model extends outside the stock outline"
+
+    return True, ""
+
+
+def _resolve_adaptive_stock(stock_face, bb_face, radius, adaptive_params):
+    """
+    Chooses the stock outline handed to Adaptive2d.
+
+    Unless forceInsideOut is set, Adaptive2d treats everything outside the stock
+    it is given as air: that region is marked as already cleared, and the tool
+    may enter, link and plunge there. The stock must therefore be the real
+    material outline. A machining boundary (BaseBoundBox, a negative Boundary
+    adjustment, a model outline) is smaller than the stock, and the band between
+    the two is real material.
+
+    Args:
+        stock_face (Part.Shape or None): 2D outline of the real job stock.
+        bb_face (Part.Shape): The tool-centre machining boundary.
+        radius (float): Tool radius in mm.
+        adaptive_params (dict): Adaptive parameters (never modified).
+
+    Returns:
+        tuple: (a2d_stock (Part.Shape), a2d_stock_offset (float), adaptive_params (dict))
+    """
+    if stock_face and not stock_face.isNull():
+        return stock_face, 0.0, adaptive_params
+
+    # No stock outline: the area outside the boundary cannot be trusted to be
+    # air, so keep the tool inside the machining area (helix entries only).
+    Path.Log.warning(
+        "Adaptive: no stock outline available — entries from outside the stock are "
+        "disabled (Force inside-out is used)."
+    )
+    params = dict(adaptive_params)
+    params["force_insideout"] = True
+    return bb_face, radius - 0.01, params
 
 
 # ---------------------------------------------------------------------------
@@ -651,7 +759,7 @@ def zlevel_hybrid_stack(
     stack = []
 
     all_prev_comp = None
-    tol = 0.0001
+    tol = GEOMETRY_TOLERANCE
     loose_tol = 0.0002
     fill_mask_idx = 0  # Fill holes masks list pointer
 
@@ -820,7 +928,7 @@ def _first_pass_mask(
     c_rad = tool_params["c_rad"]
     offset = radius + stock_to_leave
 
-    if ToolBitShape.is_ball_end(profile):
+    if "ballend" in profile:
         c_rad = radius
 
     if (model_top - z_target) <= c_rad:
@@ -905,7 +1013,7 @@ def _generate_sampling_plan(
     # is equal to the tool radius. Normalizing c_rad here allows us to use
     # the same 'bullnose' formulas for both tool types, simplifying the math.
 
-    if ToolBitShape.is_ball_end(profile):
+    if "ballend" in profile:
         c_rad = R
 
     # 2. Internal math helpers
@@ -1159,7 +1267,7 @@ def zlevel_hybrid_to_gcode(
     is_adaptive,
     adaptive_params,
     bb_face,
-    enforce_geofence,
+    stock_face=None,
 ):
     """Converts the geometry stack into G-code Path Commands.
 
@@ -1185,6 +1293,9 @@ def zlevel_hybrid_to_gcode(
             'force_insideout', 'finishing_profile', 'lift_distance', 'keep_tool_down',
             'helix_angle', 'helix_diameter', 'helix_min_diameter'
         bb_face: A Part.Face representing the stock or boundary footprint.
+        stock_face: A Part.Face with the 2D outline of the real job stock. Adaptive2d
+            treats everything outside the stock it is given as air, so this must be
+            the real material outline, not the machining boundary.
 
     Returns:
         A list of Path.Command objects (G-code).
@@ -1212,6 +1323,14 @@ def zlevel_hybrid_to_gcode(
     keep_tool_down = pattern_options.get("keep_tool_down", True)
     keep_down_ratio = pattern_options.get("keep_down_ratio", 2.0) * tool_diam
 
+    # Adaptive: resolve the stock outline handed to Adaptive2d once for all layers
+    if is_adaptive:
+        from . import adaptive_common as _adaptive
+
+        a2d_stock, a2d_stock_offset, adaptive_params = _resolve_adaptive_stock(
+            stock_face, bb_face, radius, adaptive_params
+        )
+
     # 2. Main Layer Processing
     for z_target, cut_area, status in stack:
 
@@ -1223,17 +1342,8 @@ def zlevel_hybrid_to_gcode(
 
         # A: Adaptive Cut Pattern
         if is_adaptive:
-            from . import adaptive_common as _adaptive
-
-            # This single call checks the topology, sets up the offsets,
-            # handles the finishing_profile override, and prints a warning!
-            # layer_params is a per-layer view; adaptive_params itself is never modified.
-            geofence, bb_offset, layer_params = _setup_adaptive_geofence(
-                cut_area, bb_face, adaptive_params, radius, z_target, enforce_geofence
-            )
-
             pattern_cmds = _adaptive.generate(
-                layer_params,
+                adaptive_params,
                 feed_params,
                 radius,
                 step_over,
@@ -1242,10 +1352,9 @@ def zlevel_hybrid_to_gcode(
                 prev_z,
                 cut_area,
                 min_adaptive_area,
-                bb_face,
-                enforce_geofence=geofence,
+                a2d_stock,
                 cut_area_offset=radius,
-                bb_face_offset=bb_offset,
+                bb_face_offset=a2d_stock_offset,
             )
 
             commands.extend(pattern_cmds)
@@ -1338,105 +1447,6 @@ def zlevel_hybrid_to_gcode(
     commands.append(Path.Command("G0", {"Z": clear_hght, "F": vert_rapid}))
 
     return commands
-
-
-def _setup_adaptive_geofence(
-    cut_area, bb_face, adaptive_params, radius, z_target, enforce_geofence
-):
-    """
-    Analyzes the geometric relationship between the cut area and the stock boundary
-    to detect open pockets, and configures safety overrides for the Adaptive2d algorithm.
-
-    The libarea Adaptive2d algorithm is optimized for closed pockets and can produce
-    erratic toolpaths when encountering open boundaries. This function detects those
-    breaches using a two-pass check (AABB followed by topological intersection) and
-    applies geofencing and parameter overrides to ensure safe machining.
-
-    Overrides are applied to a per-layer copy of the parameters. The caller's
-    adaptive_params dictionary is never modified, so an override on one layer
-    does not leak into the following layers.
-
-    Args:
-        cut_area (Part.Shape): The 2D boundary of the area to be machined on this layer.
-        bb_face (Part.Shape): The 2D stock boundary (geofence limit).
-        adaptive_params (dict): The dictionary of adaptive routing parameters (read-only).
-        radius (float): The tool radius in millimeters.
-        z_target (float): The current Z-depth (used for contextual logging).
-        enforce_geofence (bool): The user's preference from the operation's Data tab.
-                                      If False, respects the power-user's choice to disable
-                                      geofence clipping on open pockets. Defaults to True.
-
-    Returns:
-        tuple: (geofence_active (bool), bb_offset (float), layer_params (dict))
-               - geofence_active: True if transit moves should be strictly clipped.
-               - bb_offset: The boundary offset applied for the Adaptive2d algorithm.
-               - layer_params: The parameters to use for this layer. This is the
-                 original dictionary when no override is needed, or a copy with
-                 the overrides applied.
-    """
-    # Defaults for closed pockets
-    force_insideout = bool(adaptive_params.get("force_insideout", False))
-    geofence = False
-    bb_offset = radius - 0.01
-
-    if not cut_area or cut_area.isNull() or not bb_face or bb_face.isNull():
-        return geofence, bb_offset, adaptive_params
-
-    # Open Pocket Geometric Detection
-    c_bb = cut_area.BoundBox
-    s_bb = bb_face.BoundBox
-    tol = 0.01
-    is_open = False
-
-    # Fast AABB Check
-    if (
-        c_bb.XMin <= s_bb.XMin + tol
-        or c_bb.XMax >= s_bb.XMax - tol
-        or c_bb.YMin <= s_bb.YMin + tol
-        or c_bb.YMax >= s_bb.YMax - tol
-    ):
-        is_open = True
-    else:
-        # Irregular Stock Check
-        try:
-            intersection = cut_area.common(bb_face)
-            if (
-                intersection
-                and not intersection.isNull()
-                and (
-                    abs(cut_area.Area - intersection.Area) > 0.01
-                    or abs(intersection.Length - cut_area.Length) > 0.01
-                )
-            ):
-                is_open = True
-        except Exception:
-            is_open = True
-
-    # Closed pocket: no overrides, use the caller's parameters unchanged
-    if not is_open or force_insideout:
-        return geofence, bb_offset, adaptive_params
-
-    # Open pocket: apply safety overrides to a per-layer copy
-    layer_params = dict(adaptive_params)
-    layer_params["finishing_profile"] = False
-
-    # Respect the power-user toggle
-    geofence = bool(enforce_geofence)
-    bb_offset = -0.01
-
-    status_text = "ENABLED" if geofence else "DISABLED (by user override)"
-
-    Path.Log.warning(
-        f"Z={round(z_target, 3)}: Outside adaptive cut detected.\n"
-        f"Geofence clipping is {status_text}.\n"
-        "The Adaptive2d algorithm can be unpredictable in open regions. For safest results:\n"
-        " - Inspect the toolpath closely for any anomalies.\n"
-        " - Set the 'Boundary box' to 'Stock' instead of 'BaseBoundBox'.\n"
-        " - Adjust the 'Boundary adjustment' manually if the tool overextends.\n"
-        "(Note: 'Finishing profile' was automatically disabled for this layer to prevent edge artifacts.)"
-    )
-
-    return geofence, bb_offset, layer_params
 
 
 def _find_start_point(wire, start_point, cut_climb):

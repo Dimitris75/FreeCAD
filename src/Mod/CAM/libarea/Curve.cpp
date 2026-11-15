@@ -14,7 +14,7 @@ const Point operator*(const double& d, const Point& p)
 {
     return p * d;
 }
-double Point::tolerance = 1.0 / CArea::default_clipper_scale;
+double Point::tolerance = 0.001;
 
 // This function is moved from header here to solve windows DLL not export
 // static variable problem
@@ -285,16 +285,6 @@ bool CCurve::IsClosed() const
         return false;
     }
     return m_vertices.front().m_p == m_vertices.back().m_p;
-}
-
-bool CCurve::IsExactlyClosed() const
-{
-    // Note that the behavior on empty CCurves is different from IsClosed -- this is the behavior I
-    // need for this new method, and I'm not feeling bold enough atm to change IsClosed() to match
-    if (m_vertices.size() == 0) {
-        return true;
-    }
-    return m_vertices.front().m_p.exactlyEquals(m_vertices.back().m_p);
 }
 
 void CCurve::ChangeStart(const Point& p)

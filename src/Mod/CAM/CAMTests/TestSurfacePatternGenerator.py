@@ -44,6 +44,7 @@ class MockFeature:
     def __init__(self, shape, label="Mock"):
         self.Shape = shape
         self.Label = label
+        self.Name = label
 
     def getElement(self, subname):
         return self.Shape.getElement(subname)
@@ -91,36 +92,69 @@ class TestSurfacePattern(PathTestUtils.PathTestBase):
 
     def test00_split_features(self):
         """
-        Tests the splitting of selected faces into 'cutting' and 'avoid' groups.
+        Tests that cutting and avoid faces come from their own lists.
 
         INPUT:
         - Function: split_selected_features()
-        - Parameters: A mock Base property and an avoid_count of 2.
-        - Input data: A simulated user selection of 5 faces.
+        - Parameters: a Base list with 3 faces and an Avoid list with 2 other faces.
 
         EXPECTED OUTPUT:
-        - Returns two lists: `cutting_faces` with 3 faces and `avoid_faces` with 2.
-        - This logic allows users to easily designate check surfaces from their selection.
+        - `cutting_faces` holds the 3 Base faces, `avoid_faces` the 2 Avoid faces.
+        - The order or length of Base plays no role in what is avoided.
         """
         from Path.Base.Generator.surface_pattern import split_selected_features
 
-        # Create a compound of 5 distinct faces to simulate a selection
-        faces = []
-        for i in range(5):
-            face = Part.makePlane(10, 10, FreeCAD.Vector(i * 15, 0, 0))
-            faces.append(face)
-        compound_shape = Part.Compound(faces)
+        mock_obj = self._five_face_feature()
+        base_prop = [(mock_obj, ["Face1", "Face2", "Face3"])]
+        avoid_prop = [(mock_obj, ["Face4", "Face5"])]
 
-        # Create a list of subnames (e.g., 'Face1', 'Face2', etc.)
-        subnames = [f"Face{i+1}" for i in range(len(compound_shape.Faces))]
-
-        mock_obj = MockFeature(compound_shape)
-        mock_base_prop = [(mock_obj, subnames)]
-
-        cutting, avoid = split_selected_features(mock_base_prop, avoid_count=2)
+        cutting, avoid = split_selected_features(base_prop, avoid_prop)
 
         self.assertEqual(len(cutting), 3, "Expected 3 faces in the cutting list")
         self.assertEqual(len(avoid), 2, "Expected 2 faces in the avoid list")
+        self.assertTrue(cutting[0].isSame(mock_obj.Shape.Faces[0]))
+        self.assertTrue(avoid[0].isSame(mock_obj.Shape.Faces[3]))
+
+    def test00a_split_features_overlap_is_avoided(self):
+        """
+        Tests that a face present in both lists is treated as avoided.
+
+        INPUT:
+        - Base: Face1, Face2, Face3. Avoid: Face3.
+
+        EXPECTED OUTPUT:
+        - Face3 is removed from the cutting faces and kept as an avoid face.
+        """
+        from Path.Base.Generator.surface_pattern import split_selected_features
+
+        mock_obj = self._five_face_feature()
+        cutting, avoid = split_selected_features(
+            [(mock_obj, ["Face1", "Face2", "Face3"])], [(mock_obj, ["Face3"])]
+        )
+
+        self.assertEqual(len(cutting), 2)
+        self.assertEqual(len(avoid), 1)
+        self.assertFalse(any(f.isSame(mock_obj.Shape.Faces[2]) for f in cutting))
+
+    def test00b_split_features_avoid_without_base(self):
+        """
+        Tests avoid faces with an empty Base (whole-model machining).
+
+        EXPECTED OUTPUT:
+        - No cutting faces (the caller machines the whole model).
+        - The avoid faces are still returned, so the keep-out is honoured.
+        """
+        from Path.Base.Generator.surface_pattern import split_selected_features
+
+        mock_obj = self._five_face_feature()
+        cutting, avoid = split_selected_features([], [(mock_obj, ["Face2"])])
+
+        self.assertEqual(cutting, [])
+        self.assertEqual(len(avoid), 1)
+
+    def _five_face_feature(self):
+        faces = [Part.makePlane(10, 10, FreeCAD.Vector(i * 15, 0, 0)) for i in range(5)]
+        return MockFeature(Part.Compound(faces))
 
     def test01_group_features(self):
         """

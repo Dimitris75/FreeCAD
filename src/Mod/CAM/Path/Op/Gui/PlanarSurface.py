@@ -28,6 +28,8 @@ from PySide.QtCore import QT_TRANSLATE_NOOP
 import Path
 import Path.Base.Gui.Util as PathGuiUtil
 import Path.Op.Gui.Base as PathOpGui
+import Path.Op.Gui.BoundaryPreview as BoundaryPreview
+import Path.Op.Gui.FeatureListPage as FeatureListPage
 import Path.Op.PlanarSurface as PathPlanarSurface
 
 __title__ = "CAM Planar Surface Operation UI"
@@ -40,14 +42,78 @@ translate = FreeCAD.Qt.translate
 Path.Log.setLevel(Path.Log.Level.INFO, Path.Log.thisModule())
 
 
+# Properties that change the boundary preview: a change redraws it
+PREVIEW_PROPERTIES = (
+    "Base",
+    "AvoidGeometry",
+    "FillHoleFaces",
+    "Strategy",
+    "BoundBox",
+    "BoundaryAdjustment",
+    "AvoidGeometryOverlap",
+    "HandleMultipleFeatures",
+    "BoundaryOutline",
+    "LinearDeflection",
+    "OptimizeMeshConversion",
+    "ToolController",
+    "Workplane",
+    "SafeHeight",
+    "SampleInterval",
+)
+
+
+class TaskPanelBaseGeometryPage(FeatureListPage.FeatureListBaseGeometryPage):
+    """Base Geometry page with the Avoid Geometry (every strategy) and Fill
+    Holes (Z-Level Hybrid) lists beside Base (see Path.Op.Gui.FeatureListPage)."""
+
+    FEATURE_LISTS = (
+        FeatureListPage.FeatureList(
+            prop="AvoidGeometry",
+            title=QT_TRANSLATE_NOOP("CAM_PlanarSurface", "Avoid Geometry"),
+            hint=QT_TRANSLATE_NOOP(
+                "CAM_PlanarSurface",
+                "Faces, or closed loops of edges, the tool must not cut. "
+                "The area to machine is set on the Base Geometry sub-tab.",
+            ),
+            accepted=("Face", "Edge"),
+            context="CAM_PlanarSurface",
+        ),
+        FeatureListPage.FeatureList(
+            prop="FillHoleFaces",
+            title=QT_TRANSLATE_NOOP("CAM_PlanarSurface", "Fill Holes"),
+            hint=QT_TRANSLATE_NOOP(
+                "CAM_PlanarSurface",
+                "Wall faces of holes to fill. Filled holes are capped so the tool does not enter them.",
+            ),
+            accepted=("Face",),
+            visible=lambda obj: getattr(obj, "Strategy", "") in ("ZLevelHybrid", "SurfaceScan"),
+            context="CAM_PlanarSurface",
+        ),
+    )
+    VISIBILITY_PROPERTIES = ("Strategy",)
+
+
 class TaskPanelOpPage(PathOpGui.TaskPanelPage):
     """Page controller class for the Surface operation."""
+
+    def taskPanelBaseGeometryPage(self, obj, features):
+        """taskPanelBaseGeometryPage(obj, features) ... Base Geometry page with the
+        per-strategy face lists (Avoid / Fill Holes) as extra sub-tabs."""
+        return TaskPanelBaseGeometryPage(obj, features)
 
     def initPage(self, obj):
         """initPage(obj) ... initialize the task panel page"""
         self.setTitle("Planar Surface - " + obj.Label)
         self.updateVisibility()
         self.form.accuracySlider.setPageStep(1)
+
+        # Boundary preview (see Path.Op.Gui.BoundaryPreview)
+        self.boundaryPreview = BoundaryPreview.BoundaryPreviewController(
+            obj,
+            self.form.showBoundaryPreview,
+            properties=PREVIEW_PROPERTIES,
+            status=self.form.boundaryPreviewStatus,
+        )
 
     def getToolTipList(self):
         """getToolTipList() ... Collect list of tuples (widget_name: str, property_name: str)"""
@@ -61,17 +127,16 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         tuples.append(("minSampleInterval", "MinSampleInterval"))
         tuples.append(("boundBoxSelect", "BoundBox"))
         tuples.append(("boundaryAdjustment", "BoundaryAdjustment"))
+        tuples.append(("boundaryOutline", "BoundaryOutline"))
         tuples.append(("stockToLeave", "StockToLeave"))
         tuples.append(("depthOffset", "DepthOffset"))
-        tuples.append(("avoidLastX_Faces", "AvoidLastX_Faces"))
-        tuples.append(("avoidFacesOverlap", "AvoidFacesOverlap"))
+        tuples.append(("avoidGeometryOverlap", "AvoidGeometryOverlap"))
         tuples.append(("stepOver", "StepOver"))
         tuples.append(("profileEdges", "ProfileEdges"))
         tuples.append(("cutPatternAngle", "CutPatternAngle"))
         tuples.append(("cutPatternReversed", "CutPatternReversed"))
         tuples.append(("clearPlanarOnly", "ClearPlanarOnly"))
         tuples.append(("ignoreOuter", "IgnoreOuter"))
-        tuples.append(("fillSelectedHoles", "FillSelectedHoles"))
         tuples.append(("useStartPoint", "UseStartPoint"))
         tuples.append(("keepToolDown", "KeepToolDown"))
         tuples.append(("optimizeEnabled", "OptimizeLinearPaths"))
@@ -127,11 +192,7 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         PathGuiUtil.updateInputField(obj, "BoundaryAdjustment", self.form.boundaryAdjustment)
         PathGuiUtil.updateInputField(obj, "StockToLeave", self.form.stockToLeave)
         PathGuiUtil.updateInputField(obj, "DepthOffset", self.form.depthOffset)
-
-        if obj.AvoidLastX_Faces != self.form.avoidLastX_Faces.value():
-            obj.AvoidLastX_Faces = self.form.avoidLastX_Faces.value()
-
-        PathGuiUtil.updateInputField(obj, "AvoidFacesOverlap", self.form.avoidFacesOverlap)
+        PathGuiUtil.updateInputField(obj, "AvoidGeometryOverlap", self.form.avoidGeometryOverlap)
 
         # -- Clearing Options --
         if obj.StepOver != self.form.stepOver.value():
@@ -150,8 +211,8 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         if obj.IgnoreOuter != self.form.ignoreOuter.isChecked():
             obj.IgnoreOuter = self.form.ignoreOuter.isChecked()
 
-        if obj.FillSelectedHoles != self.form.fillSelectedHoles.isChecked():
-            obj.FillSelectedHoles = self.form.fillSelectedHoles.isChecked()
+        if obj.BoundaryOutline != self.form.boundaryOutline.isChecked():
+            obj.BoundaryOutline = self.form.boundaryOutline.isChecked()
 
         if obj.UseStartPoint != self.form.useStartPoint.isChecked():
             obj.UseStartPoint = self.form.useStartPoint.isChecked()
@@ -213,14 +274,11 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         self.form.stockToLeave.setText(
             FreeCAD.Units.Quantity(obj.StockToLeave.Value, FreeCAD.Units.Length).UserString
         )
-        self.form.avoidLastX_Faces.setValue(obj.AvoidLastX_Faces)
-
-        self.form.avoidFacesOverlap.setText(
-            FreeCAD.Units.Quantity(obj.AvoidFacesOverlap.Value, FreeCAD.Units.Length).UserString
-        )
-
         self.form.depthOffset.setText(
             FreeCAD.Units.Quantity(obj.DepthOffset.Value, FreeCAD.Units.Length).UserString
+        )
+        self.form.avoidGeometryOverlap.setText(
+            FreeCAD.Units.Quantity(obj.AvoidGeometryOverlap.Value, FreeCAD.Units.Length).UserString
         )
 
         # -- Clearing Options --
@@ -246,10 +304,10 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         else:
             self.form.ignoreOuter.setCheckState(QtCore.Qt.Unchecked)
 
-        if obj.FillSelectedHoles:
-            self.form.fillSelectedHoles.setCheckState(QtCore.Qt.Checked)
+        if obj.BoundaryOutline:
+            self.form.boundaryOutline.setCheckState(QtCore.Qt.Checked)
         else:
-            self.form.fillSelectedHoles.setCheckState(QtCore.Qt.Unchecked)
+            self.form.boundaryOutline.setCheckState(QtCore.Qt.Unchecked)
 
         if obj.UseStartPoint:
             self.form.useStartPoint.setCheckState(QtCore.Qt.Checked)
@@ -310,8 +368,7 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         signals.append(self.form.boundaryAdjustment.editingFinished)
         signals.append(self.form.stockToLeave.editingFinished)
         signals.append(self.form.depthOffset.editingFinished)
-        signals.append(self.form.avoidLastX_Faces.editingFinished)
-        signals.append(self.form.avoidFacesOverlap.editingFinished)
+        signals.append(self.form.avoidGeometryOverlap.editingFinished)
         # -- Clearing Options --
         signals.append(self.form.stepOver.editingFinished)
         signals.append(self.form.profileEdges.currentIndexChanged)
@@ -327,11 +384,11 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             # -- Performance and Accuracy
             signals.append(self.form.adaptiveSampling.checkStateChanged)
             # -- Boundary Control --
+            signals.append(self.form.boundaryOutline.checkStateChanged)
             # -- Clearing Options --
             signals.append(self.form.cutPatternReversed.checkStateChanged)
             signals.append(self.form.clearPlanarOnly.checkStateChanged)
             signals.append(self.form.ignoreOuter.checkStateChanged)
-            signals.append(self.form.fillSelectedHoles.checkStateChanged)
             signals.append(self.form.useStartPoint.checkStateChanged)
             # -- Optimization --
             signals.append(self.form.keepToolDown.checkStateChanged)
@@ -344,11 +401,11 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             # -- Performance and Accuracy
             signals.append(self.form.adaptiveSampling.stateChanged)
             # -- Boundary Control --
+            signals.append(self.form.boundaryOutline.stateChanged)
             # -- Clearing Options --
             signals.append(self.form.cutPatternReversed.stateChanged)
             signals.append(self.form.clearPlanarOnly.stateChanged)
             signals.append(self.form.ignoreOuter.stateChanged)
-            signals.append(self.form.fillSelectedHoles.stateChanged)
             signals.append(self.form.useStartPoint.stateChanged)
             # -- Optimization --
             signals.append(self.form.keepToolDown.stateChanged)
@@ -487,13 +544,37 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         is_waterline = strategy == "Waterline"
         is_zlevel = strategy == "ZLevelHybrid"
 
-        self.form.boundaryGroup.setVisible(not is_waterline)
+        is_surface_scan = strategy == "SurfaceScan"
+
+        # Waterline: Boundary adjustment, Depth offset and Avoid geometry overlap
+        # apply to its Base / Avoid boundary; Boundary box has no meaning there.
+        self.form.boundaryGroup.setVisible(True)
+        self.form.boundBoxSelect.setVisible(not is_waterline)
+        self.form.boundBoxSelect_label.setVisible(not is_waterline)
         self.form.stockToLeave.setVisible(is_zlevel)
         self.form.stockToLeave_label.setVisible(is_zlevel)
-        self.form.avoidLastX_Faces.setVisible(not is_zlevel)
-        self.form.avoidLastX_Faces_label.setVisible(not is_zlevel)
-        self.form.profileEdges.setVisible(not is_zlevel)
-        self.form.profileEdges_label.setVisible(not is_zlevel)
+        self.form.profileEdges.setVisible(is_surface_scan)
+        self.form.profileEdges_label.setVisible(is_surface_scan)
+        self.form.boundaryOutline.setVisible(is_surface_scan)
+        self._updateAvoidOverlapWidget()
+
+    def _updateAvoidOverlapWidget(self):
+        """Avoid geometry overlap only applies with Avoid Geometry selected: grey it out otherwise."""
+        has_avoid = bool(getattr(self.obj, "AvoidGeometry", None))
+        self.form.avoidGeometryOverlap.setEnabled(has_avoid)
+        self.form.avoidGeometryOverlap_label.setEnabled(has_avoid)
+
+    def updateData(self, obj, prop):
+        """updateData(obj, prop) ... the Avoid list is edited on the Base Geometry page."""
+        if prop == "AvoidGeometry":
+            self._updateAvoidOverlapWidget()
+        if hasattr(self, "boundaryPreview"):
+            self.boundaryPreview.updateData(obj, prop)
+
+    def cleanupPage(self, obj):
+        """cleanupPage(obj) ... the boundary preview goes with the panel."""
+        if hasattr(self, "boundaryPreview"):
+            self.boundaryPreview.cleanup()
 
     def _updateClearingWidgets(self, strategy, cut_pattern, cut_pattern_zlevel):
         """Manages widgets in the 'Clearing Options' group."""
@@ -517,12 +598,7 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         # Z-Level specific checkboxes
         self.form.clearPlanarOnly.setVisible(is_zlevel)
         self.form.ignoreOuter.setVisible(is_zlevel)
-        self.form.fillSelectedHoles.setVisible(is_zlevel)
         self.form.useStartPoint.setVisible(is_zlevel)
-
-        # Surface Scan specific checkboxes
-        self.form.avoidFacesOverlap.setVisible(is_surface_scan)
-        self.form.avoidFacesOverlap_label.setVisible(is_surface_scan)
 
     def _updateOptimizationWidgets(self, strategy):
         """Manages widgets in the 'Optimization' group."""

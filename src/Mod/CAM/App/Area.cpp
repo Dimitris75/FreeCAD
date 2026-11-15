@@ -124,6 +124,35 @@ FC_LOG_LEVEL_INIT("Path.Area", true, true)
 using namespace Path;
 using namespace heeks;
 
+// When set, addWire() discretizes free-form curves (B-splines, Beziers, conics) into line
+// segments instead of fitting biarcs. Area::project() (used by Outline mode) sets it: the HLR
+// silhouette curves it produces are approximations whose biarc fits are not reliable, and the
+// discretize route is what Outline used before biarc fitting was added.
+static thread_local bool s_discretizeFreeform = false;
+
+namespace
+{
+class DiscretizeFreeformGuard
+{
+public:
+    DiscretizeFreeformGuard()
+        : prev(s_discretizeFreeform)
+    {
+        s_discretizeFreeform = true;
+    }
+    ~DiscretizeFreeformGuard()
+    {
+        s_discretizeFreeform = prev;
+    }
+    DiscretizeFreeformGuard(const DiscretizeFreeformGuard&) = delete;
+    DiscretizeFreeformGuard& operator=(const DiscretizeFreeformGuard&) = delete;
+
+private:
+    bool prev;
+};
+}
+
+
 CAreaParams::CAreaParams()
     : PARAM_INIT(PARAM_FNAME, AREA_PARAMS_CAREA)
 {}
@@ -427,18 +456,7 @@ void Area::addWire(CArea& area, const TopoDS_Wire& wire, const gp_Trsf* trsf, do
         const TopoDS_Edge& edge = TopoDS::Edge(xp.Current());
         BRepAdaptor_Curve curve(edge);
         bool reversed = (xp.Current().Orientation() == TopAbs_REVERSED);
-
-        // An OCC wire's edges are only guaranteed to meet within the vertex tolerance, but each
-        // CVertex implicitly starts exactly where the previous CVertex ends. Silently adjusting the
-        // start points of edges is often ok, but it has the potential to turn short arcs into
-        // nearly full circles. To avoid this, we check if the vertex is not exactly correct and add
-        // a bridge segment if it is needed.
-        const gp_Pnt pStart = curve.Value(reversed ? curve.LastParameter() : curve.FirstParameter());
-        if (!(ccurve.m_vertices.back().m_p == Point(pStart.X(), pStart.Y()))) {
-            ccurve.append(CVertex(Point(pStart.X(), pStart.Y())));
-        }
-
-        const gp_Pnt pEnd = curve.Value(reversed ? curve.FirstParameter() : curve.LastParameter());
+        p = curve.Value(reversed ? curve.FirstParameter() : curve.LastParameter());
 
         // Helper code for appending a discretized curve
         auto appendDiscretized = [&](const Adaptor3d_Curve& c) {
@@ -479,7 +497,7 @@ void Area::addWire(CArea& area, const TopoDS_Wire& wire, const gp_Trsf* trsf, do
 
         switch (curve.GetType()) {
             case GeomAbs_Line: {
-                ccurve.append(CVertex(Point(pEnd.X(), pEnd.Y())));
+                ccurve.append(CVertex(Point(p.X(), p.Y())));
                 break;
             }
 
@@ -496,7 +514,8 @@ void Area::addWire(CArea& area, const TopoDS_Wire& wire, const gp_Trsf* trsf, do
                 // Discretize instead of using biarcs for:
                 // - edges with only a pcurve (no 3D curve), which can't be fed to biarcs
                 // - degree 1 BSplines (polylines, no slope continuity at corners)
-                if (!curve.Is3DCurve()
+                // - Outline projection (see s_discretizeFreeform)
+                if (s_discretizeFreeform || !curve.Is3DCurve()
                     || (curve.GetType() == GeomAbs_BSplineCurve && curve.Degree() == 1)) {
                     appendDiscretized(curve);
                     break;
@@ -504,7 +523,7 @@ void Area::addWire(CArea& area, const TopoDS_Wire& wire, const gp_Trsf* trsf, do
 
                 // Convert very short curves to single segments
                 if (GCPnts_AbscissaPoint::Length(curve) < Precision::Confusion()) {
-                    ccurve.append(CVertex(Point(pEnd.X(), pEnd.Y())));
+                    ccurve.append(CVertex(Point(p.X(), p.Y())));
                     break;
                 }
 
@@ -556,12 +575,6 @@ void Area::addWire(CArea& area, const TopoDS_Wire& wire, const gp_Trsf* trsf, do
                 break;
             }
         }
-    }
-
-    // If the wire is closed, detect the potential (vertex tolerance) gap between the end point and
-    // the start point and close it.
-    if (BRep_Tool::IsClosed(wire) && !ccurve.IsExactlyClosed()) {
-        ccurve.append(ccurve.m_vertices.front());
     }
 
     if (to_edges) {
@@ -1002,7 +1015,6 @@ struct WireJoiner
         int iEnd[2];    // adjacent list index end
         bool used;
         bool hasBox;
-        int index = -1;  // used to create a stable ordering on edges in findClosedWires
         EdgeInfo(const TopoDS_Edge& e, bool bbox)
             : edge(e)
             , hasBox(false)
@@ -1297,24 +1309,12 @@ struct WireJoiner
         // tolerance of edges which are supposed to be connected. So use a
         // lesser precision below, and call makeCleanWire to fix the tolerance
 
-        // Order by position in `edges` instead of pointer address, so the resulting wire
-        // starts in a stable location
-        struct ByIndex
-        {
-            bool operator()(const EdgeInfo* a, const EdgeInfo* b) const
-            {
-                return a->index < b->index;
-            }
-        };
-
         std::vector<VertexInfo> adjacentList;
-        std::set<EdgeInfo*, ByIndex> edgesToVisit;
+        std::set<EdgeInfo*> edgesToVisit;
         int skips = 0;
 
-        int idx = 0;
         for (auto& info : edges) {
             info.reset();
-            info.index = idx++;
         }
 
         for (auto& info : edges) {
@@ -1785,6 +1785,9 @@ int Area::project(
     int skips = joiner.findClosedWires(tolerance);
 
     showShape(joiner.comp, "pre_project");
+
+    // Outline: use the discretize route for free-form HLR curves (no biarc fitting)
+    DiscretizeFreeformGuard discretizeFreeform;
 
     Area area(params);
     area.myParams.SectionCount = 0;
@@ -2791,20 +2794,30 @@ TopoDS_Shape Area::toShape(const CCurve& _c, const gp_Trsf* trsf, int reorient)
             double r = center.Distance(pt);
             double r2 = center.Distance(pnext);
 
-            // Replace arcs with their chords if the radius is small (OCCT can't
-            // handle constructing arcs with radii near Precision::Confusion()).
-            // There is a wide range of plausibly acceptible thresholds to choose
-            // from for this; I have tentatively chosen diamter < m_accuracy.
-            //
-            // Also replace arcs if the chord is a very good representation of the
-            // arc (i.e. minor arc of with short cord).
-            //   Exact formula: r - sqrt(r² - d²/4)
-            //   Approximation for small d: d²/(8r)
+            // Degenerate arc: the whole arc fits within a couple of Precision::Confusion(),
+            // e.g. a slice taken exactly at the apex of a fillet/sphere/torus. OCC cannot build
+            // a circle this small, so replace it with its chord. The chord's deviation from the
+            // true arc is at most 2*r, which is below geometric tolerance, and keeping an edge
+            // (rather than dropping the arc) preserves wire connectivity.
+            if (std::max(r, r2) <= Precision::Confusion()) {
+                    AREA_WARN(
+                            "Replacing degenerate arc (r=" << r << ", " << r2 << ") with chord at"
+                                                            << AREA_XYZ(center)
+                        );
+                    auto edge = BRepBuilderAPI_MakeEdge(pt, pnext).Edge();
+                    hEdges->Append(edge);
+                    pt = pnext;
+                    continue;
+                }
+
+            // For short arcs, if the arc deviates from its chord by a tiny amount, replace it
+            // with the chord
+            // Exact formula: r - sqrt(r² - d²/4)
+            // Approximation for small d: d²/(8r)
             double d = pt.Distance(pnext);
+            double deviation = d * d / (8.0 * r);
             bool minorArc = IsLeft(pt, pnext, center) == (v.m_type > 0);
-            bool smallDeviation = d * d / (8.0 * r) < Precision::Confusion();
-            bool smallCircle = 2 * std::max(r, r2) < CArea::get_accuracy();
-            if ((minorArc && smallDeviation) || smallCircle) {
+            if (minorArc && deviation < Precision::Confusion()) {
                 auto edge = BRepBuilderAPI_MakeEdge(pt, pnext).Edge();
                 hEdges->Append(edge);
                 pt = pnext;

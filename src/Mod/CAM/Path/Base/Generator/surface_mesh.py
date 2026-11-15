@@ -273,7 +273,7 @@ def _shape_to_stl(
     angular_deflection,
     mesh_simplification=1,
     silence=False,
-    use_cpp=True,
+    use_cpp_tessellation=True,
 ):
     """Convert a Part.Shape / Compound to ocl.STLSurf using raw arrays.
 
@@ -285,7 +285,7 @@ def _shape_to_stl(
         linear_deflection: Linear deflection for tessellation (mm).
         angular_deflection: Angular deflection for tessellation (degrees).
         mesh_simplification: Integer 1-7 for mesh simplification (1=highest accuracy, 7=fastest).
-        use_cpp: Temporary Flag to disable C++ tessellation for 3+2 axis on Waterline Op (Default - True)
+        use_cpp_tessellation: Temporary Flag to disable C++ tessellation for 3+2 axis on Waterline Op (Default - True)
 
     Returns:
         An ocl.STLSurf object.
@@ -309,7 +309,7 @@ def _shape_to_stl(
 
     # Tessellation phase
     tess_start = time.perf_counter()
-    if _HAS_CPP and use_cpp:
+    if _HAS_CPP and use_cpp_tessellation:
         try:
             verts, faces = _shape_to_stl_cpp(shape, linear_deflection, angular_deflection)
         except RuntimeError as e:
@@ -340,7 +340,7 @@ def _shape_to_stl(
     ocl_start = time.perf_counter()
     from . import surface_common
 
-    ocl = surface_common._get_ocl()
+    ocl = surface_common.get_ocl()
 
     stl = ocl.STLSurf()
     addTriangle = stl.addTriangle
@@ -394,7 +394,7 @@ def _mesh_to_stl(mesh_obj):
         f"surface_mesh.mesh_to_stl: input {len(mesh_points)} points, {len(mesh_facets)} facets"
     )
 
-    ocl = surface_common._get_ocl()
+    ocl = surface_common.get_ocl()
     stl = ocl.STLSurf()
     addTriangle = stl.addTriangle
     Point = ocl.Point
@@ -507,6 +507,7 @@ def _model_optimization(
     tool_diam=0.0,
     final_depth=0.0,
     faces=None,
+    reach=None,
 ):
     """
     Filters the model's faces based on specific criteria to minimize the
@@ -524,12 +525,14 @@ def _model_optimization(
             it (e.g. reused from boundary-face construction), to avoid re-deriving
             FreeCAD's freshly-built face wrappers again here. Falls back to
             shape.Faces if not provided.
+        reach (surface_boundary.BoundaryClipper, optional): The area the cutter
+            can reach, e.g. a Custom boundary grown by the tool radius. When
+            given, faces whose bounds miss it are dropped, with or without a
+            face selection, and it replaces the selection-based clip box.
 
     Returns:
         Part.Compound or Part.Shape: A compound of the filtered faces, or the original shape if no faces are filtered.
     """
-    from . import surface_common
-
     if faces is None:
         faces = shape.Faces
 
@@ -542,7 +545,7 @@ def _model_optimization(
     if exempt_faces:
         exempt_set = {_face_fingerprint(f) for f in exempt_faces}
 
-        if bb_face is not None and tool_diam > 0 and strategy == "SurfaceScan":
+        if reach is None and bb_face is not None and tool_diam > 0 and strategy == "SurfaceScan":
             ba = stl_filter_adj
             bb = bb_face.BoundBox
             clip_bb = {
@@ -562,6 +565,11 @@ def _model_optimization(
 
             # Reject faces below final depth
             if face.BoundBox.ZMax < final_depth - 0.1:  # Plus a small buffer
+                rejected += 1
+                continue
+
+            # Reject faces the cutter cannot reach (Custom boundary)
+            if reach is not None and not reach.touches(face.BoundBox):
                 rejected += 1
                 continue
 
@@ -602,8 +610,8 @@ def _model_optimization(
     return Part.makeCompound(filtered)
 
 
-def _shape_to_safe_stl(
-    model_shape,
+def _make_safe_stl(
+    stl,
     bb_safe,
     pad_buffer,
     final_depth,
@@ -611,90 +619,75 @@ def _shape_to_safe_stl(
     start_depth,
     linear_deflection,
     angular_deflection,
-    mesh_simplification,
-    use_cpp,
+    use_cpp_tessellation,
 ):
     """
-    Generates the secondary (safety) STL mesh for collision avoidance.
+    The secondary (safety) mesh that links and lead arcs are probed on: the
+    primary mesh, copied, plus
 
-    This function creates a robust "keep-out zones" for any avoided faces.
+    - a floor at Final Depth around bb_safe, so a probe over empty space stops
+      there instead of finding nothing;
+    - a lid over each Avoid zone at Start Depth + 0.1, so a move probed over
+      one rises above Start Depth and retracts instead of crossing it.
+
+    The model is not meshed again: its triangles are copied from stl, so the
+    moves are checked against exactly the surface the cuts were computed on.
+    Only the floor and lids are tessellated, a little coarser than the model
+    (they are flat).
 
     Args:
-        model_shape (Part.Shape): The complete, un-clipped model geometry.
-        bb_safe (Part.Face): The bounding box of the model or selected faces.
-        pad_buffer (float): The calculated outward offset for the safety pad.
-        final_depth (float): The lower Z-bound of the operation.
-        avoid_boundary_stl (Part.Shape, optional): Pre-built Avoid Faces "keep-out" boundary.
-        start_depth (float): The upper Z-bound of the operation.
-        linear_deflection (float): The base linear deflection for calculating a coarse mesh.
-        angular_deflection (float): The base angular deflection for calculating a coarse mesh.
-        mesh_simplification (int): The user-set simplification level for the primary mesh.
+        stl (ocl.STLSurf): The primary mesh; left unchanged.
+        bb_safe (Part.Shape): The floor is laid out around its bounding box.
+        pad_buffer (float): How far the floor reaches beyond it.
+        final_depth (float): The floor's height.
+        avoid_boundary_stl (Part.Shape | None): The Avoid zones' footprint
+            (surface_boundary.build_avoid_boundary).
+        start_depth (float): The lids sit 0.1 above it.
+        linear_deflection (float): The primary mesh's linear deflection.
+        angular_deflection (float): The primary mesh's angular deflection.
+        use_cpp_tessellation (bool): See _shape_to_stl.
 
     Returns:
-        ocl.STLSurf: The generated safety mesh, or None on failure.
+        ocl.STLSurf: The safety mesh, or None on failure (logged).
     """
-    fused_shapes = []
+    from . import surface_common
+
+    ocl = surface_common.get_ocl()
     bb = bb_safe.BoundBox
-
-    fused_shapes.append(model_shape)
-
-    # Create a pad face at the bottom of the original bounding box
-    try:
-        p1 = FreeCAD.Vector(bb.XMin - pad_buffer, bb.YMin - pad_buffer, final_depth)
-        p2 = FreeCAD.Vector(bb.XMax + pad_buffer, bb.YMin - pad_buffer, final_depth)
-        p3 = FreeCAD.Vector(bb.XMax + pad_buffer, bb.YMax + pad_buffer, final_depth)
-        p4 = FreeCAD.Vector(bb.XMin - pad_buffer, bb.YMax + pad_buffer, final_depth)
-
-        pad_wire = Part.makePolygon([p1, p2, p3, p4, p1])
-        pad_face = Part.Face(pad_wire)
-        fused_shapes.append(pad_face)
-        Path.Log.debug("surface_mesh._shape_to_safe_stl: Appended bottom pad face to safe STL.")
-    except Exception as e:
-        Path.Log.warning(f"Failed to create bottom pad face for safe STL: {e}")
-
-    # Fuse in the "Keep-Out Pillar" for the pre-built avoid boundary, if any
-    if avoid_boundary_stl:
-        Path.Log.debug(
-            "surface_mesh._shape_to_safe_stl: Fusing precomputed avoid-zone boundary into safe STL."
+    extras = [
+        Part.makePlane(
+            bb.XLength + 2 * pad_buffer,
+            bb.YLength + 2 * pad_buffer,
+            FreeCAD.Vector(bb.XMin - pad_buffer, bb.YMin - pad_buffer, final_depth),
         )
+    ]
+    if avoid_boundary_stl:
         try:
-            avoid = Part.makeFace(avoid_boundary_stl)
-            avoid.translate(FreeCAD.Vector(0, 0, start_depth + 0.1))
-            fused_shapes.append(avoid)
+            lid = Part.makeFace(avoid_boundary_stl)
+            lid.translate(FreeCAD.Vector(0, 0, start_depth + 0.1))
+            extras.append(lid)
         except Exception as e:
             Path.Log.error(f"Generating avoid zones for avoided faces failed: {e}")
 
-    # Fuse and create a coarse mesh
-    safe_compound = Part.Compound(fused_shapes)
-
-    if _HAS_SIMPLIFICATION:
-        # PyVista will intelligently decimate flat areas, so we can afford
-        # a higher resolution base mesh to capture perfect boundary edges.
-        safe_lin_def = linear_deflection
-        safe_ang_def = angular_deflection
-    else:
-        # No PyVista: We must manually loosen the deflection to reduce
-        # triangle count and prevent the boundary calculations from lagging.
-        safe_lin_def = linear_deflection + 0.02
-        safe_ang_def = angular_deflection + 0.1
-
     try:
-        safe_stl = _shape_to_stl(
-            safe_compound,
-            safe_lin_def,
-            safe_ang_def,
-            max(mesh_simplification, 2),
+        extra_stl = _shape_to_stl(
+            Part.makeCompound(extras),
+            linear_deflection + 0.02,
+            angular_deflection + 0.1,
+            1,
             silence=True,
-            use_cpp=use_cpp,
+            use_cpp_tessellation=use_cpp_tessellation,
         )
-        Path.Log.debug("surface_mesh._shape_to_safe_stl: Safe STL generated successfully.")
+        safe_stl = ocl.STLSurf()
+        for mesh in (stl, extra_stl):
+            for triangle in mesh.getTriangles():
+                safe_stl.addTriangle(triangle)
     except Exception as e:
         Path.Log.error(
-            "Could not generate the safety collision mesh."
-            f"WARNING: Rapid transitions and Smart Lead-In/Out moves may crash into the part! (Error: {e})"
+            "Could not generate the safety collision mesh. WARNING: Rapid transitions "
+            f"and Smart Lead-In/Out moves may crash into the part! (Error: {e})"
         )
         return None
-
     return safe_stl
 
 
@@ -716,14 +709,16 @@ def generate_stl(
     angular_deflection,
     mesh_simplification,
     model_faces=None,
-    use_cpp=True,
+    use_cpp_tessellation=True,
+    reach=None,
+    fill_caps=None,
 ):
     """
     Orchestrates the creation of the primary (machining) and secondary (safety) STL meshes.
 
     This function acts as a high-level controller. It generates the primary STL from
     the appropriate geometry (selected faces or full model) and then, if required,
-    delegates the creation of the complex safety STL to the _shape_to_safe_stl helper.
+    adds the safety STL's floor and Avoid lids to a copy of it (_make_safe_stl).
 
     Args:
         model_shape (Part.Shape): The mathematically fused solid of the entire Job model.
@@ -733,7 +728,7 @@ def generate_stl(
         stl_faces (list): A list of Part.Face objects to be machined.
         stl_filter_adj (float): A positive offset value for the boundary adjustment of the STL face filter.
         bb_face: (Part.Face): The BoundBox of the selected faces.
-        avoid_boundary_stl (Part.Shape, optional): Pre-built Avoid Faces "keep-out" boundary.
+        avoid_boundary_stl (Part.Shape, optional): Pre-built Avoid Geometry "keep-out" boundary.
         tool_diam (float): The diameter of the active tool.
         needs_safe_stl (bool): Flag indicating if the safety model is required.
         boundary_adjustment (float): A positive or negative value of the boundary adjustment.
@@ -745,11 +740,14 @@ def generate_stl(
         model_faces (list, optional): Pre-computed model_shape.Faces, if the caller
             already has it (e.g. reused from boundary-face construction), to avoid
             re-deriving FreeCAD's freshly-built face wrappers again here.
-        use_cpp (bool): Temporary Flag to disable C++ tessellation for 3+2 axis on Waterline Op
+        use_cpp_tessellation (bool): Temporary Flag to disable C++ tessellation for 3+2 axis on Waterline Op
+        reach (surface_boundary.BoundaryClipper, optional): The area the cutter
+            can reach; faces outside it are left out of the mesh (see
+            _model_optimization).
 
     Returns:
         tuple: (stl, safe_stl), where stl is the primary mesh and safe_stl is the
-               collision mesh (or a copy of stl if generation failed or wasn't needed).
+               collision mesh (stl itself if generation failed or wasn't needed).
     """
     stl = safe_stl = clipped_shape = optimized_shape = None
 
@@ -789,6 +787,7 @@ def generate_stl(
                 tool_diam,
                 final_depth,
                 faces=model_faces,
+                reach=reach,
             )
             if optimized_shape and not optimized_shape.isNull():
                 model_shape = optimized_shape
@@ -803,6 +802,10 @@ def generate_stl(
         if clipped_shape and not clipped_shape.isNull():
             model_shape = clipped_shape
 
+        # Fill Holes caps are meshed with the model: the cutter rides over them
+        if fill_caps:
+            model_shape = Part.makeCompound([model_shape] + list(fill_caps))
+
         # Generate the primary STL
         stl = _shape_to_stl(
             model_shape,
@@ -810,7 +813,7 @@ def generate_stl(
             angular_deflection,
             mesh_simplification,
             silence=False,
-            use_cpp=use_cpp,
+            use_cpp_tessellation=use_cpp_tessellation,
         )
 
         # Check if the STL object is None OR if it contains zero triangles.
@@ -830,8 +833,8 @@ def generate_stl(
                 bb_safe = model_shape
                 pad_buffer = boundary_adjustment + 0.1
 
-            safe_stl = _shape_to_safe_stl(
-                model_shape,
+            safe_stl = _make_safe_stl(
+                stl,
                 bb_safe,
                 pad_buffer,
                 final_depth,
@@ -839,8 +842,7 @@ def generate_stl(
                 start_depth,
                 linear_deflection,
                 angular_deflection,
-                mesh_simplification=max(mesh_simplification, 2),
-                use_cpp=use_cpp,
+                use_cpp_tessellation=use_cpp_tessellation,
             )
 
         if safe_stl is None:

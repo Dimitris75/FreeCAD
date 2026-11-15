@@ -164,63 +164,48 @@ class TestSurfaceMesh(PathTestUtils.PathTestBase):
     @unittest.skipUnless(_ocl_available, "OpenCamLib not available")
     def test04_safe_stl_generation(self):
         """
-        Tests the generation of the secondary (safety) STL for collision avoidance.
+        The safety mesh is the primary mesh plus a floor and the Avoid lids.
 
         INPUT:
-        - Function: _shape_to_safe_stl()
-        - Parameters: A model shape, a pre-built avoid boundary face, and
-          a floor-pad buffer.
-        - Input data: A 20x20x10 box as the model, with a separate 5x5
-          flat face representing an already-built Avoid Faces keep-out
-          boundary. _shape_to_safe_stl() expects this pre-built (see
-          surface_common.build_avoid_boundary(), tested separately) --
-          it just extrudes and fuses it, it doesn't build it.
+        - Function: _make_safe_stl()
+        - The primary mesh of a 20x20x10 box, a 2 mm floor pad at Z 0, and a
+          pre-built 5x5 Avoid footprint (surface_boundary.build_avoid_boundary()
+          builds it in production, tested separately); Start Depth 10.
 
         EXPECTED OUTPUT:
-        - Returns a valid ocl.STLSurf object.
-        - The bounding box of the safe STL should be larger than the original model's
-          bounding box due to the added "invisible floor" pad.
+        - A new mesh: every primary triangle plus the extras; the primary mesh
+          is left as it was.
+        - The floor reaches 2 mm past the box; the lid sits at Z 10.1, the top
+          of the safety mesh.
         """
-        from Path.Base.Generator.surface_mesh import _shape_to_safe_stl
+        from Path.Base.Generator.surface_mesh import _make_safe_stl, _shape_to_stl
 
-        # A pre-built avoid boundary -- a single flat face representing
-        # the keep-out zone, exactly as _shape_to_safe_stl() expects to
-        # receive it in production (built once, up front, by
-        # surface_common.build_avoid_boundary()).
-        avoid_boundary_stl = Part.Face(
+        V = FreeCAD.Vector
+        stl = _shape_to_stl(self.box, 0.1, 0.5, 1)
+        size = stl.size()
+        avoid = Part.Face(
             Part.makePolygon(
-                [
-                    FreeCAD.Vector(7.5, 7.5, 0),
-                    FreeCAD.Vector(12.5, 7.5, 0),
-                    FreeCAD.Vector(12.5, 12.5, 0),
-                    FreeCAD.Vector(7.5, 12.5, 0),
-                    FreeCAD.Vector(7.5, 7.5, 0),
-                ]
+                [V(7.5, 7.5, 0), V(12.5, 7.5, 0), V(12.5, 12.5, 0), V(7.5, 12.5, 0), V(7.5, 7.5, 0)]
             )
         )
-
-        safe_stl = _shape_to_safe_stl(
-            model_shape=self.box,
+        safe_stl = _make_safe_stl(
+            stl,
             bb_safe=self.box,
             pad_buffer=2.0,
             final_depth=0.0,
-            avoid_boundary_stl=avoid_boundary_stl,
+            avoid_boundary_stl=avoid,
             start_depth=10.0,
             linear_deflection=0.1,
             angular_deflection=0.5,
-            mesh_simplification=1,
-            use_cpp=True,
+            use_cpp_tessellation=True,
         )
-
-        self.assertIsNotNone(safe_stl)
-        self.assertGreater(safe_stl.size(), 0)
-
-        # Safety STL should be larger due to the floor plate, padded
-        # outward from the model's own bounding box.
-        safe_bb = safe_stl.bb
+        self.assertEqual(stl.size(), size)
+        self.assertGreaterEqual(safe_stl.size(), size + 4)  # floor 2, lid 2+
+        bb = safe_stl.bb
         model_bb = self.box.BoundBox
-        self.assertGreater(safe_bb.maxpt.x - safe_bb.minpt.x, model_bb.XLength)
-        self.assertGreater(safe_bb.maxpt.y - safe_bb.minpt.y, model_bb.YLength)
+        self.assertAlmostEqual(bb.minpt.x, model_bb.XMin - 2.0, places=6)
+        self.assertAlmostEqual(bb.maxpt.y, model_bb.YMax + 2.0, places=6)
+        self.assertAlmostEqual(bb.maxpt.z, 10.1, places=6)
 
     @unittest.skipUnless(_ocl_available, "OpenCamLib not available")
     def test05_generate_stl_orchestrator(self):
@@ -232,7 +217,7 @@ class TestSurfaceMesh(PathTestUtils.PathTestBase):
         - Parameters: A model shape, needs_safe_stl=True, optimize_stl=False
           (so STL face-filtering is skipped and this test stays focused
           on the orchestration itself, not the optimization path).
-        - Input data: A simple box model, no Avoid Faces (avoid_boundary_stl=None).
+        - Input data: A simple box model, no Avoid Geometry (avoid_boundary_stl=None).
 
         EXPECTED OUTPUT:
         - Returns two valid ocl.STLSurf objects (stl, safe_stl).
