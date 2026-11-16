@@ -1202,8 +1202,19 @@ struct WireJoiner
     }
 
     // split any edges that are intersected by other edge's end point in the middle
+    // Shortest piece an edge is split into. Below it, an endpoint of another edge counts as
+    // touching this edge's own end: splitting there would only cut off a sliver, and the new
+    // edge's end can land just as far from the split point again (curves whose parameters
+    // project poorly, such as HLR B-splines of a helical sweep), splitting forever.
+    static constexpr double MinSplitLength = 1e-4;
+
     void splitEdges()
     {
+        // Backstop against any other split pattern that does not converge: a real projection
+        // splits each edge a few times at most
+        const size_t maxSplits = 100 * edges.size() + 1000;
+        size_t splits = 0;
+        const double minSplit2 = MinSplitLength * MinSplitLength;
         for (auto it = edges.begin(); it != edges.end();) {
             const auto& info = *it;
             if (!info.hasBox) {
@@ -1249,7 +1260,9 @@ struct WireJoiner
                             }
                         }
 
-                        if (pp.SquareDistance(p) <= Precision::SquareConfusion()) {
+                        if (pp.SquareDistance(p) <= Precision::SquareConfusion()
+                            && pp.SquareDistance(pstart) > minSplit2
+                            && pp.SquareDistance(pend) > minSplit2) {
                             pt = pp;
                             intersects = true;
                             break;
@@ -1292,6 +1305,10 @@ struct WireJoiner
                 continue;
             }
 
+            if (++splits > maxSplits) {
+                AREA_WARN("edge splitting stopped after " << maxSplits << " splits");
+                return;
+            }
             Edges::iterator itNext = it;
             ++itNext;
             remove(it);
