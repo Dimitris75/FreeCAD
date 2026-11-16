@@ -1170,6 +1170,21 @@ struct SnapJoint
     bool joinArc = false;
     heeks::Point c;
     int dir = 0;
+
+    SnapJoint() = default;
+    // Plain joint (a == b) or a gap bridged by a line
+    SnapJoint(const heeks::Point& a, const heeks::Point& b)
+        : a(a)
+        , b(b)
+    {}
+    // Gap bridged by a round-join arc around center, in direction dir
+    SnapJoint(const heeks::Point& a, const heeks::Point& b, const heeks::Point& center, int dir)
+        : a(a)
+        , b(b)
+        , joinArc(true)
+        , c(center)
+        , dir(dir)
+    {}
 };
 
 // Foot of the perpendicular from (cx, cy) on the line through a and b, if a != b
@@ -1448,7 +1463,7 @@ CCurve snapClosedPath(
     // around the input vertex) or, on non-intersecting circles, a short connecting line.
     auto junction = [&](const SnapSeg& A, const SnapSeg& B, const heeks::Point& p) {
         auto at = [](const heeks::Point& q) {
-            return SnapJoint {q, q};
+            return SnapJoint(q, q);
         };
         double ax = 0, ay = 0, ar = 0, bx = 0, by = 0, br = 0;
         if (A.arc) {
@@ -1485,8 +1500,7 @@ CCurve snapClosedPath(
                 const auto qb = circleIntersection(bx, by, br, jx, jy, jr, p);
                 if (qa && qb && std::hypot(qa->x - qb->x, qa->y - qb->y) > tol) {
                     const double cross = (qa->x - jx) * (qb->y - jy) - (qa->y - jy) * (qb->x - jx);
-                    SnapJoint joint {*qa, *qb, true, heeks::Point(jx, jy), cross > 0 ? 1 : -1};
-                    return joint;
+                    return SnapJoint(*qa, *qb, heeks::Point(jx, jy), cross > 0 ? 1 : -1);
                 }
             }
         }
@@ -1502,7 +1516,7 @@ CCurve snapClosedPath(
         if (std::hypot(qa.x - qb.x, qa.y - qb.y) < 1e-9) {
             return at(qa);
         }
-        return SnapJoint {qa, qb};
+        return SnapJoint(qa, qb);
     };
 
     // Merge neighbouring arc segments on the same circle and direction (including across the
