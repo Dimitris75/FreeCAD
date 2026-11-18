@@ -55,6 +55,11 @@ else:
 # ---------------------------------------------------------------------------
 
 
+def _is_ramp(a, b):
+    """True when the move a -> b is no steeper than 45 degrees."""
+    return abs(a[2] - b[2]) <= math.hypot(b[0] - a[0], b[1] - a[1])
+
+
 def apply_multipass(scan_lines, start_depth, final_depth, step_down):
     """
     Splits and clamps full-depth scan lines into multiple Z-levels for roughing.
@@ -101,20 +106,23 @@ def apply_multipass(scan_lines, start_depth, final_depth, step_down):
                 if is_above:
                     if current_segment:
                         # We were cutting, and now the tool is moving out of the cutting zone.
-                        # We append the original, unclamped 3D point to the segment.
-                        current_segment.append((x, y, z_original))
+                        # Ramp out to the original, unclamped 3D point; not up a wall.
+                        if _is_ramp(current_segment[-1], pt):
+                            current_segment.append((x, y, z_original))
                         all_multipass_lines.append(current_segment)
                         current_segment = []  # Reset segment safely
                     last_pt_above = (x, y, z_original)
 
                 else:
                     # We are IN the cutting zone (z < prvDep - 1e-4)
-                    if not current_segment and last_pt_above:
-                        # We just dropped into the cutting zone.
-                        # Start with the last point above to ramp in seamlessly
-                        current_segment.append(last_pt_above)
-
                     clamped_z = max(z_original, layDep)
+                    if not current_segment and last_pt_above:
+                        # We just dropped into the cutting zone. Start with the last
+                        # point above to ramp in seamlessly, but not from the top of a
+                        # wall: the leads would attach up there.
+                        if _is_ramp(last_pt_above, (x, y, clamped_z)):
+                            current_segment.append(last_pt_above)
+
                     current_segment.append((x, y, clamped_z))
 
             # End of the line - if we have an active cutting segment, save it
@@ -369,16 +377,22 @@ def _attempt_lead_arc(line, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_in
         3. Reverse tangent arc — enters from the opposite direction (Lead-in only).
            Catches entries where the forward side is blocked but the
            back is open (common on lines starting at a far boundary).
-        4. Retreat to previous point (Lead-out only).
+        4. Straight retreat (Lead-out only): a tool radius back along the cut,
+           rising by a tool radius, only when that move clears the safe mesh
+           all along (_move_clear). Otherwise no lead-out: the caller
+           retracts straight up from the end of the cut, which is always clear.
 
-    All strategies reuse _get_material_side_vector and _generate_lead_arc
-    with parameter variations — no additional probing infrastructure needed.
+    Strategies 1-3 reuse _get_material_side_vector and _generate_lead_arc
+    with parameter variations.
 
     Args:
         line (list): Scan line as a list of (x, y, z) tuples. Must have >= 2 points.
         safe_pdc (ocl.PathDropCutter): Pre-configured, reusable drop-cutter.
         cutter (ocl.Cutter): Active cutter.
         lead_feed (float): Feed rate for the arc move (mm/min).
+        lift_lead_z (float): Height of the arc's free end above the cut (Lead
+            Lift Distance); above zero the arcs are helical moves.
+        is_lead_in (bool): True = lead-in; False = lead-out.
         depth_offset (float): Depth Offset added to the Z of the emitted moves.
             The line and the probing stay in the model frame, and so does the
             returned point.
@@ -442,17 +456,22 @@ def _attempt_lead_arc(line, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_in
             return cmds, lead
 
     # Strategy 4: (Lead-out only)
-    # Retreat to previous point and up
+    # Retreat a tool radius back along the cut and up, if the move is clear. Not
+    # to line[-2]: collinear filtering can leave that far away, and a straight
+    # move to it can cut into a slope the line climbs or descends.
     else:
         p_attach = line[-1]
-        p_prev = line[-2]
-        lead = (p_prev[0], p_prev[1], p_attach[2] + radius)
-        Path.Log.debug("LeadOut: retreat to previous point")
-        return [
-            Path.Command(
-                "G1", {"X": lead[0], "Y": lead[1], "Z": lead[2] + depth_offset, "F": lead_feed}
-            )
-        ], lead
+        back = point_back_along(line, radius)
+        lead = (back[0], back[1], p_attach[2] + radius)
+        if _move_clear(p_attach, lead, safe_pdc):
+            Path.Log.debug("LeadOut: retreat along the cut")
+            return [
+                Path.Command(
+                    "G1", {"X": lead[0], "Y": lead[1], "Z": lead[2] + depth_offset, "F": lead_feed}
+                )
+            ], lead
+        Path.Log.debug("LeadOut: retreat blocked, retracting straight up")
+        return [], None
 
     # Note: Other strategies can be added here.
 
@@ -465,20 +484,23 @@ def _generate_lead_arc(
     line, safe_pdc, cutter, lead_feed, lift_lead_z, is_lead_in, depth_offset=0.0
 ):
     """
-    Generates a 90-degree tangent lead-in or lead-out arc at constant Z.
+    Generates a 90-degree tangent lead-in or lead-out arc.
 
     The arc entry/exit point comes directly from _get_material_side_vector,
     which already positions it one radius ahead/behind and one radius
     perpendicular — no duplicate geometry calculations needed here.
 
-    The arc is purely horizontal (constant Z = p_attach[2]) so it is safe
-    on all controllers with no helical interpolation required.
+    The arc's free end sits lift_lead_z above the cut (Lead Lift Distance):
+    a lead-in descends along the arc onto the cut, a lead-out rises off it.
+    With a lift above zero the G2/G3 changes Z, so it is a helical move; with
+    zero it is flat (constant Z = p_attach[2]).
 
     Args:
         line (list): Scan line as a list of (x, y, z) tuples. Must have >= 2 points.
         safe_pdc (ocl.PathDropCutter): Pre-configured drop-cutter for probing.
         cutter (ocl.Cutter): Active cutter — diameter used for arc radius.
         lead_feed (float): Feed rate for the arc move (mm/min).
+        lift_lead_z (float): Height of the arc's free end above the cut, in mm.
         is_lead_in (bool): True = lead-in arc; False = lead-out arc.
         depth_offset (float): Depth Offset added to the Z of the emitted moves;
             the returned point stays in the model frame.
@@ -509,7 +531,7 @@ def _generate_lead_arc(
     if away_vec is None:
         return [], None  # No clear side — caller falls back to straight plunge
 
-    # 3. Arc entry/exit point at constant Z (no surface projection needed)
+    # 3. Arc entry/exit point, lifted above the cut (no surface projection needed)
     cut_z = p_attach[2]
     entry_exit_point = (
         entry_exit_2d[0],
@@ -679,6 +701,65 @@ def _get_material_side_vector(
     arc_direction_is_cw = cross < 0
 
     return away_vec, arc_direction_is_cw, entry_exit_2d
+
+
+def point_back_along(line, distance):
+    """
+    The point ``distance`` mm (in XY) back along a path from its last point.
+
+    Args:
+        line (list): (x, y, z) tuples, at least one.
+        distance (float): How far back, in mm.
+
+    Returns:
+        tuple: (x, y, z), interpolated on the path; its first point when the
+            path is shorter than distance.
+    """
+    walked = 0.0
+    for a, b in zip(reversed(line[:-1]), reversed(line[1:])):
+        seg = math.hypot(b[0] - a[0], b[1] - a[1])
+        if seg <= 1e-9:
+            continue
+        if walked + seg >= distance:
+            t = (distance - walked) / seg
+            return tuple(b[k] + (a[k] - b[k]) * t for k in range(3))
+        walked += seg
+    return tuple(line[0])
+
+
+def _move_clear(start, end, safe_pdc, tolerance=0.001):
+    """
+    Whether a straight move stays clear of the safe mesh all along.
+
+    The drop cutter is run along the move's XY path (at the pdc's sampling);
+    at every sample, the move's own height must not be below where the tool
+    would rest on the mesh.
+
+    Args:
+        start (tuple): (x, y, z) start of the move, model frame (no Depth
+            Offset).
+        end (tuple): (x, y, z) end of the move.
+        safe_pdc (ocl.PathDropCutter): Pre-configured, reusable drop-cutter.
+        tolerance (float): Allowed dip below the mesh, in mm (the start point
+            itself touches the surface).
+
+    Returns:
+        bool: True when clear.
+    """
+    ocl = get_ocl()
+    path = ocl.Path()
+    top = max(start[2], end[2])
+    path.append(ocl.Line(ocl.Point(start[0], start[1], top), ocl.Point(end[0], end[1], top)))
+    safe_pdc.setPath(path)
+    safe_pdc.run()
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    length2 = dx * dx + dy * dy
+    for cl in safe_pdc.getCLPoints():
+        t = ((cl.x - start[0]) * dx + (cl.y - start[1]) * dy) / length2 if length2 > 1e-12 else 0
+        t = min(max(t, 0.0), 1.0)
+        if start[2] + (end[2] - start[2]) * t < cl.z - tolerance:
+            return False
+    return True
 
 
 def _probe_surface_z(point_2d, reference_z, safe_pdc):
@@ -905,8 +986,8 @@ def scan_lines_to_gcode(
             - lead_feed_percent (float): Feed rate for lead-in/out arcs, expressed as a
               percentage of the horiz_feed.
             - lift_lead_z (float): Optional vertical lift applied during the lead moves.
-            - volumetric_percent (float): Scales the horizontal feed rate at the top of the cut
-              as a percentage (0 disables the depth boost).
+            - volumetric_percent (float): Scales the horizontal feed rate at the top of each
+              layer as a percentage (0, the default, disables the depth boost).
             - is_multipass (bool): True if the job requires multiple step-down passes.
 
     Returns:
@@ -926,7 +1007,7 @@ def scan_lines_to_gcode(
     use_smart_leads = options["use_smart_leads"]
     lead_feed_percent = options["lead_feed_percent"]
     lift_lead_z = options["lift_lead_z"]
-    volumetric_percent = options.get("volumetric_percent", 25)
+    volumetric_percent = options.get("volumetric_percent", 0)
     is_multipass = options["is_multipass"]
 
     if use_smart_leads:

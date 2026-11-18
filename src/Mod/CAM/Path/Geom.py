@@ -926,8 +926,12 @@ def combineHorizontalFaces(faces, keepOrder=False, z=0, tol=0.01):
     horizontal = []
     offset = 10.0
 
-    for f in faces:  # translate all faces to z
-        f.translate(FreeCAD.Vector(0, 0, z - f.BoundBox.ZMin))
+    for i in range(len(faces)):  # make faces flat and translate to z
+        if not Path.Geom.isRoughly(faces[i].BoundBox.ZLength, 0):
+            ext = faces[i].extrude(FreeCAD.Vector(0, 0, 2))
+            wires = ext.slice(FreeCAD.Vector(0, 0, 1), faces[i].BoundBox.ZMin + 1)
+            faces[i] = Part.makeFace(wires, "Part::FaceMakerBullseye").Faces[0]
+        faces[i].translate(FreeCAD.Vector(0, 0, z - faces[i].BoundBox.ZMin))
 
     # Make compound from incoming shapes
     allFaces = Part.makeCompound(faces)

@@ -49,6 +49,7 @@ import Part
 import Path
 
 from Path.Base.Generator.surface_boundary import create_boundary_face, edge_loop_regions
+from Path.Base.Generator.surface_common import contour_record, stack_by_wall
 
 __title__ = "Surface Scan Steep-Wall and Fillet Finishing"
 __author__ = "sliptonic (Brad Collette)"
@@ -757,7 +758,9 @@ def _offset_loop(loop, z, faces, tool_radius, sample_interval, cut_climb):
     shrink) or out of it (a boss or core, so grow).
 
     Returns:
-        list: Closed (x, y) polylines oriented for the requested cut direction.
+        list | None: Closed (x, y) polylines oriented for the requested cut
+            direction; empty when the cavity is narrower than the tool. None
+            when the offset fails (the caller reports it).
     """
     flat = loop.copy()
     flat.translate(FreeCAD.Vector(0, 0, -z))
@@ -767,7 +770,7 @@ def _offset_loop(loop, z, faces, tool_radius, sample_interval, cut_climb):
     p = edge.valueAt((edge.FirstParameter + edge.LastParameter) / 2.0)
     normal = _wall_normal_xy(p, faces)
     if normal is None:
-        return []
+        return None
     eps = max(1e-3, min(0.05, tool_radius * 0.1))
     probe = FreeCAD.Vector(p.x + normal[0] * eps, p.y + normal[1] * eps, 0.0)
     is_cavity = region.isInside(probe, 1e-4, True)
@@ -780,7 +783,7 @@ def _offset_loop(loop, z, faces, tool_radius, sample_interval, cut_climb):
         result = engine.getShape()
     except Exception as e:
         Path.Log.debug(f"generate_steep_scan_lines: loop offset failed at Z={z:.3f}: {e}")
-        return []
+        return None
     if not result or result.isNull():
         return []  # Cavity narrower than the tool
 
@@ -844,7 +847,9 @@ def _offset_open(wire, z, faces, tool_radius, sample_interval, cut_climb, deflec
     corners is harmless: the drop-cutter keeps the tool off the model.
 
     Returns:
-        list: Open (x, y) polylines oriented for the requested cut direction.
+        list | None: Open (x, y) polylines oriented for the requested cut
+            direction; empty when nothing is left after the offset. None when
+            the offset fails (the caller reports it).
     """
     flat = wire.copy()
     flat.translate(FreeCAD.Vector(0, 0, -z))
@@ -857,7 +862,7 @@ def _offset_open(wire, z, faces, tool_radius, sample_interval, cut_climb, deflec
     k = len(pts) // 2 - 1 if len(pts) > 2 else 0
     normal = _wall_normal_xy(FreeCAD.Vector(pts[k].x, pts[k].y, z), faces)
     if normal is None:
-        return []
+        return None
     nx, ny = normal
     tx, ty = pts[k + 1].x - pts[k].x, pts[k + 1].y - pts[k].y
     # The tool goes where the normal points; material is on the right of
@@ -877,16 +882,17 @@ def _offset_open(wire, z, faces, tool_radius, sample_interval, cut_climb, deflec
         profiles.append(Part.makePolygon(poly))
 
     bottom = []
+    failed = False
     for profile in profiles:
         try:
             bottom = _offset_profile(profile, offset_left, tool_radius)
         except Exception as e:
             Path.Log.debug(f"generate_steep_scan_lines: open offset failed at Z={z:.3f}: {e}")
-            bottom = []
+            bottom, failed = [], True
         if bottom:
             break
     if not bottom:
-        return []
+        return None if failed else []
 
     start = pts[0]
     contours = []
@@ -908,58 +914,6 @@ def _offset_open(wire, z, faces, tool_radius, sample_interval, cut_climb, deflec
     return contours
 
 
-def _contour_record(pts):
-    """(points, closed, (xmin, ymin, xmax, ymax)) for ordering."""
-    xs = [p[0] for p in pts]
-    ys = [p[1] for p in pts]
-    return (pts, pts[0] == pts[-1], (min(xs), min(ys), max(xs), max(ys)))
-
-
-def _stack_by_wall(levels, side_tolerance):
-    """
-    Groups per-level contours into stacks, one per wall, top to bottom.
-
-    A contour continues the stack whose contour one level up has the most
-    similar bounding box: on a drafted wall the box shifts only by about the
-    step down times the draft, while another wall's box differs by much more.
-    All four box sides are compared, so a boss inside a pocket (nested
-    boxes) is not mistaken for the pocket wall. Each stack takes at most one
-    contour per level; a contour with no box within side_tolerance on every
-    side starts a new stack.
-
-    Args:
-        levels (list): Per level, top to bottom, a list of contour records.
-        side_tolerance (float): Largest shift of any box side between levels.
-
-    Returns:
-        list: Stacks, each a list of records in level order.
-    """
-    stacks = []  # [records, index of the last level]
-    for index, records in enumerate(levels):
-        open_stacks = [st for st in stacks if st[1] == index - 1]
-        candidates = []
-        for ci, record in enumerate(records):
-            bb = record[2]
-            for si, stack in enumerate(open_stacks):
-                last = stack[0][-1][2]
-                shift = max(abs(bb[k] - last[k]) for k in range(4))
-                if shift <= side_tolerance:
-                    candidates.append((shift, ci, si))
-        candidates.sort()
-        taken_c, taken_s = set(), set()
-        for _shift, ci, si in candidates:
-            if ci in taken_c or si in taken_s:
-                continue
-            taken_c.add(ci)
-            taken_s.add(si)
-            open_stacks[si][0].append(records[ci])
-            open_stacks[si][1] = index
-        for ci, record in enumerate(records):
-            if ci not in taken_c:
-                stacks.append([[record], index])
-    return [st[0] for st in stacks]
-
-
 def _order_steep_contours(per_level, order, step_down, sample_interval):
     """
     Orders the steep-wall contours and returns them as scan lines.
@@ -971,9 +925,9 @@ def _order_steep_contours(per_level, order, step_down, sample_interval):
 
     Args:
         per_level (list): Per level, top to bottom, a list of contour records
-            (see _contour_record).
+            (see surface_common.contour_record).
         order (str): "Level" (all walls per height) or "Wall" (each wall top
-            to bottom, see _stack_by_wall).
+            to bottom, see stack_by_wall).
         step_down (float): Vertical distance between levels.
         sample_interval (float): Point spacing along the contours.
 
@@ -992,7 +946,7 @@ def _order_steep_contours(per_level, order, step_down, sample_interval):
         lines.append([(x, y, 0.0) for x, y in pts])
 
     if order == "Wall":
-        stacks = _stack_by_wall(per_level, 3.0 * step_down + 2.0 * sample_interval)
+        stacks = stack_by_wall(per_level, 3.0 * step_down + 2.0 * sample_interval)
         while stacks:
             if current is None:
                 pick = stacks[0]
@@ -1078,6 +1032,7 @@ def generate_steep_scan_lines(
     levels = _steep_levels(bb.ZMax, bb.ZMin, step_over)
     timings = {"section": 0.0, "closed": 0.0, "open": 0.0}
     counts = {"closed": 0, "open": 0}
+    skipped = 0  # sections whose offset failed (a narrow cavity is not a failure)
 
     per_level = []
 
@@ -1120,12 +1075,20 @@ def generate_steep_scan_lines(
                 found = _offset_open(
                     wire, z, faces, tool_radius, sample_interval, cut_climb, deflection
                 )
-            contours.extend(found)
+            if found is None:
+                skipped += 1
+            else:
+                contours.extend(found)
             timings[kind] += time.time() - t0
             counts[kind] += 1
 
-        per_level.append([_contour_record(pts) for pts in contours])
+        per_level.append([contour_record(pts) for pts in contours])
 
+    if skipped:
+        Path.Log.warning(
+            f"Steep wall passes: {skipped} wall section(s) could not be offset and are "
+            "missing from the passes."
+        )
     steep_lines = _order_steep_contours(per_level, order, step_over, sample_interval)
 
     Path.Log.debug(
@@ -1761,6 +1724,117 @@ def _edge_arc(before, a, b, sample_interval, tool_radius=None):
     return arc
 
 
+def _match_pass_ends(passes, closed_alone, tolerance, band_counts):
+    """
+    Pairs each pass end with the nearest pass start within `tolerance`.
+
+    Gaps are measured between surface contact points; the closest pairs are
+    taken first, so every end and every start is used at most once. Starts
+    are indexed on a grid of `tolerance`-sized cells, so each end is only
+    compared with starts in its own and the neighboring cells instead of with
+    every pass. Passes of faces with different band counts are never paired
+    (see _join_fillet_passes).
+
+    Returns:
+        tuple: (successor, has_predecessor): successor maps a pass to the
+            pass joined after it; has_predecessor holds the passes joined
+            after another one.
+    """
+    cell = max(tolerance, 1e-9)
+
+    def cell_of(r):
+        return (
+            int(math.floor(r[4] / cell)),
+            int(math.floor(r[5] / cell)),
+            int(math.floor(r[6] / cell)),
+        )
+
+    def comparable(i, j):
+        if band_counts is None or band_counts[i] is None or band_counts[j] is None:
+            return True
+        return band_counts[i] == band_counts[j]
+
+    starts = {}
+    for j, run in enumerate(passes):
+        if not closed_alone[j]:
+            starts.setdefault(cell_of(run[0]), []).append(j)
+
+    pairs = []
+    for i, run in enumerate(passes):
+        if closed_alone[i]:
+            continue
+        end = run[-1]
+        cx, cy, cz = cell_of(end)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    for j in starts.get((cx + dx, cy + dy, cz + dz), ()):
+                        if j == i or not comparable(i, j):
+                            continue
+                        gap = _contact_gap(end, passes[j][0])
+                        if gap <= tolerance:
+                            pairs.append((gap, i, j))
+    pairs.sort()
+
+    successor, has_predecessor = {}, set()
+    for _gap, i, j in pairs:
+        if i not in successor and j not in has_predecessor:
+            successor[i] = j
+            has_predecessor.add(j)
+    return successor, has_predecessor
+
+
+def _face_zones(successor, owners):
+    """Zone id per face index: faces linked by any join share a zone (union-find)."""
+    parent = {}
+
+    def find(k):
+        parent.setdefault(k, k)
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    for i, j in successor.items():
+        parent[find(owners[i])] = find(owners[j])
+    return {f: find(f) for f in set(owners)}
+
+
+def _join_arc(run, target, sample_interval, tool_radius):
+    """The arc around a convex sharp edge from run's end to `target` (see _edge_arc), or []."""
+    if not sample_interval or len(run) < 2:
+        return []
+    return _edge_arc(run[-2], run[-1], target, sample_interval, tool_radius)
+
+
+def _append_pass(run, nxt, sample_interval, tool_radius):
+    """Continues `run` with the next pass: through an edge arc, or directly."""
+    arc = _join_arc(run, nxt[0], sample_interval, tool_radius)
+    if arc:
+        run.extend(arc)
+        run.extend(nxt)
+    else:
+        run.extend(nxt[1:] if _contact_gap(run[-1], nxt[0]) < 1e-9 else nxt)
+
+
+def _close_loop(run, sample_interval, tool_radius):
+    """
+    Closes a chain that leads back to its own start.
+
+    The closing join goes through the same edge check as every other join,
+    so the closing corner gets its arc too, and the run ends exactly on its
+    first point (the closed-loop handling relies on it).
+    """
+    arc = _join_arc(run, run[0], sample_interval, tool_radius)
+    if arc:
+        run.extend(arc)
+        run.append(run[0])
+    elif _contact_gap(run[-1], run[0]) < 1e-9:
+        run[-1] = run[0]
+    else:
+        run.append(run[0])
+
+
 def _join_fillet_passes(
     passes, owners, tolerance, sample_interval=None, tool_radius=None, band_counts=None
 ):
@@ -1769,8 +1843,8 @@ def _join_fillet_passes(
 
     Each pass end is matched to the nearest pass start within `tolerance`
     (measured between surface contact points), closest pairs first, so every
-    end and every start is used at most once. Only end-to-start joins are
-    made, which keeps every pass in its cut direction.
+    end and every start is used at most once (_match_pass_ends). Only
+    end-to-start joins are made, which keeps every pass in its cut direction.
 
     Args:
         passes (list): Oriented runs (see _fillet_face_passes).
@@ -1795,90 +1869,24 @@ def _join_fillet_passes(
     """
     n = len(passes)
     closed_alone = [_contact_gap(r[0], r[-1]) < 1e-6 for r in passes]
+    successor, has_predecessor = _match_pass_ends(passes, closed_alone, tolerance, band_counts)
+    zone_of_face = _face_zones(successor, owners)
 
-    # Starts indexed on a grid of `tolerance`-sized cells, so each end is
-    # only compared with starts in its own and the neighboring cells instead
-    # of with every pass. Finds exactly the same pairs.
-    cell = max(tolerance, 1e-9)
+    visited = set()
 
-    def cell_of(r):
-        return (
-            int(math.floor(r[4] / cell)),
-            int(math.floor(r[5] / cell)),
-            int(math.floor(r[6] / cell)),
-        )
-
-    starts = {}
-    for j in range(n):
-        if not closed_alone[j]:
-            starts.setdefault(cell_of(passes[j][0]), []).append(j)
-
-    pairs = []
-    for i in range(n):
-        if closed_alone[i]:
-            continue
-        end = passes[i][-1]
-        cx, cy, cz = cell_of(end)
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                for dz in (-1, 0, 1):
-                    for j in starts.get((cx + dx, cy + dy, cz + dz), ()):
-                        if j == i:
-                            continue
-                        if (
-                            band_counts is not None
-                            and band_counts[i] is not None
-                            and band_counts[j] is not None
-                            and band_counts[i] != band_counts[j]
-                        ):
-                            continue
-                        gap = _contact_gap(end, passes[j][0])
-                        if gap <= tolerance:
-                            pairs.append((gap, i, j))
-    pairs.sort()
-
-    successor, has_predecessor = {}, set()
-    for _gap, i, j in pairs:
-        if i not in successor and j not in has_predecessor:
-            successor[i] = j
-            has_predecessor.add(j)
-
-    # Faces linked by a join belong to the same zone (union-find).
-    parent = {}
-
-    def find(k):
-        parent.setdefault(k, k)
-        while parent[k] != k:
-            parent[k] = parent[parent[k]]
-            k = parent[k]
-        return k
-
-    for i, j in successor.items():
-        parent[find(owners[i])] = find(owners[j])
-    zone_of_face = {f: find(f) for f in set(owners)}
-
-    def build(first):
+    def follow(first):
+        """The chain from `first` along the joins: (run, faces, last pass)."""
         run, faces, k, last = list(passes[first]), {owners[first]}, successor.get(first), first
         visited.add(first)
         while k is not None and k not in visited:
             visited.add(k)
-            nxt = passes[k]
-            arc = (
-                _edge_arc(run[-2], run[-1], nxt[0], sample_interval, tool_radius)
-                if sample_interval and len(run) > 1
-                else []
-            )
-            if arc:
-                run.extend(arc)
-                run.extend(nxt)
-            else:
-                run.extend(nxt[1:] if _contact_gap(run[-1], nxt[0]) < 1e-9 else nxt)
+            _append_pass(run, passes[k], sample_interval, tool_radius)
             faces.add(owners[k])
             last = k
             k = successor.get(k)
         return run, faces, last
 
-    chains, visited = [], set()
+    chains = []
     for i in range(n):
         if closed_alone[i]:
             visited.add(i)
@@ -1886,26 +1894,12 @@ def _join_fillet_passes(
     # Open chains start where nothing leads in; what remains are loops.
     for i in range(n):
         if i not in visited and i not in has_predecessor:
-            run, faces, last = build(i)
+            run, faces, last = follow(i)
             chains.append((run, False, faces, i, last))
     for i in range(n):
         if i not in visited:
-            run, faces, last = build(i)
-            # Close the loop through the same edge check as every other join,
-            # so the closing corner gets its arc too, and end exactly on the
-            # first point (the closed-loop handling relies on it).
-            arc = (
-                _edge_arc(run[-2], run[-1], run[0], sample_interval, tool_radius)
-                if sample_interval and len(run) > 1
-                else []
-            )
-            if arc:
-                run.extend(arc)
-                run.append(run[0])
-            elif _contact_gap(run[-1], run[0]) < 1e-9:
-                run[-1] = run[0]
-            else:
-                run.append(run[0])
+            run, faces, last = follow(i)
+            _close_loop(run, sample_interval, tool_radius)
             chains.append((run, True, faces, i, last))
 
     return chains, zone_of_face
@@ -1957,6 +1951,118 @@ def _warn_if_not_ball(tool_params, tool_diam):
         f"With this tool ({tool_type or 'unknown'}) they stay gouge-free "
         "but touch the fillets off the intended lines."
     )
+
+
+def _evaluate_fillet_faces(fillet_faces, step_over, tool_radius, sample_interval, cut_climb):
+    """
+    Passes for every fillet face, then for the corner patches.
+
+    Corner patches are sliced at the heights where the fillet passes reach
+    them, so each slice continues a pass around the corner. A face that
+    fails is skipped (logged).
+
+    Returns:
+        tuple: (passes, owners, band_counts, corner_count, steep_stats);
+            owners and band_counts per pass (see _join_fillet_passes).
+    """
+    import time
+
+    passes, owners, corners, band_counts = [], [], [], []
+    steep_stats = {}
+    for index, face in enumerate(fillet_faces):
+        try:
+            is_corner, across_is_u = _classify_blend(face)
+            if is_corner:
+                corners.append(index)  # Needs the fillet passes first
+                continue
+            face_started = time.perf_counter()
+            face_passes = _fillet_face_passes(
+                face, step_over, tool_radius, sample_interval, cut_climb, across_is_u, steep_stats
+            )
+            bands = _fillet_band_count(face, across_is_u, step_over)
+            Path.Log.debug(
+                f"generate_fillet_scan_lines: face {index} "
+                f"({getattr(face.Surface, 'TypeId', '?')}, {len(getattr(face, 'Edges', ()))} edges): "
+                f"{len(face_passes)} pass(es) in {time.perf_counter() - face_started:.3f}s"
+            )
+        except Exception as e:
+            Path.Log.debug(f"generate_fillet_scan_lines: skipping face ({e}).")
+            continue
+        passes.extend(face_passes)
+        owners.extend([index] * len(face_passes))
+        band_counts.extend([bands] * len(face_passes))
+
+    contacts = [FreeCAD.Vector(*r[i][4:7]) for r in passes for i in (0, -1)]
+    for index in corners:
+        face = fillet_faces[index]
+        try:
+            levels = _corner_levels(face, contacts, step_over)
+            face_passes = _corner_patch_passes(
+                face, levels, tool_radius, sample_interval, cut_climb
+            )
+        except Exception as e:
+            Path.Log.debug(f"generate_fillet_scan_lines: skipping corner ({e}).")
+            continue
+        passes.extend(face_passes)
+        owners.extend([index] * len(face_passes))
+        band_counts.extend([None] * len(face_passes))
+
+    return passes, owners, band_counts, len(corners), steep_stats
+
+
+def _group_chains_by_zone(chains, fillet_faces, owners, zone_of_face, edge_trim):
+    """
+    Trims the free ends of open chains and groups the chains by zone.
+
+    Only free ends are trimmed: an end stopping on another fillet or corner
+    face is an internal edge and keeps its full length. Chains left shorter
+    than two points are dropped.
+
+    Returns:
+        dict: zone id -> [(xy points, is_closed, mean contact Z), ...]
+    """
+
+    def ends_on_other_face(entry, owner):
+        point = FreeCAD.Vector(*entry[4:7])
+        return any(_touches(f, point) for j, f in enumerate(fillet_faces) if j != owner)
+
+    zones = {}
+    for run, closed, faces, first, last in chains:
+        if not closed:
+            run = _trim_run_ends(
+                run,
+                edge_trim,
+                at_start=not ends_on_other_face(run[0], owners[first]),
+                at_end=not ends_on_other_face(run[-1], owners[last]),
+            )
+            if len(run) < 2:
+                continue
+        mean_z = sum(r[6] for r in run) / len(run)
+        pts = [(r[0], r[1]) for r in run]
+        zone = zone_of_face[next(iter(faces))]
+        zones.setdefault(zone, []).append((pts, closed, mean_z))
+    return zones
+
+
+def _order_zones(zones):
+    """
+    Scan lines in cutting order: zones nearest-neighbor, and within a zone
+    the chains from the highest to the lowest. Closed chains start nearest
+    to where the previous one ended.
+    """
+    zone_list = [sorted(z, key=lambda c: -c[2]) for z in zones.values()]
+    lines = []
+    current = None
+    while zone_list:
+        if current is not None:
+            cx, cy = current
+            zone_list.sort(key=lambda z: (z[0][0][0][0] - cx) ** 2 + (z[0][0][0][1] - cy) ** 2)
+        for pts, closed, _z in zone_list.pop(0):
+            if closed:
+                pts = _rotate_closed_start(pts, current)
+            lines.append([(x, y, 0.0) for x, y in pts])
+            current = pts[-1]
+    return lines
 
 
 def generate_fillet_scan_lines(
@@ -2024,53 +2130,12 @@ def generate_fillet_scan_lines(
     tool_radius = tool_diam / 2.0
     if edge_trim is None:
         edge_trim = step_over / 2.0
-
     if tool_params is not None:
         _warn_if_not_ball(tool_params, tool_diam)
 
-    passes, owners, corners, band_counts = [], [], [], []
-    steep_stats = {}
-    for index, face in enumerate(fillet_faces):
-        try:
-            is_corner, across_is_u = _classify_blend(face)
-            if is_corner:
-                corners.append(index)  # Needs the fillet passes first
-                continue
-            face_started = time.perf_counter()
-            face_passes = _fillet_face_passes(
-                face, step_over, tool_radius, sample_interval, cut_climb, across_is_u, steep_stats
-            )
-            bands = _fillet_band_count(face, across_is_u, step_over)
-            Path.Log.debug(
-                f"generate_fillet_scan_lines: face {index} "
-                f"({getattr(face.Surface, 'TypeId', '?')}, {len(getattr(face, 'Edges', ()))} edges): "
-                f"{len(face_passes)} pass(es) in {time.perf_counter() - face_started:.3f}s"
-            )
-        except Exception as e:
-            Path.Log.debug(f"generate_fillet_scan_lines: skipping face ({e}).")
-            continue
-        for run in face_passes:
-            passes.append(run)
-            owners.append(index)
-            band_counts.append(bands)
-
-    # Corner patches: sliced at the heights where fillet passes reach them,
-    # so each slice continues a pass around the corner.
-    contacts = [FreeCAD.Vector(*r[i][4:7]) for r in passes for i in (0, -1)]
-    for index in corners:
-        face = fillet_faces[index]
-        try:
-            levels = _corner_levels(face, contacts, step_over)
-            face_passes = _corner_patch_passes(
-                face, levels, tool_radius, sample_interval, cut_climb
-            )
-        except Exception as e:
-            Path.Log.debug(f"generate_fillet_scan_lines: skipping corner ({e}).")
-            continue
-        passes.extend(face_passes)
-        owners.extend([index] * len(face_passes))
-        band_counts.extend([None] * len(face_passes))
-
+    passes, owners, band_counts, corner_count, steep_stats = _evaluate_fillet_faces(
+        fillet_faces, step_over, tool_radius, sample_interval, cut_climb
+    )
     if not passes:
         return []
     evaluated = time.perf_counter()
@@ -2080,49 +2145,14 @@ def generate_fillet_scan_lines(
     chains, zone_of_face = _join_fillet_passes(
         passes, owners, 0.5 * step_over, sample_interval, tool_radius, band_counts
     )
+    zones = _group_chains_by_zone(chains, fillet_faces, owners, zone_of_face, edge_trim)
+    fillet_lines = _order_zones(zones)
 
-    def ends_on_other_face(entry, owner):
-        point = FreeCAD.Vector(*entry[4:7])
-        return any(_touches(f, point) for j, f in enumerate(fillet_faces) if j != owner)
-
-    zones = {}
-    for run, closed, faces, first, last in chains:
-        if not closed:
-            # Free ends only: an end stopping on another fillet or corner
-            # face is an internal edge and keeps its full length.
-            run = _trim_run_ends(
-                run,
-                edge_trim,
-                at_start=not ends_on_other_face(run[0], owners[first]),
-                at_end=not ends_on_other_face(run[-1], owners[last]),
-            )
-            if len(run) < 2:
-                continue
-        mean_z = sum(r[6] for r in run) / len(run)
-        pts = [(r[0], r[1]) for r in run]
-        zone = zone_of_face[next(iter(faces))]
-        zones.setdefault(zone, []).append((pts, closed, mean_z))
-
-    zone_list = [sorted(z, key=lambda c: -c[2]) for z in zones.values()]
-
-    fillet_lines = []
-    current = None
-    while zone_list:
-        if current is not None:
-            cx, cy = current
-            zone_list.sort(key=lambda z: (z[0][0][0][0] - cx) ** 2 + (z[0][0][0][1] - cy) ** 2)
-        for pts, closed, _z in zone_list.pop(0):
-            if closed:
-                pts = _rotate_closed_start(pts, current)
-            fillet_lines.append([(x, y, 0.0) for x, y in pts])
-            current = pts[-1]
-
-    joined = len(passes) - len(chains)
     Path.Log.debug(
         f"generate_fillet_scan_lines: {len(passes)} pass(es) on {len(fillet_faces)} fillet(s) "
-        f"({len(corners)} corner patch(es)), {steep_stats.get('rescued', 0)} steep pass(es) moved to {_FILLET_MAX_DRAFT_ANGLE:g} deg, "
+        f"({corner_count} corner patch(es)), {steep_stats.get('rescued', 0)} steep pass(es) moved to {_FILLET_MAX_DRAFT_ANGLE:g} deg, "
         f"{steep_stats.get('skipped', 0)} skipped, "
-        f"{joined} join(s), {len(fillet_lines)} chain(s) in {len(zones)} zone(s) | "
+        f"{len(passes) - len(chains)} join(s), {len(fillet_lines)} chain(s) in {len(zones)} zone(s) | "
         f"evaluation {evaluated - started:.3f}s, "
         f"joining/ordering {time.perf_counter() - evaluated:.3f}s"
     )

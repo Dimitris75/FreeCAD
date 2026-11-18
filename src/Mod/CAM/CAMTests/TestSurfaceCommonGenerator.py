@@ -118,12 +118,29 @@ class TestSurfaceCommon(PathTestUtils.PathTestBase):
 
         EXPECTED OUTPUT:
         - Returns an OCL ConeCutter object (not None)
-        - V-bit cutters create angled cuts for engraving letters and decorative edges
+        - The cone has the tool's angle: a 90 degree, 10 mm bit is 5 mm tall
+          (OCL takes the half angle in radians, not degrees)
+        - A 120 degree, 10 mm bit is 5 / tan(60) = 2.887 mm tall
+        - A tapered ball-nose gets its taper; without a taper angle and top
+          diameter it falls back to a plain ball
         """
+        import math
+
         from Path.Base.Generator.surface_common import make_ocl_cutter
 
         cutter = make_ocl_cutter("v-bit", 10.0, edge_angle=90.0)
         self.assertIsNotNone(cutter)
+        self.assertAlmostEqual(cutter.getLength(), 5.0, places=6)
+        cutter = make_ocl_cutter("v-bit", 10.0, edge_angle=120.0)
+        self.assertAlmostEqual(cutter.getLength(), 5.0 / math.tan(math.radians(60)), places=6)
+
+        # Tapered ball-nose: the ball tip plus its taper, not a plain ball. With
+        # an 11 degree included taper a 1.5875 mm tip widens to 6.35 mm.
+        cutter = make_ocl_cutter(
+            "taperedballnose", 1.5875, taper_angle=11.0, taper_diameter=6.35
+        )
+        self.assertIn("ConeCutter", str(cutter))
+        self.assertIn("BallCutter", str(make_ocl_cutter("taperedballnose", 1.5875)))
 
     def test04_unsupported_tool_type(self):
         """

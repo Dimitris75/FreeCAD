@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# SPDX-FileCopyrightText: 2026 Dimitrios Pana <dimitriospana75@gmail.com>
+# SPDX-FileCopyrightText: 2025 Dimitrios Pana <dimitriospana75@gmail.com>
 # SPDX-FileNotice: Part of the FreeCAD project.
 
 ################################################################################
@@ -30,8 +30,9 @@ Everything that defines *where* a strategy may cut, as flat 2D shapes:
   model / stock boundary) offset by the tool radius, with the Avoid Geometry cut
   out. Shared by Surface Scan, Z-Level Hybrid and Waterline.
 - The Avoid Geometry keep-out boundary.
-- BoundaryClipper: limits meshes and polylines to a boundary afterwards
-  (mesh faces out of the cutter's reach, Waterline contours).
+- Fill Holes: flat caps over the selected holes (Surface Scan, Z-Level Hybrid).
+
+Clipping work to these regions afterwards is in surface_clipper.
 
 Pure geometry: no FreeCAD document access. The operation passes the shapes
 and tool parameters in.
@@ -143,9 +144,7 @@ def _boundary_via_area(compound, offset, outline):
 
         # Wires without a face (a blend with a seam, kept holes) are no region
         if not result or result.isNull() or not result.Faces:
-            Path.Log.debug(
-                f"Path.Area returned an empty shape (offset={offset}, outline={outline})."
-            )
+            Path.Log.debug(f"Path.Area returned no face (offset={offset}, outline={outline}).")
             return None
         return result
 
@@ -398,7 +397,7 @@ def _separate_touching_faces(faces, tolerance=0.01):
                     union(i, j)
             except Exception as e:
                 Path.Log.debug(
-                    f"_separatecreate_boundary_face_touching_faces: centroid check failed for "
+                    f"_separate_touching_faces: centroid check failed for "
                     f"faces {i},{j}: {e}"
                 )
 
@@ -421,7 +420,7 @@ def _separate_touching_faces(faces, tolerance=0.01):
     return touching_groups, isolated_faces
 
 
-def _offset_region(region, offset):
+def offset_region(region, offset):
     """
     Grows (offset > 0) or shrinks a flat region with Path.Area.
 
@@ -507,7 +506,7 @@ def build_machining_region(
         # SEAM_GAP_OFFSET first (seals gaps up to twice that), then apply the
         # tool offset less that amount: the outline ends where it would have.
         sealed = build_optimized_boundary([cutting_faces], SEAM_GAP_OFFSET, outline=outline)
-        region = _offset_region(sealed, offset - SEAM_GAP_OFFSET) if sealed else None
+        region = offset_region(sealed, offset - SEAM_GAP_OFFSET) if sealed else None
     else:
         region = build_optimized_boundary([cutting_faces], offset, outline=outline)
 
@@ -1562,7 +1561,7 @@ def _extract_top_rim_wire(face, tolerance=1e-3):
     tapered, or curved) as a single Part.Wire, skipping vertical seam
     edges that run the full height of the wall.
 
-    Shared by _classify_and_cap_faces() here and surface_zlevel's
+    Shared by _classify_and_cap_faces() and the Fill Holes
     _cap_3d_wall() — both need to find "the top edge loop of an
     arbitrary 3D wall" and previously duplicated this logic separately.
 
@@ -1604,7 +1603,7 @@ def flatten_wire_to_cap(wire, cap_z, discretize_distance=0.1, translate_to_zero=
     attempting an exact projection, which can crash OpenCASCADE for
     some inputs.
 
-    Shared by _classify_and_cap_faces() here and surface_zlevel's
+    Shared by _classify_and_cap_faces() and the Fill Holes
     _cap_3d_wall()/_cap_flat_face_holes() — all three previously
     duplicated this flatten-and-rebuild logic separately, with subtly
     different edge-case handling between copies.
@@ -1655,512 +1654,246 @@ def flatten_wire_to_cap(wire, cap_z, discretize_distance=0.1, translate_to_zero=
 
 
 # ---------------------------------------------------------------------------
-# Clipping to a boundary
+# Fill selected holes (Surface Scan and Z-Level Hybrid)
 # ---------------------------------------------------------------------------
 
 
-class BoundaryClipper:
+def _fuse_coplanar_masks(fill_holes_masks):
     """
-    Limits work to a flat boundary after it has been generated.
-
-    Some work cannot be confined to an area while it is being made: OCL traces
-    Waterline contours on the whole mesh, and the mesh itself is built from
-    model faces. BoundaryClipper does both jobs that follow from that, against
-    the same boundary (normally ``boundary_face``, the tool-centre area):
-
-    1. **Selection by reach** (``touches``): could a model face matter to
-       the boundary? The boundary is grown by ``reach`` (tool
-       radius + lead-in / Boundary Adjustment reach + a margin) and a face is
-       dropped only when its XY bounds really miss the grown area. Keeping too
-       much is always safe. Used to mesh only what the cutter can reach
-       (Surface Scan and Waterline with a Base / Avoid selection). The grown
-       boundary is built on the first call, so trimming alone never pays
-       for it.
-    2. **Exact trimming** (``trim_polylines``): which parts of a path lie in
-       the boundary? Segments are split where they cross the boundary's edges
-       and every part is kept or dropped by its midpoint. Used for Waterline
-       contours.
-
-    Together the two are exact: with a reach-clipped mesh, Waterline traces
-    extra loops along the mesh's cut edges, but those run at least the margin
-    outside the boundary, so trimming removes them, while every real contour
-    inside is unchanged (all triangles within reach of it were kept).
-
-    The boundary is read with the even-odd rule, as surface_pattern's C++ ray
-    caster does: holes (Avoid Geometry zones) are outside, islands inside holes
-    are inside again. Curved edges are discretized to straight segments with
-    ``tolerance``, so results are exact to that polygon, not to the curve.
-
-    Example::
-
-        clipper = BoundaryClipper(boundary_face, reach=r + margin, tolerance=0.025)
-        faces = [f for f in model_faces if clipper.touches(f.BoundBox)]
-        pieces = clipper.trim_polylines(contours, closed=True)
+    Groups fill-hole masks by Z height and fuses any faces sharing the
+    same height into a single shape.
 
     Args:
-        region (Part.Shape): Flat boundary (faces at any Z, only XY is used).
-        reach (float): Distance to grow the boundary by for selection by reach
-            (mm). 0 selects against the boundary itself.
-        tolerance (float): Discretization deflection for curved edges (mm),
-            at least 1e-4.
-
-    Attributes:
-        region (Part.Shape): The boundary as given.
-        reach (float): The reach distance used.
-        reach_shape (Part.Shape): The boundary grown by reach, built on first
-            use (the boundary itself when reach is 0 or the offset fails;
-            selection is then tighter by the reach).
-    """
-
-    # -----------------------------------------------------------------------
-    # Construction
-    # -----------------------------------------------------------------------
-
-    def __init__(self, region, reach=0.0, tolerance=0.01):
-        self.region = region
-        self.reach = max(float(reach), 0.0)
-        self.tolerance = max(float(tolerance), 1e-4)
-
-        # The boundary itself, as polygons: used for trimming
-        self._polys = self._polygons(region)
-
-        # The boundary grown by reach: used for selection only, built on first
-        # use (see _reach)
-        self._reach_shape = None
-        self._reach_polys = None
-        self._reach_bounds = None
-
-        # Boundary edges for the crossing tests, built on first use (see _edges)
-        self._edge_rows = None
-        self._edge_array = None
-
-    @property
-    def reach_shape(self):
-        """The boundary grown by reach (see the class Attributes)."""
-        self._reach()
-        return self._reach_shape
-
-    def _reach(self):
-        """
-        Builds the grown boundary on first use.
-
-        If the offset fails the boundary itself is used: selection is then
-        tighter by the reach, and faces just outside the boundary may be left
-        out of the mesh.
-
-        Returns:
-            tuple: (polygons, bounds) of the grown boundary; bounds is None when
-                there are no polygons.
-        """
-        if self._reach_polys is None:
-            shape = self.region
-            if self.reach > 0.0 and self.region is not None:
-                shape = _offset_region(self.region, self.reach) or self.region
-            self._reach_shape = shape
-            self._reach_polys = self._polygons(shape)
-            self._reach_bounds = self._bounds(self._reach_polys)
-        return self._reach_polys, self._reach_bounds
-
-    def _polygons(self, shape):
-        """
-        Discretizes every wire of shape into an XY polygon.
-
-        Args:
-            shape (Part.Shape): A flat boundary, or None.
-
-        Returns:
-            list: One list of (x, y) tuples per wire (outer wires and holes
-                alike; the even-odd rule tells them apart). Wires with fewer
-                than three points are skipped. Empty for None or a null shape.
-        """
-        polys = []
-        if shape is None or shape.isNull():
-            return polys
-        for wire in shape.Wires:
-            try:
-                pts = wire.discretize(Deflection=self.tolerance)
-            except Exception:
-                # Some wires refuse deflection-based discretization: fall back
-                # to a fixed point count
-                pts = wire.discretize(100)
-            poly = [(p.x, p.y) for p in pts]
-            if len(poly) > 2:
-                polys.append(poly)
-        return polys
-
-    @staticmethod
-    def _bounds(polys):
-        """(xmin, xmax, ymin, ymax) of all polygons, or None when there are none."""
-        if not polys:
-            return None
-        xs = [x for poly in polys for x, _ in poly]
-        ys = [y for poly in polys for _, y in poly]
-        return (min(xs), max(xs), min(ys), max(ys))
-
-    # -----------------------------------------------------------------------
-    # Point tests (even-odd rule)
-    # -----------------------------------------------------------------------
-
-    @staticmethod
-    def _inside_scalar(x, y, polys):
-        """
-        Even-odd point-in-polygon test for one point.
-
-        Casts a ray from (x, y) towards +X and counts the polygon edges it
-        crosses: an odd count means inside. Holes and islands are handled by
-        counting the edges of every polygon together.
-
-        Args:
-            x, y (float): The point.
-            polys (list): Polygons as returned by _polygons().
-
-        Returns:
-            bool: True if the point is inside.
-        """
-        inside = False
-        for poly in polys:
-            j = len(poly) - 1
-            for i in range(len(poly)):
-                xi, yi = poly[i]
-                xj, yj = poly[j]
-                # The edge straddles the ray's height, and the crossing lies to
-                # the right of the point
-                if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
-                    inside = not inside
-                j = i
-        return inside
-
-    @staticmethod
-    def _inside_many(xs, ys, polys):
-        """
-        Even-odd test (see _inside_scalar) for many points at once.
-
-        Vectorized with numpy over the points, one polygon edge at a time;
-        falls back to _inside_scalar per point when numpy is missing.
-
-        Args:
-            xs, ys (list): Point coordinates.
-            polys (list): Polygons as returned by _polygons().
-
-        Returns:
-            list: One bool per point.
-        """
-        try:
-            import numpy as np
-        except ImportError:
-            return [BoundaryClipper._inside_scalar(x, y, polys) for x, y in zip(xs, ys)]
-        px = np.asarray(xs, dtype=float)
-        py = np.asarray(ys, dtype=float)
-        inside = np.zeros(px.shape, dtype=bool)
-        for poly in polys:
-            arr = np.asarray(poly, dtype=float)
-            x1, y1 = arr[:, 0], arr[:, 1]
-            x2, y2 = np.roll(x1, 1), np.roll(y1, 1)
-            for k in range(len(arr)):
-                cond = (y1[k] > py) != (y2[k] > py)
-                if not cond.any():
-                    continue
-                # (A horizontal edge never straddles: the 1e-300 only avoids
-                # dividing by zero in the masked-out lanes.)
-                xc = (x2[k] - x1[k]) * (py - y1[k]) / ((y2[k] - y1[k]) or 1e-300) + x1[k]
-                inside ^= cond & (px < xc)
-        return inside.tolist()
-
-    def contains(self, x, y):
-        """True if (x, y) is inside the boundary (False when it is empty)."""
-        return bool(self._polys) and self._inside_scalar(x, y, self._polys)
-
-    # -----------------------------------------------------------------------
-    # 1. Selection by reach
-    # -----------------------------------------------------------------------
-
-    def touches(self, bound_box):
-        """
-        Could anything inside bound_box be within reach of the boundary?
-
-        Conservative, but exact for the box against the grown boundary (not
-        just its bounding box): a box lying wholly in a hole of the boundary,
-        or beside an L-shaped boundary, is rejected.
-
-        The box touches the grown boundary when any of these holds:
-        1. a boundary vertex lies in the box,
-        2. a box corner lies inside the boundary (box overlapping or inside it),
-        3. a boundary edge crosses the box.
-
-        Args:
-            bound_box (FreeCAD.BoundBox): XY bounds of the item (Z is ignored).
-
-        Returns:
-            bool: False only when the box certainly misses the grown boundary.
-                True when there is no boundary to test against.
-        """
-        reach_polys, reach_bounds = self._reach()
-        if not reach_polys:
-            return True  # nothing to clip against: keep everything
-        x0, x1, y0, y1 = reach_bounds
-        bx0, bx1, by0, by1 = bound_box.XMin, bound_box.XMax, bound_box.YMin, bound_box.YMax
-
-        # Quick reject: the box misses the grown boundary's bounding box
-        if bx1 < x0 or bx0 > x1 or by1 < y0 or by0 > y1:
-            return False
-        # 1. A boundary vertex inside the box
-        for poly in reach_polys:
-            for x, y in poly:
-                if bx0 <= x <= bx1 and by0 <= y <= by1:
-                    return True
-        # 2. A box corner inside the boundary
-        corners = ((bx0, by0), (bx1, by0), (bx1, by1), (bx0, by1))
-        if any(self._inside_scalar(x, y, reach_polys) for x, y in corners):
-            return True
-        # 3. A boundary edge crossing the box
-        for poly in reach_polys:
-            n = len(poly)
-            for i in range(n):
-                if _segment_hits_box(poly[i - 1], poly[i], bx0, bx1, by0, by1):
-                    return True
-        return False
-
-    # -----------------------------------------------------------------------
-    # 2. Exact trimming
-    # -----------------------------------------------------------------------
-
-    def _edges(self):
-        """
-        All boundary edges as (x1, y1, x2, y2) rows, built on first use.
-
-        Every polygon contributes its closing edge too (last point back to the
-        first).
-        """
-        if self._edge_rows is None:
-            rows = []
-            for poly in self._polys:
-                for i in range(len(poly)):
-                    (x1, y1), (x2, y2) = poly[i - 1], poly[i]
-                    rows.append((x1, y1, x2, y2))
-            self._edge_rows = rows
-        return self._edge_rows
-
-    def _crossings(self, a, b):
-        """
-        Where does segment a-b cross the boundary's edges? (one segment, no numpy)
-
-        The segment is a + t * r (t in [0, 1], r = b - a) and each edge is
-        q1 + u * s (u in [0, 1], s = q2 - q1). With the 2D cross product
-        v x w = v.x * w.y - v.y * w.x and d = r x s:
-
-            t = (q1 - a) x s / d        u = (q1 - a) x r / d
-
-        and the two cross where 0 < t < 1 and 0 <= u <= 1. Parallel edges
-        (d ~ 0) never count. The segment's own ends (t = 0, t = 1) are excluded:
-        a crossing exactly at a polyline vertex needs no split, the segments
-        already meet there.
-
-        Args:
-            a, b (tuple): Segment end points; only X and Y are used.
-
-        Returns:
-            list: The parameters t of the crossings, sorted, duplicates removed
-                (rounded to 1e-12). Empty for a zero-length segment.
-        """
-        ax, ay = a[0], a[1]
-        rx, ry = b[0] - ax, b[1] - ay
-        if rx == 0.0 and ry == 0.0:
-            return []
-        out = set()
-        for x1, y1, x2, y2 in self._edges():
-            sx, sy = x2 - x1, y2 - y1
-            denom = rx * sy - ry * sx
-            if abs(denom) <= 1e-15:
-                continue
-            qx, qy = x1 - ax, y1 - ay
-            t = (qx * sy - qy * sx) / denom
-            u = (qx * ry - qy * rx) / denom
-            if 1e-12 < t < 1.0 - 1e-12 and 0.0 <= u <= 1.0:
-                out.add(round(t, 12))
-        return sorted(out)
-
-    # Largest (segments x edges) block computed at once by _crossings_many
-    _CHUNK_CELLS = 2_000_000
-
-    def _crossings_many(self, pts, np):
-        """
-        _crossings for every segment of a polyline at once (numpy).
-
-        The same formula as _crossings, evaluated as a (segments x edges)
-        array, in chunks of at most _CHUNK_CELLS cells to bound memory.
-
-        Args:
-            pts (list): The polyline's points (tuples); segment i is
-                pts[i] -> pts[i + 1].
-            np (module): numpy.
-
-        Returns:
-            dict: Segment index -> sorted crossing parameters, for the segments
-                that cross at least one edge. Segments not in the dict cross
-                nothing.
-        """
-        if self._edge_array is None:
-            self._edge_array = np.asarray(self._edges(), dtype=float).reshape(-1, 4)
-        e = self._edge_array
-        sx, sy = e[:, 2] - e[:, 0], e[:, 3] - e[:, 1]
-
-        xy = np.asarray([(p[0], p[1]) for p in pts], dtype=float)
-        ax, ay = xy[:-1, 0], xy[:-1, 1]
-        rx, ry = xy[1:, 0] - ax, xy[1:, 1] - ay
-
-        out = {}
-        rows = max(1, self._CHUNK_CELLS // max(1, len(e)))
-        for start in range(0, len(ax), rows):
-            sl = slice(start, start + rows)
-            # Broadcast: one row per segment, one column per edge
-            qx = e[None, :, 0] - ax[sl, None]
-            qy = e[None, :, 1] - ay[sl, None]
-            r_x, r_y = rx[sl, None], ry[sl, None]
-            denom = r_x * sy - r_y * sx
-            ok = np.abs(denom) > 1e-15
-            with np.errstate(divide="ignore", invalid="ignore"):
-                t = (qx * sy - qy * sx) / denom
-                u = (qx * r_y - qy * r_x) / denom
-            hit = ok & (t > 1e-12) & (t < 1.0 - 1e-12) & (u >= 0.0) & (u <= 1.0)
-            # Zero-length segments never cross (as in _crossings)
-            hit &= ~((r_x == 0.0) & (r_y == 0.0))
-            for i in np.nonzero(hit.any(axis=1))[0]:
-                out[start + int(i)] = sorted(set(np.round(t[i][hit[i]], 12).tolist()))
-        return out
-
-    @staticmethod
-    def _lerp(a, b, t):
-        """The point at parameter t on segment a-b (every coordinate, Z included)."""
-        return tuple(a[k] + (b[k] - a[k]) * t for k in range(len(a)))
-
-    def _split_segments(self, pts):
-        """
-        Splits every segment of a polyline at its crossings with the boundary.
-
-        Args:
-            pts (list): The polyline's points (tuples).
-
-        Returns:
-            list: (start, end) sub-segments in order. A segment that crosses
-                nothing is one sub-segment; one with k crossings gives k + 1.
-                The points are the same values _lerp gives at t = 0 and t = 1.
-        """
-        try:
-            import numpy as np
-        except ImportError:
-            np = None
-
-        segments = list(zip(pts, pts[1:]))
-        if np is None:
-            crossings = {i: self._crossings(a, b) for i, (a, b) in enumerate(segments)}
-        else:
-            crossings = self._crossings_many(pts, np)
-
-        subs = []
-        for i, (a, b) in enumerate(segments):
-            params = [0.0] + crossings.get(i, []) + [1.0]
-            for t0, t1 in zip(params, params[1:]):
-                subs.append((self._lerp(a, b, t0), self._lerp(a, b, t1)))
-        return subs
-
-    def trim_polylines(self, polylines, closed=False):
-        """
-        The pieces of polylines that lie inside the boundary.
-
-        Every segment is split where it crosses a boundary edge
-        (_split_segments), and each part is kept or dropped by testing its
-        midpoint (even-odd, so holes count). A segment is therefore trimmed
-        correctly even when both its ends lie on the same side: a long straight
-        run passing through the boundary, or one crossing a hole, as Optimize
-        Linear Paths produces.
-
-        Z is interpolated at every cut. A loop cut open is rejoined at its
-        seam, so a loop crossing the boundary twice gives one piece, not two.
-
-        Args:
-            polylines (list): Lists of (x, y) or (x, y, z) tuples.
-            closed (bool): Treat every polyline as a loop (its last point
-                connects back to its first).
-
-        Returns:
-            list: Pieces (lists of tuples) with at least two points. A closed
-                loop wholly inside comes back whole, with its first point
-                repeated at the end. Every polyline unchanged when the
-                boundary is empty.
-        """
-        if not self._polys:
-            return [list(p) for p in polylines]
-
-        out = []
-        for line in polylines:
-            pts = [tuple(p) for p in line]
-            if len(pts) < 2:
-                continue
-            # 1. Loops: add the closing segment
-            if closed and (pts[0][0], pts[0][1]) != (pts[-1][0], pts[-1][1]):
-                pts.append(pts[0])
-
-            # 2. Split every segment at its crossings
-            subs = self._split_segments(pts)
-            if not subs:
-                continue
-
-            # 3. A sub-segment never crosses an edge: its midpoint tells for all of it
-            mids = [((p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0) for p, q in subs]
-            flags = self._inside_many([m[0] for m in mids], [m[1] for m in mids], self._polys)
-
-            # 4. Chain consecutive inside sub-segments into pieces
-            pieces, cur = [], []
-            for (p, q), inside in zip(subs, flags):
-                if inside:
-                    if not cur:
-                        cur = [p]
-                    # Skip zero-length parts (a crossing exactly at a vertex)
-                    if (q[0], q[1]) != (cur[-1][0], cur[-1][1]):
-                        cur.append(q)
-                elif cur:
-                    pieces.append(cur)
-                    cur = []
-            if cur:
-                pieces.append(cur)
-
-            # 5. Loops: the piece running into the seam continues past it
-            if closed and len(pieces) > 1 and flags[0] and flags[-1]:
-                # The loop starts and ends inside: its last and first pieces are one
-                first = pieces.pop(0)
-                pieces[-1] = pieces[-1] + first[1:]
-            out.extend(piece for piece in pieces if len(piece) >= 2)
-        return out
-
-
-def _segment_hits_box(a, b, x0, x1, y0, y1):
-    """
-    Does segment a-b touch the axis-aligned box [x0, x1] x [y0, y1]?
-
-    Liang-Barsky clipping: the segment a + t * (b - a), t in [0, 1], is
-    clipped against the box's four sides in turn; it touches the box when a
-    non-empty t range survives.
-
-    Args:
-        a, b (tuple): Segment end points (x, y).
-        x0, x1, y0, y1 (float): The box.
+        fill_holes_masks (list): List of (max_z, Part.Face) tuples.
 
     Returns:
-        bool: True if any part of the segment lies in the box (edges included).
+        list: List of (max_z, Part.Shape) tuples with co-planar faces fused,
+              sorted by Z descending.
     """
-    dx, dy = b[0] - a[0], b[1] - a[1]
-    t0, t1 = 0.0, 1.0
-    for p, q in ((-dx, a[0] - x0), (dx, x1 - a[0]), (-dy, a[1] - y0), (dy, y1 - a[1])):
-        if abs(p) < 1e-15:
-            # Parallel to this side: outside it means no overlap at all
-            if q < 0:
-                return False
+    from itertools import groupby
+
+    sorted_list = sorted(fill_holes_masks, key=lambda x: x[0], reverse=True)
+    fused_list = []
+
+    for max_z, group in groupby(sorted_list, key=lambda x: x[0]):
+        faces = [item[1] for item in group]
+
+        if len(faces) == 1:
+            fused_list.append((max_z, faces[0]))
             continue
-        t = q / p
-        if p < 0:
-            t0 = max(t0, t)  # entering
+        try:
+            fused = Part.makeCompound(faces)
+            if hasattr(fused, "removeSplitter"):
+                fused = fused.removeSplitter()
+            fused_list.append((max_z, fused))
+            Path.Log.debug(f"_fuse_coplanar_masks: Fused {len(faces)} masks at Z={max_z:.4f}.")
+        except Exception as e:
+            Path.Log.warning(
+                f" Failed to compound {len(faces)} fill selected holes "
+                f"at Z={max_z:.4f}: {e}. Using first face only."
+            )
+            fused_list.append((max_z, faces[0]))
+
+    return fused_list
+
+
+def _get_selected_faces(base_property):
+    """
+    Parses a link list (e.g. the operation's 'FillHoleFaces') to extract all selected Part.Face objects.
+
+    Args:
+        base_property (list): A list of (object, subnames) tuples.
+
+    Returns:
+        list: A flat list of all valid Part.Face objects found in the selection.
+    """
+    extracted_faces = []
+    if not base_property:
+        return extracted_faces
+
+    for base, subs in base_property:
+        for sub in subs:
+            if not sub:
+                continue
+            try:
+                shape = base.Shape.getElement(sub)
+                if shape and isinstance(shape, Part.Face):
+                    extracted_faces.append(shape)
+            except Exception as e:
+                Path.Log.debug(
+                    f"_get_selected_faces: Bypassed invalid sub-element '{sub}' on '{base.Label}': {e!s}"
+                )
+    return extracted_faces
+
+
+def fill_selected(base_property):
+    """
+    Creates flat 2D keep-out masks for user-selected geometry to prevent the
+    tool from plunging into specified holes or pockets.
+
+    The generation process follows a strict topographical hierarchy:
+    1. Extraction: Parses the operation's FillHoleFaces list for valid Part.Face objects.
+    2. Z-Grouping: Groups all faces strictly by their absolute maximum Z-height
+       to prevent cross-elevation merging.
+    3. Separation: At each Z-level, separates faces into touching groups
+       (processed collectively) and isolated faces.
+    4. Topographical Routing: Delegates isolated faces to specific capping
+       strategies (Flat floors vs. 3D sloped/curved walls) based on their
+       geometric properties.
+    5. Fusion: Turns every cap to face up (mirrored geometry reverses them),
+       then fuses all co-planar masks at each Z-height into a single,
+       unified Part.Shape.
+
+    Args:
+        base_property (list): The operation's `obj.FillHoleFaces` property containing
+            the selected geometry tuples.
+
+    Returns:
+        list: A list of tuples `(max_z, mask_shape)`, sorted by Z-height in
+            descending order. Returns an empty list on failure or if no valid
+            faces are found.
+    """
+    selected_faces = _get_selected_faces(base_property)
+    if not selected_faces:
+        Path.Log.warning("Fill Selected Holes enabled, but no faces selected. Skipping.")
+        return []
+
+    # Group faces STRICTLY by their maximum Z-height
+    faces_by_z = {}
+    for face in selected_faces:
+        z_key = round(face.BoundBox.ZMax, 4)
+        if z_key not in faces_by_z:
+            faces_by_z[z_key] = []
+        faces_by_z[z_key].append(face)
+
+    fill_holes_masks = []
+
+    # Process faces at each Z-level
+    for z_level, faces_at_z in faces_by_z.items():
+        if len(faces_at_z) > 1:
+            touching_groups, isolated_faces = _separate_touching_faces(
+                [faces_at_z]
+            )
         else:
-            t1 = min(t1, t)  # leaving
-        if t0 > t1:
-            return False
-    return True
+            touching_groups = []
+            isolated_faces = faces_at_z
+
+        # 1. Process touching group faces collectively
+        for group in touching_groups:
+            cap_face = create_boundary_face(group, offset=0.0)
+            if cap_face and not cap_face.isNull():
+                cap_face.translate(FreeCAD.Vector(0, 0, -cap_face.BoundBox.ZMin))
+                fill_holes_masks.append((z_level, cap_face))
+            else:
+                Path.Log.warning(f"Failed to process touching face group at Z={z_level}")
+
+        # 2. Process isolated faces individually based on Topography
+        for face in isolated_faces:
+            if not face.Wires:
+                continue
+
+            # Route the face to the correct capping strategy
+            fill_holes_masks.extend(_process_isolated_face(face, z_level))
+
+    if not fill_holes_masks:
+        Path.Log.warning("Failed to generate any caps for selected holes.")
+        return []
+
+    Path.Log.debug(f"Generated {len(fill_holes_masks)} mask(s).")
+    return _fuse_coplanar_masks([(z, _facing_up(mask)) for z, mask in fill_holes_masks])
+
+
+def _facing_up(cap):
+    """
+    The cap with every face's normal pointing up (+Z).
+
+    A cap built from a rim wire takes the wire's direction, which mirrored
+    geometry (a PartDesign Mirrored, a mirrored pattern) reverses: such caps
+    face down. Path.Area then fails on them when they are fused with the
+    rest, and the preview shades them from behind.
+    """
+    faces = []
+    for face in cap.Faces:
+        u0, u1, v0, v1 = face.ParameterRange
+        if face.normalAt((u0 + u1) / 2, (v0 + v1) / 2).z < 0:
+            face = face.reversed()
+        faces.append(face)
+    if cap.ShapeType == "Face" and len(faces) == 1:
+        return faces[0]
+    return Part.makeCompound(faces)
+
+
+def _process_isolated_face(face, z_level):
+    """
+    Routes an isolated face to the appropriate capping strategy based on
+    its topography (Flat vs 3D Wall) and wire count.
+
+    Args:
+        face (Part.Face): The isolated face to process.
+        z_level (float): The current Z-height grouping.
+
+    Returns:
+        list: A list of (z_level, mask_face) tuples.
+    """
+    masks = []
+    is_flat = face.BoundBox.ZLength < 1e-5
+
+    if is_flat:
+        if len(face.Wires) == 1:
+            # Simple single flat cap (e.g., flat pocket floor)
+            cap_face = create_boundary_face([face], offset=0.0)
+            if cap_face and not cap_face.isNull():
+                cap_face.translate(FreeCAD.Vector(0, 0, -cap_face.BoundBox.ZMin))
+                masks.append((z_level, cap_face))
+            else:
+                Path.Log.warning(f"Failed to process isolated face at Z={z_level}")
+        else:
+            # Flat face with inner holes (Scenario A)
+            masks.extend(_cap_flat_face_holes(face, z_level))
+    else:
+        # 3D Wall, such as a pipe, tapered, or sloped hole (Scenario B)
+        mask_tuple = _cap_3d_wall(face)
+        if mask_tuple:
+            masks.append(mask_tuple)
+
+    return masks
+
+
+def _cap_flat_face_holes(face, cap_z):
+    """
+    Scenario A: Capping inner holes on a mathematically flat surface.
+    Sorts wires by size; the largest is the outer boundary, the rest are holes.
+    """
+    masks = []
+    # BoundingBox DiagonalLength is a fast, crash-proof way to sort wire size
+    sorted_wires = sorted(face.Wires, key=lambda w: w.BoundBox.DiagonalLength)
+
+    # The largest wire is the outer boundary. The rest are the inner holes.
+    inner_wires = sorted_wires[:-1]
+
+    for wire in inner_wires:
+        if not wire.isClosed():
+            continue
+        cap_face = flatten_wire_to_cap(wire, cap_z, translate_to_zero=True)
+        if cap_face:
+            masks.append((cap_z, cap_face))
+
+    return masks
+
+
+def _cap_3d_wall(face):
+    """
+    Scenario B: Extracting and capping the top rim of a 3D wall (e.g., sloped holes).
+    Safely ignores vertical seams and crushes 3D splines into flat 2D polygons.
+    """
+    face_zmax = round(face.BoundBox.ZMax, 4)
+
+    top_wire = _extract_top_rim_wire(face)
+    if top_wire is None:
+        return None
+
+    cap_face = flatten_wire_to_cap(top_wire, face_zmax, translate_to_zero=True)
+    if cap_face:
+        return (face_zmax, cap_face)
+
+    return None

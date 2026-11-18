@@ -294,7 +294,7 @@ class TestSurfaceZLevel(PathTestUtils.PathTestBase):
         - Two entries in the result: one fused compound at Z=10, one at Z=5.
         - Result sorted descending by Z.
         """
-        from Path.Base.Generator.surface_zlevel import _fuse_coplanar_masks
+        from Path.Base.Generator.surface_boundary import _fuse_coplanar_masks
 
         # Build three simple flat faces
         def _make_square_face(x, y, size, z):
@@ -336,7 +336,7 @@ class TestSurfaceZLevel(PathTestUtils.PathTestBase):
         - mask_face is a valid non-null Part.Face at Z=0.
         - mask_face.BoundBox.ZMin == 0 (correctly translated to Z=0).
         """
-        from Path.Base.Generator.surface_zlevel import fill_selected
+        from Path.Base.Generator.surface_boundary import fill_selected
 
         _, hole_a_face, _ = self.setUp_fill_model()
         self.assertIsNotNone(hole_a_face, "Could not find hole A wall face in test model")
@@ -344,14 +344,14 @@ class TestSurfaceZLevel(PathTestUtils.PathTestBase):
         # Mock base_property: list of (obj, ["FaceN"]) tuples
         # fill_selected calls _get_selected_faces which expects this format.
         # We bypass the FreeCAD object lookup by patching _get_selected_faces.
-        from Path.Base.Generator import surface_zlevel
+        from Path.Base.Generator import surface_boundary
 
-        original = surface_zlevel._get_selected_faces
+        original = surface_boundary._get_selected_faces
         try:
-            surface_zlevel._get_selected_faces = lambda _: [hole_a_face]
+            surface_boundary._get_selected_faces = lambda _: [hole_a_face]
             result = fill_selected([])
         finally:
-            surface_zlevel._get_selected_faces = original
+            surface_boundary._get_selected_faces = original
 
         self.assertEqual(len(result), 1, "Should produce exactly one mask")
         max_z, mask_face = result[0]
@@ -376,20 +376,20 @@ class TestSurfaceZLevel(PathTestUtils.PathTestBase):
         - max_z == 10.0.
         - The fused mask has a larger area than either individual cap.
         """
-        from Path.Base.Generator.surface_zlevel import fill_selected
-        from Path.Base.Generator import surface_zlevel
+        from Path.Base.Generator.surface_boundary import fill_selected
+        from Path.Base.Generator import surface_boundary
 
         _, hole_a_face, hole_b_face = self.setUp_fill_model()
         self.assertIsNotNone(hole_a_face)
         self.assertIsNotNone(hole_b_face)
 
         # Both holes happen to share a top Z for this test
-        original = surface_zlevel._get_selected_faces
+        original = surface_boundary._get_selected_faces
         try:
-            surface_zlevel._get_selected_faces = lambda _: [hole_a_face, hole_b_face]
+            surface_boundary._get_selected_faces = lambda _: [hole_a_face, hole_b_face]
             result = fill_selected([])
         finally:
-            surface_zlevel._get_selected_faces = original
+            surface_boundary._get_selected_faces = original
 
         # Both faces have the same ZMax — so we expect one fused entrie
         # (only co-planar masks fuse). Validate we got one valid result.
@@ -519,3 +519,39 @@ class TestSurfaceZLevel(PathTestUtils.PathTestBase):
             "Extra" in statuses or "Mixed" in statuses,
             "Stack should contain at least one floor-type layer",
         )
+
+    def test45_fill_selected_mirrored_holes_face_up(self):
+        """
+        Caps over mirrored holes face up like the others.
+
+        INPUT:
+        - Function: fill_selected()
+        - A plate with two r4 holes: one cut directly, one its mirror image
+          (as a PartDesign Mirrored makes), so its rim runs the other way.
+          Both hole walls selected.
+
+        EXPECTED OUTPUT:
+        - Every cap face's normal points up (+Z); a reversed cap shades from
+          behind in the preview and can upset Path.Area when fused.
+        """
+        from Path.Base.Generator import surface_boundary
+
+        V = FreeCAD.Vector
+        hole = Part.makeCylinder(4, 10, V(-20, 0, 0))
+        plate = Part.makeBox(80, 40, 10, V(-40, -20, 0))
+        plate = plate.cut(hole).cut(hole.mirror(V(0, 0, 0), V(1, 0, 0))).removeSplitter()
+        walls = [f for f in plate.Faces if f.Surface.TypeId == "Part::GeomCylinder"]
+        self.assertEqual(len(walls), 2)
+
+        original = surface_boundary._get_selected_faces
+        try:
+            surface_boundary._get_selected_faces = lambda _: walls
+            result = surface_boundary.fill_selected([])
+        finally:
+            surface_boundary._get_selected_faces = original
+
+        faces = [face for _, mask in result for face in mask.Faces]
+        self.assertEqual(len(faces), 2)
+        for face in faces:
+            u0, u1, v0, v1 = face.ParameterRange
+            self.assertGreater(face.normalAt((u0 + u1) / 2, (v0 + v1) / 2).z, 0, face.CenterOfMass)

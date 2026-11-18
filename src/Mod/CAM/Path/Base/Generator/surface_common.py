@@ -27,6 +27,8 @@ surface_boundary. These are pure functions with no FreeCAD document access —
 tool parameters and geometry are passed in by the operation wrapper.
 """
 
+import math
+
 import Path
 import Part
 
@@ -82,7 +84,7 @@ _TOOL_TYPE_MAP = {
     "endmill": "CylCutter",
     "ballend": "BallCutter",
     "bullnose": "BullCutter",
-    "taperedballnose": "BallCutter",
+    "taperedballnose": "BallConeCutter",
     "drill": "ConeCutter",
     "engraver": "ConeCutter",
     "v_bit": "ConeCutter",
@@ -99,6 +101,8 @@ def make_ocl_cutter(
     edge_height=0.0,
     edge_angle=0.0,
     length_offset=0.0,
+    taper_angle=0.0,
+    taper_diameter=0.0,
 ):
     """Create an OCL cutter from tool parameters.
 
@@ -115,6 +119,8 @@ def make_ocl_cutter(
         edge_height: Cutting edge height in mm.
         edge_angle: Cutting edge full angle in degrees (for V-bits / drills).
         length_offset: Length offset in mm.
+        taper_angle: Included taper angle in degrees (tapered ball-nose).
+        taper_diameter: Diameter at the top of the taper (tapered ball-nose).
 
     Returns:
         An ``ocl`` cutter object, or *None* if the tool type is not
@@ -158,12 +164,25 @@ def make_ocl_cutter(
             minor_radius = 0.0
         return ocl.BullCutter(diameter, minor_radius, edge_height + length_offset)
 
+    elif cutter_name == "BallConeCutter":
+        # OCL BallConeCutter(ball diameter, top diameter, half angle in radians):
+        # the ball tip, then the taper up to its top diameter
+        if 0 < taper_angle < 180 and taper_diameter > diameter:
+            return ocl.BallConeCutter(diameter, taper_diameter, math.radians(taper_angle / 2.0))
+        Path.Log.warning(
+            "Tapered ball-nose without a valid taper angle and top diameter: "
+            "modelled as a plain ball end mill, its taper is not checked."
+        )
+        if edge_height <= 0:
+            edge_height = diameter / 2.0
+        return ocl.BallCutter(diameter, edge_height + length_offset)
+
     elif cutter_name == "ConeCutter":
-        if edge_angle <= 0:
-            Path.Log.error("ConeCutter requires a positive edge_angle, got {}".format(edge_angle))
+        if not 0 < edge_angle < 180:
+            Path.Log.error("ConeCutter requires an edge_angle between 0 and 180, got {}".format(edge_angle))
             return None
-        # OCL ConeCutter(diameter, half_angle, length)
-        return ocl.ConeCutter(diameter, edge_angle / 2.0, length_offset)
+        # OCL ConeCutter(diameter, half angle in radians, length above the cone)
+        return ocl.ConeCutter(diameter, math.radians(edge_angle / 2.0), length_offset)
 
     return None
 
@@ -277,3 +296,66 @@ def _filter_vertical(model_faces, tolerance=0.0005):
     """
     filtered = [face for face in model_faces if not _is_vertical(face, tolerance)]
     return filtered if filtered else model_faces
+
+
+# ---------------------------------------------------------------------------
+# Contour ordering (Waterline and steep-wall passes)
+# ---------------------------------------------------------------------------
+
+
+def contour_record(pts, closed=None):
+    """
+    (points, closed, (xmin, ymin, xmax, ymax)) for ordering.
+
+    closed defaults to the first and last points being equal.
+    """
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    if closed is None:
+        closed = pts[0] == pts[-1]
+    return (pts, closed, (min(xs), min(ys), max(xs), max(ys)))
+
+
+def stack_by_wall(levels, side_tolerance):
+    """
+    Groups per-level contours into stacks, one per wall, top to bottom.
+
+    A contour continues the stack whose contour one level up has the most
+    similar bounding box: on a drafted wall the box shifts only by about the
+    step down times the draft, while another wall's box differs by much more.
+    All four box sides are compared, so a boss inside a pocket (nested
+    boxes) is not mistaken for the pocket wall. Each stack takes at most one
+    contour per level; a contour with no box within side_tolerance on every
+    side starts a new stack.
+
+    Args:
+        levels (list): Per level, top to bottom, a list of contour records.
+        side_tolerance (float): Largest shift of any box side between levels.
+
+    Returns:
+        list: Stacks, each a list of records in level order.
+    """
+    stacks = []  # [records, index of the last level]
+    for index, records in enumerate(levels):
+        open_stacks = [st for st in stacks if st[1] == index - 1]
+        candidates = []
+        for ci, record in enumerate(records):
+            bb = record[2]
+            for si, stack in enumerate(open_stacks):
+                last = stack[0][-1][2]
+                shift = max(abs(bb[k] - last[k]) for k in range(4))
+                if shift <= side_tolerance:
+                    candidates.append((shift, ci, si))
+        candidates.sort()
+        taken_c, taken_s = set(), set()
+        for _shift, ci, si in candidates:
+            if ci in taken_c or si in taken_s:
+                continue
+            taken_c.add(ci)
+            taken_s.add(si)
+            open_stacks[si][0].append(records[ci])
+            open_stacks[si][1] = index
+        for ci, record in enumerate(records):
+            if ci not in taken_c:
+                stacks.append([[record], index])
+    return [st[0] for st in stacks]

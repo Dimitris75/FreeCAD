@@ -63,6 +63,26 @@
       <item row="3" column="1">
        <widget class="QComboBox" name="layerMode"/>
       </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="cutMode_label">
+        <property name="text">
+         <string>Cut mode</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1">
+       <widget class="QComboBox" name="cutMode"/>
+      </item>
+      <item row="5" column="0">
+       <widget class="QLabel" name="waterlineOrder_label">
+        <property name="text">
+         <string>Waterline order</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="1">
+       <widget class="QComboBox" name="waterlineOrder"/>
+      </item>
      </layout>
     </widget>
    </item>
@@ -591,6 +611,255 @@ Does not affect the toolpath point spacing (Sample Interval).</string>
         <property name="text">
          <string>Finishing profile</string>
         </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QToolButton" name="advancedToggle">
+     <property name="text">
+      <string>Advanced</string>
+     </property>
+     <property name="checkable">
+      <bool>true</bool>
+     </property>
+     <property name="autoRaise">
+      <bool>true</bool>
+     </property>
+     <property name="toolButtonStyle">
+      <enum>Qt::ToolButtonTextBesideIcon</enum>
+     </property>
+     <property name="arrowType">
+      <enum>Qt::RightArrow</enum>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="advancedContent">
+     <layout class="QVBoxLayout" name="verticalLayout_advanced">
+      <property name="leftMargin">
+       <number>0</number>
+      </property>
+      <property name="rightMargin">
+       <number>0</number>
+      </property>
+      <item>
+       <widget class="QGroupBox" name="leadsGroup">
+        <property name="title">
+         <string>LeadIn/LeadOut</string>
+        </property>
+        <layout class="QGridLayout" name="gridLayout_leads">
+              <item row="0" column="0" colspan="2">
+               <widget class="QCheckBox" name="leadInOut">
+                <property name="text">
+                 <string>Smart lead-in/lead-out</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="0">
+               <widget class="QLabel" name="leadFeed_label">
+                <property name="text">
+                 <string>Lead feed</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="1">
+               <widget class="QSpinBox" name="leadFeed">
+                <property name="suffix">
+                 <string>%</string>
+                </property>
+                <property name="minimum">
+                 <number>1</number>
+                </property>
+                <property name="maximum">
+                 <number>100</number>
+                </property>
+                <property name="singleStep">
+                 <number>5</number>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="0">
+               <widget class="QLabel" name="leadLiftDistance_label">
+                <property name="text">
+                 <string>Lead lift distance</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="1">
+               <widget class="Gui::InputField" name="leadLiftDistance">
+                <property name="unit" stdset="0">
+                 <string>mm</string>
+                </property>
+               </widget>
+              </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QGroupBox" name="finishingGroup">
+        <property name="title">
+         <string>Finishing Passes</string>
+        </property>
+        <layout class="QGridLayout" name="gridLayout_finishing">
+              <item row="0" column="0" colspan="2">
+               <widget class="QCheckBox" name="finishSteepWalls">
+                <property name="text">
+                 <string>Finish steep walls</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="0">
+               <widget class="QLabel" name="steepMaxDraftAngle_label">
+                <property name="text">
+                 <string>Max draft angle</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="1">
+               <widget class="Gui::InputField" name="steepMaxDraftAngle">
+                <property name="unit" stdset="0">
+                 <string>°</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="0">
+               <widget class="QLabel" name="steepMinDraftAngle_label">
+                <property name="text">
+                 <string>Min draft angle</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="1">
+               <widget class="Gui::InputField" name="steepMinDraftAngle">
+                <property name="unit" stdset="0">
+                 <string>°</string>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="0">
+               <widget class="QLabel" name="steepStepDown_label">
+                <property name="text">
+                 <string>Step down</string>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="1">
+               <widget class="Gui::InputField" name="steepStepDown">
+                <property name="unit" stdset="0">
+                 <string>mm</string>
+                </property>
+               </widget>
+              </item>
+              <item row="4" column="0">
+               <widget class="QLabel" name="steepOrder_label">
+                <property name="text">
+                 <string>Order</string>
+                </property>
+               </widget>
+              </item>
+              <item row="4" column="1">
+               <widget class="QComboBox" name="steepOrder"/>
+              </item>
+              <item row="5" column="0" colspan="2">
+               <widget class="QCheckBox" name="finishFillets">
+                <property name="text">
+                 <string>Finish fillets</string>
+                </property>
+               </widget>
+              </item>
+              <item row="6" column="0">
+               <widget class="QLabel" name="filletMaxRadius_label">
+                <property name="text">
+                 <string>Max fillet radius</string>
+                </property>
+               </widget>
+              </item>
+              <item row="6" column="1">
+               <widget class="Gui::InputField" name="filletMaxRadius">
+                <property name="unit" stdset="0">
+                 <string>mm</string>
+                </property>
+               </widget>
+              </item>
+              <item row="7" column="0" colspan="2">
+               <widget class="QCheckBox" name="filletIncludeConcave">
+                <property name="text">
+                 <string>Include concave fillets</string>
+                </property>
+               </widget>
+              </item>
+              <item row="8" column="0">
+               <widget class="QLabel" name="filletStepOver_label">
+                <property name="text">
+                 <string>Step over</string>
+                </property>
+               </widget>
+              </item>
+              <item row="8" column="1">
+               <widget class="Gui::InputField" name="filletStepOver">
+                <property name="unit" stdset="0">
+                 <string>mm</string>
+                </property>
+               </widget>
+              </item>
+              <item row="9" column="0">
+               <widget class="QLabel" name="filletEdgeTrim_label">
+                <property name="text">
+                 <string>Edge trim</string>
+                </property>
+               </widget>
+              </item>
+              <item row="9" column="1">
+               <widget class="QSpinBox" name="filletEdgeTrim">
+                <property name="suffix">
+                 <string>%</string>
+                </property>
+                <property name="minimum">
+                 <number>0</number>
+                </property>
+                <property name="maximum">
+                 <number>100</number>
+                </property>
+                <property name="singleStep">
+                 <number>5</number>
+                </property>
+               </widget>
+              </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QGroupBox" name="feedGroup">
+        <property name="title">
+         <string>Feed Rate</string>
+        </property>
+        <layout class="QGridLayout" name="gridLayout_feed">
+              <item row="0" column="0">
+               <widget class="QLabel" name="volumetricFeedPercent_label">
+                <property name="text">
+                 <string>Volumetric feed</string>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="1">
+               <widget class="QSpinBox" name="volumetricFeedPercent">
+                <property name="suffix">
+                 <string>%</string>
+                </property>
+                <property name="minimum">
+                 <number>0</number>
+                </property>
+                <property name="maximum">
+                 <number>100</number>
+                </property>
+                <property name="singleStep">
+                 <number>5</number>
+                </property>
+               </widget>
+              </item>
+        </layout>
        </widget>
       </item>
      </layout>

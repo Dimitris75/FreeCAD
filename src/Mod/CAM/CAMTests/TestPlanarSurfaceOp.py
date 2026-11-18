@@ -1963,7 +1963,7 @@ class TestPlanarSurfaceOp(PathTestWithAssets):
         - A Surface Scan op, then switched through settings.
 
         EXPECTED OUTPUT:
-        - Defaults: both passes off, 18 / 2 degree drafts, Level order,
+        - Defaults: both passes off, 45 / 2 degree drafts, Level order,
           10 mm max fillet radius, 50 % edge trim, zero step distances.
         - The two switches are shown for Surface Scan Single-pass only; each
           switch's settings only while it is on.
@@ -1974,7 +1974,7 @@ class TestPlanarSurfaceOp(PathTestWithAssets):
         for prop in self.FINISHING:
             self.assertIn(prop, op.PropertiesList)
         self.assertFalse(op.FinishSteepWalls or op.FinishFillets or op.FilletIncludeConcave)
-        self.assertAlmostEqual(op.SteepMaxDraftAngle.Value, 18.0)
+        self.assertAlmostEqual(op.SteepMaxDraftAngle.Value, 45.0)
         self.assertAlmostEqual(op.SteepMinDraftAngle.Value, 2.0)
         self.assertEqual(op.SteepOrder, "Level")
         self.assertAlmostEqual(op.FilletMaxRadius.Value, 10.0)
@@ -2141,3 +2141,104 @@ class TestPlanarSurfaceOp(PathTestWithAssets):
                     over.append(p[2])
         self.assertTrue(over)
         self.assertAlmostEqual(min(over), 20.0, places=3)
+
+    @unittest.skipUnless(_ocl_available, "OpenCamLib not available")
+    def test85(self):
+        """
+        Volumetric Feed is off by default.
+
+        INPUT:
+        - The drafted boss, Surface Scan, tool controller at 600 mm/min
+          horizontal feed; Volumetric Feed at its default, then 25%.
+
+        EXPECTED OUTPUT:
+        - A new op starts at 0%.
+        - 25% raises the fastest feed (the user can still turn it on).
+        """
+        job = self._createDraftedBossJob()
+        controller = job.Tools.Group[0]
+        controller.HorizFeed = 600.0
+        controller.VertFeed = 300.0
+        op = self._createOp(job, "SurfaceScan")
+        op.SampleInterval = 1.0
+        self.assertEqual(op.VolumetricFeedPercent, 0)
+
+        def fastest(percent):
+            op.VolumetricFeedPercent = percent
+            self.doc.recompute()
+            return max(c.Parameters.get("F", 0.0) for c in op.Path.Commands if c.Name == "G1")
+
+        self.assertGreater(fastest(25), fastest(0) * 1.05)
+
+    @unittest.skipUnless(_ocl_available, "OpenCamLib not available")
+    def test86(self):
+        """
+        Z-Level: Reverse changes the cut order, never the walls' milling direction.
+
+        INPUT:
+        - A 100x80x5 plate with a 40x30 boss up to Z 20. Z-Level, Offset
+          pattern, Climb and Conventional, each with and without Reverse.
+
+        EXPECTED OUTPUT:
+        - The boss's wall loops run clockwise for Climb (the boss on the
+          tool's right) and counter-clockwise for Conventional, Reverse or not.
+        """
+        V = FreeCAD.Vector
+        shape = Part.makeBox(100, 80, 5).fuse(Part.makeBox(40, 30, 15, V(30, 25, 5)))
+        job = self._createWaterlineJob(shape.removeSplitter())
+
+        def island_loops(op):
+            """Direction of each closed loop around the boss (+1 CCW, -1 CW)."""
+            loops, run = [], []
+            for c in op.Path.Commands:
+                p = c.Parameters
+                if c.Name in ("G1", "G2", "G3") and "X" in p and "Y" in p:
+                    z = p.get("Z", run[-1][2] if run else 0.0)
+                    if run and abs(z - run[-1][2]) > 1e-6:
+                        loops.append(run)
+                        run = []
+                    run.append((p["X"], p["Y"], z))
+                elif c.Name == "G0" and run:
+                    loops.append(run)
+                    run = []
+            loops.append(run)
+            signs = []
+            for r in loops:
+                if len(r) < 4 or math.dist(r[0][:2], r[-1][:2]) > 0.5:
+                    continue
+                if not 40 < max(q[0] for q in r) - min(q[0] for q in r) < 50:
+                    continue  # not the loop around the boss
+                area = sum(r[i][0] * r[i + 1][1] - r[i + 1][0] * r[i][1] for i in range(len(r) - 1))
+                signs.append(1 if area > 0 else -1)
+            return signs
+
+        for mode, expected in (("Climb", -1), ("Conventional", 1)):
+            for reverse in (False, True):
+                op = self._createOp(job, "ZLevelHybrid")
+                op.CutPattern = "Offset"
+                op.CutMode = mode
+                op.CutPatternReversed = reverse
+                self.doc.recompute()
+                signs = island_loops(op)
+                self.assertTrue(signs, (mode, reverse))
+                self.assertEqual(set(signs), {expected}, (mode, reverse))
+
+    def test87(self):
+        """
+        Surface Scan: Reverse leaves the steep-wall passes alone.
+
+        INPUT:
+        - The drafted boss, Surface Scan with steep-wall passes, Climb;
+          Reverse off, then on.
+
+        EXPECTED OUTPUT:
+        - The same steep-wall passes: Reverse only orders the cut pattern.
+        """
+        job = self._createDraftedBossJob()
+        op = self._createOp(job, "SurfaceScan")
+        op.FinishSteepWalls = True
+        boundaries = self._executeBoundaries(op)
+        normal = op.Proxy._finishingScanLines(op, 5.0, boundaries)
+        op.CutPatternReversed = True
+        self.assertTrue(normal)
+        self.assertEqual(op.Proxy._finishingScanLines(op, 5.0, boundaries), normal)

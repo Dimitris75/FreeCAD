@@ -320,19 +320,21 @@ class TestSurfaceWaterline(PathTestUtils.PathTestBase):
         )
         self.assertEqual(climb, [(10.0, 10.0), (10.0, 0.0), (0.0, 0.0)])
 
-    def test41_overlap_and_short_tail(self):
+    def test41_overlap_and_point_back(self):
         """
-        Seam overlap and the lead-out tail of a closed loop.
+        Seam overlap, and where a lead-out retreat goes on a closed loop.
 
         INPUT:
-        - Functions: _extend_overlap(), _short_tail()
+        - Functions: _extend_overlap(), surface_postprocess.point_back_along()
         - A closed 10x10 square (first point repeated at the end).
 
         EXPECTED OUTPUT:
         - _extend_overlap(1.5) continues 1.5 mm past the seam along the first edge.
-        - _short_tail(2.0) is [the point 2 mm back along the path, the end point].
+        - point_back_along(2.0) is 2 mm back along the path from its end, around
+          the corner if needed; past the path's length it is the first point.
         """
-        from Path.Base.Generator.surface_waterline import _extend_overlap, _short_tail
+        from Path.Base.Generator.surface_postprocess import point_back_along
+        from Path.Base.Generator.surface_waterline import _extend_overlap
 
         closed = self._square(5.0) + [(0.0, 0.0, 5.0)]
         extended = _extend_overlap(closed, 1.5)
@@ -342,10 +344,10 @@ class TestSurfaceWaterline(PathTestUtils.PathTestBase):
         self.assertAlmostEqual(extended[-1][1], 0.0)
         self.assertIs(_extend_overlap(closed, 0.0), closed)
 
-        tail = _short_tail(closed, 2.0)
-        self.assertEqual(tail[-1], closed[-1])
-        self.assertAlmostEqual(tail[0][0], 0.0)
-        self.assertAlmostEqual(tail[0][1], 2.0)
+        back = point_back_along(closed, 2.0)
+        self.assertAlmostEqual(back[0], 0.0)
+        self.assertAlmostEqual(back[1], 2.0)
+        self.assertEqual(point_back_along(closed, 100.0), tuple(closed[0]))
 
     def test42_leads_off_unchanged_leads_on_arcs(self):
         """
@@ -398,6 +400,8 @@ class TestSurfaceWaterline(PathTestUtils.PathTestBase):
         - Closed loops come back closed (first point repeated).
         - The open chain is not closed, and keeps its start; with climb it is
           reversed, and closed loops still start at their seam.
+        - "Wall" order with both squares at two heights: each square is cut
+          top to bottom before moving to the other.
         """
         from Path.Base.Generator.surface_waterline import _order_contours
 
@@ -416,6 +420,12 @@ class TestSurfaceWaterline(PathTestUtils.PathTestBase):
         climb = _order_contours(data, {5.0: [chain]}, cut_climb=True)
         self.assertEqual(climb[2][0], list(reversed(chain)))
         self.assertEqual(climb[0][0][0], climb[0][0][-1])
+
+        low = [[(x, y, 5.0) for x, y, _z in loop] for loop in (far, near)]
+        two = OrderedDict([(10.0, [far, near]), (5.0, low)])
+        walls = _order_contours(two, None, False, order="Wall", wall_tolerance=1.0)
+        xs = [round(pts[0][0] // 50) for pts, _ in walls]
+        self.assertEqual(xs, [2, 2, 0, 0], "Far square, both heights, then near")
 
     def test44_stays_down(self):
         """

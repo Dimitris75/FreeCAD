@@ -40,14 +40,14 @@ else:
     Path.Log.setLevel(Path.Log.Level.INFO, Path.Log.thisModule())
 
 
-# ---------------------------------------------------------------------------
-# Fill selected holes
-# ---------------------------------------------------------------------------
-
-
 # Geometric tolerance of the Z-Level Hybrid engine (slicing, depth snapping).
 # Also passed as the boundary tolerance, which gives the 0.01 mm minimum inset.
 GEOMETRY_TOLERANCE = 0.0001
+
+
+# ---------------------------------------------------------------------------
+# Fill selected holes: layer masks (the caps come from surface_common.fill_selected)
+# ---------------------------------------------------------------------------
 
 
 def _apply_fill_hole_masks(
@@ -126,254 +126,6 @@ def _apply_fill_hole_masks(
     fill_mask_idx = 0
 
     return fill_mask_idx, fill_holes_masks, floor_geo, all_prev_comp
-
-
-def _fuse_coplanar_masks(fill_holes_masks):
-    """
-    Groups fill-hole masks by Z height and fuses any faces sharing the
-    same height into a single shape.
-
-    Args:
-        fill_holes_masks (list): List of (max_z, Part.Face) tuples.
-
-    Returns:
-        list: List of (max_z, Part.Shape) tuples with co-planar faces fused,
-              sorted by Z descending.
-    """
-    from itertools import groupby
-
-    sorted_list = sorted(fill_holes_masks, key=lambda x: x[0], reverse=True)
-    fused_list = []
-
-    for max_z, group in groupby(sorted_list, key=lambda x: x[0]):
-        faces = [item[1] for item in group]
-
-        if len(faces) == 1:
-            fused_list.append((max_z, faces[0]))
-            continue
-        try:
-            fused = Part.makeCompound(faces)
-            if hasattr(fused, "removeSplitter"):
-                fused = fused.removeSplitter()
-            fused_list.append((max_z, fused))
-            Path.Log.debug(f"_fuse_coplanar_masks: Fused {len(faces)} masks at Z={max_z:.4f}.")
-        except Exception as e:
-            Path.Log.warning(
-                f" Failed to compound {len(faces)} fill selected holes "
-                f"at Z={max_z:.4f}: {e}. Using first face only."
-            )
-            fused_list.append((max_z, faces[0]))
-
-    return fused_list
-
-
-def _get_selected_faces(base_property):
-    """
-    Parses a link list (e.g. the operation's 'FillHoleFaces') to extract all selected Part.Face objects.
-
-    Args:
-        base_property (list): A list of (object, subnames) tuples.
-
-    Returns:
-        list: A flat list of all valid Part.Face objects found in the selection.
-    """
-    extracted_faces = []
-    if not base_property:
-        return extracted_faces
-
-    for base, subs in base_property:
-        for sub in subs:
-            if not sub:
-                continue
-            try:
-                shape = base.Shape.getElement(sub)
-                if shape and isinstance(shape, Part.Face):
-                    extracted_faces.append(shape)
-            except Exception as e:
-                Path.Log.debug(
-                    f"_get_selected_faces: Bypassed invalid sub-element '{sub}' on '{base.Label}': {e!s}"
-                )
-    return extracted_faces
-
-
-def fill_selected(base_property):
-    """
-    Creates flat 2D keep-out masks for user-selected geometry to prevent the
-    tool from plunging into specified holes or pockets.
-
-    The generation process follows a strict topographical hierarchy:
-    1. Extraction: Parses the operation's FillHoleFaces list for valid Part.Face objects.
-    2. Z-Grouping: Groups all faces strictly by their absolute maximum Z-height
-       to prevent cross-elevation merging.
-    3. Separation: At each Z-level, separates faces into touching groups
-       (processed collectively) and isolated faces.
-    4. Topographical Routing: Delegates isolated faces to specific capping
-       strategies (Flat floors vs. 3D sloped/curved walls) based on their
-       geometric properties.
-    5. Fusion: Fuses all co-planar masks at each Z-height into a single,
-       unified Part.Shape.
-
-    Args:
-        base_property (list): The operation's `obj.FillHoleFaces` property containing
-            the selected geometry tuples.
-
-    Returns:
-        list: A list of tuples `(max_z, mask_shape)`, sorted by Z-height in
-            descending order. Returns an empty list on failure or if no valid
-            faces are found.
-    """
-    from . import surface_boundary
-
-    selected_faces = _get_selected_faces(base_property)
-    if not selected_faces:
-        Path.Log.warning("Fill Selected Holes enabled, but no faces selected. Skipping.")
-        return []
-
-    # Group faces STRICTLY by their maximum Z-height
-    faces_by_z = {}
-    for face in selected_faces:
-        z_key = round(face.BoundBox.ZMax, 4)
-        if z_key not in faces_by_z:
-            faces_by_z[z_key] = []
-        faces_by_z[z_key].append(face)
-
-    fill_holes_masks = []
-
-    # Process faces at each Z-level
-    for z_level, faces_at_z in faces_by_z.items():
-        if len(faces_at_z) > 1:
-            touching_groups, isolated_faces = surface_boundary._separate_touching_faces(
-                [faces_at_z]
-            )
-        else:
-            touching_groups = []
-            isolated_faces = faces_at_z
-
-        # 1. Process touching group faces collectively
-        for group in touching_groups:
-            cap_face = surface_boundary.create_boundary_face(group, offset=0.0)
-            if cap_face and not cap_face.isNull():
-                cap_face.translate(FreeCAD.Vector(0, 0, -cap_face.BoundBox.ZMin))
-                fill_holes_masks.append((z_level, cap_face))
-            else:
-                Path.Log.warning(f"Failed to process touching face group at Z={z_level}")
-
-        # 2. Process isolated faces individually based on Topography
-        for face in isolated_faces:
-            if not face.Wires:
-                continue
-
-            # Route the face to the correct capping strategy
-            fill_holes_masks.extend(_process_isolated_face(face, z_level))
-
-    if not fill_holes_masks:
-        Path.Log.warning("Failed to generate any caps for selected holes.")
-        return []
-
-    Path.Log.debug(f"Generated {len(fill_holes_masks)} mask(s).")
-    return _fuse_coplanar_masks([(z, _facing_up(mask)) for z, mask in fill_holes_masks])
-
-
-def _facing_up(cap):
-    """
-    The cap with every face's normal pointing up (+Z).
-
-    A cap built from a rim wire takes the wire's direction, which mirrored
-    geometry (a PartDesign Mirrored, a mirrored pattern) reverses: such caps
-    face down. Path.Area then fails on them when they are fused with the
-    rest, and the preview shades them from behind.
-    """
-    faces = []
-    for face in cap.Faces:
-        u0, u1, v0, v1 = face.ParameterRange
-        if face.normalAt((u0 + u1) / 2, (v0 + v1) / 2).z < 0:
-            face = face.reversed()
-        faces.append(face)
-    if cap.ShapeType == "Face" and len(faces) == 1:
-        return faces[0]
-    return Part.makeCompound(faces)
-
-
-def _process_isolated_face(face, z_level):
-    """
-    Routes an isolated face to the appropriate capping strategy based on
-    its topography (Flat vs 3D Wall) and wire count.
-
-    Args:
-        face (Part.Face): The isolated face to process.
-        z_level (float): The current Z-height grouping.
-
-    Returns:
-        list: A list of (z_level, mask_face) tuples.
-    """
-    from . import surface_boundary
-
-    masks = []
-    is_flat = face.BoundBox.ZLength < 1e-5
-
-    if is_flat:
-        if len(face.Wires) == 1:
-            # Simple single flat cap (e.g., flat pocket floor)
-            cap_face = surface_boundary.create_boundary_face([face], offset=0.0)
-            if cap_face and not cap_face.isNull():
-                cap_face.translate(FreeCAD.Vector(0, 0, -cap_face.BoundBox.ZMin))
-                masks.append((z_level, cap_face))
-            else:
-                Path.Log.warning(f"Failed to process isolated face at Z={z_level}")
-        else:
-            # Flat face with inner holes (Scenario A)
-            masks.extend(_cap_flat_face_holes(face, z_level))
-    else:
-        # 3D Wall, such as a pipe, tapered, or sloped hole (Scenario B)
-        mask_tuple = _cap_3d_wall(face)
-        if mask_tuple:
-            masks.append(mask_tuple)
-
-    return masks
-
-
-def _cap_flat_face_holes(face, cap_z):
-    """
-    Scenario A: Capping inner holes on a mathematically flat surface.
-    Sorts wires by size; the largest is the outer boundary, the rest are holes.
-    """
-    from . import surface_boundary
-
-    masks = []
-    # BoundingBox DiagonalLength is a fast, crash-proof way to sort wire size
-    sorted_wires = sorted(face.Wires, key=lambda w: w.BoundBox.DiagonalLength)
-
-    # The largest wire is the outer boundary. The rest are the inner holes.
-    inner_wires = sorted_wires[:-1]
-
-    for wire in inner_wires:
-        if not wire.isClosed():
-            continue
-        cap_face = surface_boundary.flatten_wire_to_cap(wire, cap_z, translate_to_zero=True)
-        if cap_face:
-            masks.append((cap_z, cap_face))
-
-    return masks
-
-
-def _cap_3d_wall(face):
-    """
-    Scenario B: Extracting and capping the top rim of a 3D wall (e.g., sloped holes).
-    Safely ignores vertical seams and crushes 3D splines into flat 2D polygons.
-    """
-    from . import surface_boundary
-
-    face_zmax = round(face.BoundBox.ZMax, 4)
-
-    top_wire = surface_boundary._extract_top_rim_wire(face)
-    if top_wire is None:
-        return None
-
-    cap_face = surface_boundary.flatten_wire_to_cap(top_wire, face_zmax, translate_to_zero=True)
-    if cap_face:
-        return (face_zmax, cap_face)
-
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1421,7 +1173,8 @@ def zlevel_hybrid_to_gcode(
                 # Grab the exact first vertex of the rotated wire
                 start_p = wire.Vertexes[0].Point if wire.Vertexes else current_peri_start
 
-                # Generate the wire-following path
+                # Generate the wire-following path. Reverse changes the pattern's cut order,
+                # never a wall's milling direction: that comes from Cut Mode alone.
                 commands.extend(
                     _generate_wire_path(
                         wire,
@@ -1431,7 +1184,7 @@ def zlevel_hybrid_to_gcode(
                         feed_params,
                         keep_tool_down,
                         keep_down_ratio,
-                        reverse_pattern,
+                        False,
                         cut_climb,
                         sort_mode=0,
                     )
@@ -1549,7 +1302,9 @@ def _generate_wire_path(
         feed_params (dict): Dictionary containing 'horizFeed' and 'vertFeed' values.
         keep_tool_down (bool): If True, minimizes Z-retractions between disconnected paths.
         keep_down_ratio (float): The threshold distance for keeping the tool down.
-        reverse_pattern (bool): If True, reverses the toolpath orientation (e.g., Inside-Out).
+        reverse_pattern (bool): The pattern is cut in reverse order (e.g., Inside-Out), which
+            flips the loop direction for Climb. Wall passes pass False: their direction
+            depends on Cut Mode alone.
         cut_climb (bool): If True, uses Climb milling; otherwise, Conventional.
         sort_mode (int): The native FreeCAD sorting mode (0 = None, 1 = Inside-Out,
             2 = Outside-In, 3 = Nearest Neighbor).

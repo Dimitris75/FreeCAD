@@ -499,6 +499,7 @@ SET(PathPythonBaseGenerator_SRCS
     Path/Base/Generator/threadmilling.py
     Path/Base/Generator/toolchange.py
     Path/Base/Generator/surface_boundary.py
+    Path/Base/Generator/surface_clipper.py
     Path/Base/Generator/surface_common.py
     Path/Base/Generator/surface_dropcutter.py
     Path/Base/Generator/surface_finishing.py

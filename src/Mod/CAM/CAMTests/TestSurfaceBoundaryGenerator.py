@@ -377,7 +377,7 @@ class TestSurfaceBoundary(PathTestUtils.PathTestBase):
           edge) is rejected, a box just outside within reach is kept, a far box
           is rejected.
         """
-        from Path.Base.Generator.surface_boundary import BoundaryClipper
+        from Path.Base.Generator.surface_clipper import BoundaryClipper
 
         clip = BoundaryClipper(self._ring(), reach=2.0, tolerance=0.01)
         self.assertTrue(clip.contains(5, 5))
@@ -403,7 +403,7 @@ class TestSurfaceBoundary(PathTestUtils.PathTestBase):
         - The inside loop stays one closed piece.
         - The crossing loop gives one open piece (its two ends rejoined at the seam).
         """
-        from Path.Base.Generator.surface_boundary import BoundaryClipper
+        from Path.Base.Generator.surface_clipper import BoundaryClipper
 
         clip = BoundaryClipper(self._ring(), tolerance=0.01)
 
@@ -441,7 +441,7 @@ class TestSurfaceBoundary(PathTestUtils.PathTestBase):
         - Segment 1: two pieces, 0..15 and 25..40 (nothing in the hole).
         - Segment 2: two pieces, 5..15 and 25..35 (the hole is never crossed).
         """
-        from Path.Base.Generator.surface_boundary import BoundaryClipper
+        from Path.Base.Generator.surface_clipper import BoundaryClipper
 
         clip = BoundaryClipper(self._ring(), tolerance=0.01)
         spans = lambda pieces: sorted((round(p[0][0], 3), round(p[-1][0], 3)) for p in pieces)

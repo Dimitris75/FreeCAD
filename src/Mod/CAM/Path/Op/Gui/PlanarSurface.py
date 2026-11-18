@@ -62,6 +62,35 @@ PREVIEW_PROPERTIES = (
 )
 
 
+# Widgets handled generically (see _readWidget / _writeWidget): (widget, property)
+EXTRA_FIELDS = (
+    ("cutMode", "CutMode"),
+    ("waterlineOrder", "WaterlineOrder"),
+    # -- Advanced --
+    ("leadInOut", "LeadInOut"),
+    ("leadFeed", "LeadFeed"),
+    ("leadLiftDistance", "LeadLiftDistance"),
+    ("finishSteepWalls", "FinishSteepWalls"),
+    ("steepMaxDraftAngle", "SteepMaxDraftAngle"),
+    ("steepMinDraftAngle", "SteepMinDraftAngle"),
+    ("steepStepDown", "SteepStepDown"),
+    ("steepOrder", "SteepOrder"),
+    ("finishFillets", "FinishFillets"),
+    ("filletMaxRadius", "FilletMaxRadius"),
+    ("filletIncludeConcave", "FilletIncludeConcave"),
+    ("filletStepOver", "FilletStepOver"),
+    ("filletEdgeTrim", "FilletEdgeTrim"),
+    ("volumetricFeedPercent", "VolumetricFeedPercent"),
+)
+
+# Remembers whether the Advanced section was left open
+ADVANCED_PARAM = "PlanarSurfaceAdvancedOpen"
+
+
+def _camParams():
+    return FreeCAD.ParamGet("User parameter:BaseApp/Preferences/Mod/CAM")
+
+
 class TaskPanelBaseGeometryPage(FeatureListPage.FeatureListBaseGeometryPage):
     """Base Geometry page with the Avoid Geometry (every strategy) and Fill
     Holes (Z-Level Hybrid) lists beside Base (see Path.Op.Gui.FeatureListPage)."""
@@ -104,6 +133,7 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
     def initPage(self, obj):
         """initPage(obj) ... initialize the task panel page"""
         self.setTitle("Planar Surface - " + obj.Label)
+        self.form.advancedToggle.setChecked(_camParams().GetBool(ADVANCED_PARAM, False))
         self.updateVisibility()
         self.form.accuracySlider.setPageStep(1)
 
@@ -147,6 +177,7 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         tuples.append(("helixMaxDiameter", "HelixMaxDiameterPercent"))
         tuples.append(("forceInsideOut", "ForceInsideOut"))
         tuples.append(("finishingProfile", "FinishingProfile"))
+        tuples.extend(EXTRA_FIELDS)
         return tuples
 
     def getForm(self):
@@ -160,6 +191,9 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
             ("cutPatternZLevel", "CutPatternZLevel"),
             ("profileEdges", "ProfileEdges"),
             ("adaptivePatternAccuracy", "AdaptiveAccuracy"),
+            ("cutMode", "CutMode"),
+            ("waterlineOrder", "WaterlineOrder"),
+            ("steepOrder", "SteepOrder"),
         ]
         enumTups = PathPlanarSurface.ObjectSurface.propertyEnumerations(dataType="raw")
         PathGuiUtil.populateCombobox(form, enumTups, comboToPropertyMap)
@@ -240,6 +274,36 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
 
         if obj.FinishingProfile != self.form.finishingProfile.isChecked():
             obj.FinishingProfile = self.form.finishingProfile.isChecked()
+
+        # -- Cut mode, Waterline order and Advanced --
+        for name, prop in EXTRA_FIELDS:
+            self._readWidget(obj, getattr(self.form, name), prop)
+
+    def _readWidget(self, obj, widget, prop):
+        """Transfers one widget's value to obj.prop (combo, check box, spin box or input field)."""
+        if widget.inherits("QComboBox"):
+            value = str(widget.currentData())
+        elif widget.inherits("QCheckBox"):
+            value = widget.isChecked()
+        elif widget.inherits("QSpinBox"):
+            value = widget.value()
+        else:
+            PathGuiUtil.updateInputField(obj, prop, widget)
+            return
+        if getattr(obj, prop) != value:
+            setattr(obj, prop, value)
+
+    def _writeWidget(self, obj, widget, prop):
+        """Transfers obj.prop to one widget (see _readWidget)."""
+        value = getattr(obj, prop)
+        if widget.inherits("QComboBox"):
+            self.selectInComboBox(value, widget)
+        elif widget.inherits("QCheckBox"):
+            widget.setChecked(bool(value))
+        elif widget.inherits("QSpinBox"):
+            widget.setValue(int(value))
+        else:
+            widget.setText(value.UserString)
 
     def setFields(self, obj):
         """setFields(obj) ... transfers obj's property values to UI"""
@@ -348,6 +412,10 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         else:
             self.form.finishingProfile.setCheckState(QtCore.Qt.Unchecked)
 
+        # -- Cut mode, Waterline order and Advanced --
+        for name, prop in EXTRA_FIELDS:
+            self._writeWidget(obj, getattr(self.form, name), prop)
+
         # -- Update Visibility --
         self.updateVisibility()
 
@@ -379,6 +447,15 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         signals.append(self.form.keepToolDownThreshold.editingFinished)
         signals.append(self.form.helixMaxRampAngle.editingFinished)
         signals.append(self.form.helixMaxDiameter.editingFinished)
+        # -- Cut mode, Waterline order and Advanced --
+        for name, _prop in EXTRA_FIELDS:
+            widget = getattr(self.form, name)
+            if widget.inherits("QComboBox"):
+                signals.append(widget.currentIndexChanged)
+            elif widget.inherits("QCheckBox"):
+                signals.append(widget.toggled)
+            else:
+                signals.append(widget.editingFinished)
 
         if hasattr(self.form.useStartPoint, "checkStateChanged"):  # Qt version >= 6.7.0
             # -- Performance and Accuracy
@@ -494,6 +571,7 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         self._updateClearingWidgets(strategy, cut_pattern, cut_pattern_zlevel)
         self._updateOptimizationWidgets(strategy)
         self._updateAdaptivePatternWidgets(strategy, cut_pattern_zlevel)
+        self._updateAdvancedWidgets(strategy)
 
     def _updateStrategyWidgets(self, strategy, cut_pattern, cut_pattern_zlevel):
         """Manages widgets in the 'Strategy' group."""
@@ -508,6 +586,10 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
 
         self.form.layerMode.setVisible(is_surface_scan)
         self.form.layerMode_label.setVisible(is_surface_scan)
+
+        is_waterline = strategy == "Waterline"
+        self.form.waterlineOrder.setVisible(is_waterline)
+        self.form.waterlineOrder_label.setVisible(is_waterline)
 
     def _updatePerformanceWidgets(self, strategy, sample_interval):
         """Manages widgets in the 'Performance and Accuracy' group."""
@@ -556,18 +638,22 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         self.form.profileEdges.setVisible(is_surface_scan)
         self.form.profileEdges_label.setVisible(is_surface_scan)
         self.form.boundaryOutline.setVisible(is_surface_scan)
-        self._updateAvoidOverlapWidget()
+        self._updateSelectionWidgets()
 
-    def _updateAvoidOverlapWidget(self):
-        """Avoid geometry overlap only applies with Avoid Geometry selected: grey it out otherwise."""
+    def _updateSelectionWidgets(self):
+        """
+        Greys out settings that need a selection: Avoid geometry overlap without
+        Avoid Geometry, Outline only without Base Geometry.
+        """
         has_avoid = bool(getattr(self.obj, "AvoidGeometry", None))
         self.form.avoidGeometryOverlap.setEnabled(has_avoid)
         self.form.avoidGeometryOverlap_label.setEnabled(has_avoid)
+        self.form.boundaryOutline.setEnabled(bool(getattr(self.obj, "Base", None)))
 
     def updateData(self, obj, prop):
-        """updateData(obj, prop) ... the Avoid list is edited on the Base Geometry page."""
-        if prop == "AvoidGeometry":
-            self._updateAvoidOverlapWidget()
+        """updateData(obj, prop) ... the Base / Avoid lists are edited on the Base Geometry page."""
+        if prop in ("Base", "AvoidGeometry"):
+            self._updateSelectionWidgets()
         if hasattr(self, "boundaryPreview"):
             self.boundaryPreview.updateData(obj, prop)
 
@@ -618,8 +704,50 @@ class TaskPanelOpPage(PathOpGui.TaskPanelPage):
         self.form.cutPatternReversed.setEnabled(not is_adaptive_pattern)
         self.form.useStartPoint.setEnabled(not is_adaptive_pattern)
 
+    def _updateAdvancedWidgets(self, strategy):
+        """Manages the 'Advanced' section, with the same rules as the property editor."""
+        is_surface_scan = strategy == "SurfaceScan"
+        has_leads = is_surface_scan or strategy == "Waterline"
+        finishing = is_surface_scan and self.form.layerMode.currentData() == "Single-pass"
+
+        self.form.leadsGroup.setVisible(has_leads)
+        self.form.finishingGroup.setVisible(finishing)
+        self.form.feedGroup.setVisible(is_surface_scan)
+
+        leads_on = self.form.leadInOut.isChecked()
+        for name in ("leadFeed", "leadLiftDistance"):
+            getattr(self.form, name).setEnabled(leads_on)
+            getattr(self.form, name + "_label").setEnabled(leads_on)
+        # Finishing Passes: each switch's settings only while it is on
+        steep_on = self.form.finishSteepWalls.isChecked()
+        for name in ("steepMaxDraftAngle", "steepMinDraftAngle", "steepStepDown", "steepOrder"):
+            getattr(self.form, name).setVisible(steep_on)
+            getattr(self.form, name + "_label").setVisible(steep_on)
+        fillets_on = self.form.finishFillets.isChecked()
+        for name in ("filletMaxRadius", "filletStepOver", "filletEdgeTrim"):
+            getattr(self.form, name).setVisible(fillets_on)
+            getattr(self.form, name + "_label").setVisible(fillets_on)
+        self.form.filletIncludeConcave.setVisible(fillets_on)
+
+        # Nothing to show (Z-Level): no Advanced section at all
+        has_advanced = has_leads or finishing
+        is_open = self.form.advancedToggle.isChecked()
+        self.form.advancedToggle.setVisible(has_advanced)
+        self.form.advancedContent.setVisible(has_advanced and is_open)
+        self.form.advancedToggle.setArrowType(
+            QtCore.Qt.DownArrow if is_open else QtCore.Qt.RightArrow
+        )
+
+    def _onAdvancedToggled(self, is_open):
+        _camParams().SetBool(ADVANCED_PARAM, is_open)
+        self.updateVisibility()
+
     def registerSignalHandlers(self, obj):
         self.form.strategySelect.currentIndexChanged.connect(self.updateVisibility)
+        self.form.layerMode.currentIndexChanged.connect(self.updateVisibility)
+        self.form.advancedToggle.toggled.connect(self._onAdvancedToggled)
+        for name in ("leadInOut", "finishSteepWalls", "finishFillets"):
+            getattr(self.form, name).toggled.connect(self.updateVisibility)
         self.form.cutPattern.currentIndexChanged.connect(self.updateVisibility)
         self.form.cutPatternZLevel.currentIndexChanged.connect(self.updateVisibility)
         self.form.adaptivePatternAccuracy.currentIndexChanged.connect(self.updateVisibility)

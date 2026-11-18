@@ -41,7 +41,7 @@ else:
     Path.Log.setLevel(Path.Log.Level.INFO, Path.Log.thisModule())
 
 
-from Path.Base.Generator.surface_common import get_ocl
+from Path.Base.Generator.surface_common import contour_record, get_ocl, stack_by_wall
 
 # ---------------------------------------------------------------------------
 # OCL Waterline (push-cutter + Weave)
@@ -345,38 +345,6 @@ def _extend_overlap(pts, overlap):
     return out
 
 
-def _short_tail(pts, distance):
-    """
-    Returns the last ``distance`` mm of a path as a two-point segment.
-
-    The lead arcs only use the direction of the path's last segment, but the
-    lead-out fallback (a straight retreat) goes back to the point before the
-    last. OCL leaves long straight stretches as single segments, so that point
-    can be far away; this short synthetic tail keeps the retreat local while
-    giving the arcs the same direction.
-
-    Args:
-        pts (list): (x, y, z) tuples of the path just cut (at least two).
-        distance (float): Length of the tail along the path (XY), in mm.
-
-    Returns:
-        list: [point distance mm back along the path, last point]. When the
-            path is shorter than distance: [first point, last point].
-    """
-    end = pts[-1]
-    walked = 0.0
-    for a, b in zip(reversed(pts[:-1]), reversed(pts[1:])):
-        seg = math.hypot(b[0] - a[0], b[1] - a[1])
-        if seg <= 1e-9:
-            continue
-        if walked + seg >= distance:
-            t = (distance - walked) / seg
-            back = tuple(b[k] + (a[k] - b[k]) * t for k in range(3))
-            return [back, end]
-        walked += seg
-    return [pts[0], end]
-
-
 def _contour_heights(waterline_data, open_data):
     """
     Returns the Z heights to process, in cutting order.
@@ -455,13 +423,17 @@ def _close_and_orient(loop, tool_xy, cut_climb):
     return pts
 
 
-def _order_contours(waterline_data, open_data, cut_climb):
+def _order_contours(waterline_data, open_data, cut_climb, order="Level", wall_tolerance=0.0):
     """
     Puts every closed loop and open chain in cutting order, ready to cut.
 
-    Heights are processed top-down (see _contour_heights). Within a height,
-    contours are chosen nearest-first from where the previous one ended (see
-    _pop_nearest_contour), so the tool keeps moving to the closest work.
+    Heights are processed top-down (see _contour_heights). "Level" cuts every
+    contour at one height before stepping down; within a height, contours
+    are chosen nearest-first from where the previous one ended (see
+    _pop_nearest_contour). "Wall" groups the contours into one stack per
+    wall or island (surface_common.stack_by_wall) and cuts each stack top to
+    bottom, nearest stack first, so the tool does not jump between islands
+    at every height.
 
     Closed loops get their seam at the point nearest to the tool, their
     closing point and their climb direction (_close_and_orient). Open chains
@@ -472,29 +444,49 @@ def _order_contours(waterline_data, open_data, cut_climb):
         waterline_data (dict): z -> closed loops ((x, y, z) tuples).
         open_data (dict): z -> open chains, or None.
         cut_climb (bool): Climb milling (reversed contours).
+        order (str): "Level" or "Wall".
+        wall_tolerance (float): "Wall" only: largest shift of a contour's
+            bounding box between heights that still counts as the same wall.
 
     Returns:
         list: (points, is_closed) tuples in cutting order.
     """
     open_data = open_data or {}
-    ordered = []
-    tool_xy = None
-
+    levels = []
     for zh in _contour_heights(waterline_data, open_data):
-        remaining = [(list(loop), True) for loop in waterline_data.get(zh, [])]
+        contours = [(list(loop), True) for loop in waterline_data.get(zh, [])]
         for chain in open_data.get(zh, []):
             chain = list(chain)
             if cut_climb:
                 chain.reverse()
-            remaining.append((chain, False))
+            contours.append((chain, False))
+        levels.append(contours)
 
+    ordered = []
+    tool_xy = None
+
+    def emit(pts, closed):
+        nonlocal tool_xy
+        if closed:
+            pts = _close_and_orient(pts, tool_xy, cut_climb)
+        ordered.append((pts, closed))
+        tool_xy = (pts[-1][0], pts[-1][1])
+
+    if order == "Wall":
+        records = [[contour_record(pts, closed) for pts, closed in lvl] for lvl in levels]
+        stacks = stack_by_wall(records, wall_tolerance)
+        while stacks:
+            firsts = [(st[0][0], st[0][1]) for st in stacks]
+            pick = _pop_nearest_contour(firsts, tool_xy)
+            stack = next(st for st in stacks if st[0][0] is pick[0])
+            stacks.remove(stack)
+            for pts, closed, _bb in stack:
+                emit(pts, closed)
+        return ordered
+
+    for remaining in levels:
         while remaining:
-            pts, closed = _pop_nearest_contour(remaining, tool_xy)
-            if closed:
-                pts = _close_and_orient(pts, tool_xy, cut_climb)
-            ordered.append((pts, closed))
-            tool_xy = (pts[-1][0], pts[-1][1])
-
+            emit(*_pop_nearest_contour(remaining, tool_xy))
     return ordered
 
 
@@ -665,13 +657,15 @@ def waterline_to_gcode(
     cut_climb=False,
     open_data=None,
     leads=None,
+    order="Level",
+    wall_tolerance=0.0,
 ):
     """
     Converts waterline contours into a list of Path.Command.
 
     1. Order: every closed loop and open chain is put in cutting order,
-       top-down and nearest-first, with seams and climb direction set
-       (_order_contours).
+       top-down and nearest-first, level by level or wall by wall, with
+       seams and climb direction set (_order_contours).
     2. Write: each contour is reached, optionally entered on a lead-in arc,
        cut, optionally run past its seam, and left on a lead-out arc.
        Smart Retraction: when the next contour starts where this one ends
@@ -700,11 +694,14 @@ def waterline_to_gcode(
             STL allows it (straight plunge / retreat otherwise). Closed loops
             run ``overlap`` mm past their seam before the lead-out, so the
             seam leaves no witness mark.
+        order (str): "Level" (all contours per height) or "Wall" (each wall
+            or island top to bottom), see _order_contours.
+        wall_tolerance (float): "Wall" only, see _order_contours.
 
     Returns:
         list: Path.Command objects.
     """
-    contours = _order_contours(waterline_data, open_data, cut_climb)
+    contours = _order_contours(waterline_data, open_data, cut_climb, order, wall_tolerance)
     attempt_lead = _make_lead_attempt(leads)
     writer = _WaterlineWriter(horiz_feed, vert_feed, horiz_rapid, vert_rapid, safe_z, clearance_z)
 
@@ -741,8 +738,7 @@ def waterline_to_gcode(
 
         # Lead-out arc, unless the next contour starts right here
         if attempt_lead and len(pts) >= 2 and leaving:
-            tail = _short_tail(pts, leads["cutter"].getDiameter() / 2.0)
-            lead_out_cmds, lead_end = attempt_lead(tail, is_lead_in=False)
+            lead_out_cmds, lead_end = attempt_lead(pts, is_lead_in=False)
             if lead_end:
                 writer.add(lead_out_cmds, end=lead_end)
 

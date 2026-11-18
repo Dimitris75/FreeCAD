@@ -88,6 +88,8 @@ class TestSurfacePostprocess(PathTestUtils.PathTestBase):
         - Returns multiple scan lines, corresponding to passes at Z=7, Z=4, and Z=2.
         - The points in each new scan line should have their Z-values clamped to the
           pass-specific depth, preventing gouging.
+        - Over a vertical wall, the passes below the wall top do not start or end
+          on top of the wall (the leads would attach there).
         """
         from Path.Base.Generator.surface_postprocess import apply_multipass
 
@@ -122,6 +124,11 @@ class TestSurfacePostprocess(PathTestUtils.PathTestBase):
             any(abs(z - final_depth) < 0.01 for z in z_values_final_pass),
             "The final pass did not reach the target final_depth.",
         )
+
+        # A pocket with vertical walls: top at Z=10, floor at Z=2
+        pocket = [[(0, 0, 10), (1, 0, 10), (2, 0, 2), (8, 0, 2), (9, 0, 10), (10, 0, 10)]]
+        for line in apply_multipass(pocket, start_depth, final_depth, step_down):
+            self.assertTrue(all(p[2] < start_depth for p in line), f"Wall top kept: {line}")
 
     # -- Path Filtering Tests --
 
@@ -475,13 +482,75 @@ class TestSurfacePostprocess(PathTestUtils.PathTestBase):
         out_cmds, exit_point = _attempt_lead_arc(
             line, safe_pdc, self.cutter, 300.0, 0.0, False, depth_offset
         )
-        self.assertTrue(out_cmds, "Lead-out always has a fallback strategy")
+        self.assertTrue(out_cmds, "An open flat end always has a lead-out")
         self.assertAlmostEqual(
             out_cmds[-1].Parameters["Z"],
             exit_point[2] + depth_offset,
             places=3,
             msg="Lead-out Z must include depth_offset",
         )
+
+    def test34_lead_out_retreat_checked(self):
+        """
+        Tests that the lead-out retreat is only used when it clears the part.
+
+        INPUT:
+        - Function: _attempt_lead_arc() (lead-out), Strategy 4.
+        - A 7.2 mm channel (too narrow for the side arcs of a 6 mm end mill)
+          whose floor ramps up towards -X from X 10. The cut comes down the
+          ramp and ends just past its foot, at X 12; collinear filtering left
+          only its two end points.
+        - A 60 degree ramp, then a 30 degree one.
+
+        EXPECTED OUTPUT:
+        - The old retreat, to line[-2] and a tool radius up, cuts into both
+          ramps.
+        - 60 degrees: the retreat (a tool radius back along the cut, a tool
+          radius up) would cut into the ramp too: no lead-out, the caller
+          retracts straight up.
+        - 30 degrees: the retreat is clear and used; it ends 3 mm back along
+          the cut and 3 mm up.
+        """
+        import math
+        import FreeCAD
+        from Path.Base.Generator.surface_mesh import _shape_to_stl
+        from Path.Base.Generator.surface_postprocess import (
+            _attempt_lead_arc,
+            _make_safe_pdc,
+            _move_clear,
+            _probe_surface_z,
+        )
+
+        V = FreeCAD.Vector
+        for angle, expect_retreat in ((60.0, False), (30.0, True)):
+            top = 10 - 30 / math.tan(math.radians(angle))
+            profile = Part.Face(
+                Part.makePolygon(
+                    [V(45, 0, 30), V(45, 0, 0), V(10, 0, 0), V(top, 0, 30), V(45, 0, 30)]
+                )
+            )
+            channel = profile.extrude(V(0, 7.2, 0))
+            channel.translate(V(0, -3.6, 0))
+            block = Part.makeBox(45, 40, 20, V(0, -20, 0)).cut(channel)
+            safe_pdc = _make_safe_pdc(_shape_to_stl(block, 0.05, 0.25), self.cutter, 0.0, 0.25)
+
+            line = [(x, 0.0, _probe_surface_z((x, 0.0), 40.0, safe_pdc)) for x in (2.0, 12.0)]
+            old = (line[-2][0], line[-2][1], line[-1][2] + 3.0)
+            self.assertFalse(_move_clear(line[-1], old, safe_pdc), f"{angle}: old retreat")
+
+            cmds, end = _attempt_lead_arc(line, safe_pdc, self.cutter, 300.0, 0.0, False, 0.0)
+            if not expect_retreat:
+                self.assertEqual((cmds, end), ([], None), f"{angle}: no lead-out")
+                continue
+            self.assertEqual(len(cmds), 1, f"{angle}: one retreat move")
+            self.assertAlmostEqual(end[0], 9.0, places=6)
+            self.assertAlmostEqual(end[2], line[-1][2] + 3.0, places=6)
+            # Clear all along, checked here with the single-point probe
+            for k in range(11):
+                t = k / 10
+                x = line[-1][0] + (end[0] - line[-1][0]) * t
+                z = line[-1][2] + (end[2] - line[-1][2]) * t
+                self.assertGreaterEqual(z, _probe_surface_z((x, 0.0), 40.0, safe_pdc) - 1e-3)
 
     # -- Volumetric Feed Tests --
 

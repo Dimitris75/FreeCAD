@@ -59,6 +59,7 @@ import Path.Base.Util as PathUtil
 import Path.Op.Base as PathOp
 from Path.Base.Generator import (
     surface_boundary,
+    surface_clipper,
     surface_common,
     surface_dropcutter,
     surface_finishing,
@@ -106,6 +107,12 @@ class ObjectSurface(PathOp.ObjectOp):
     """
 
     # Accuracy level presets for Speed vs Accuracy control
+    # Projected points further apart than this many Sample Intervals (in XY) start a new
+    # scan line. Points along one line are at most one interval apart, so anything joined
+    # is a straight move barely longer than the sampling already allows: a wider gap (an
+    # Avoid zone, a slot, the next pass) is never bridged without being probed.
+    SCAN_LINE_GAP = 1.5
+
     ACCURACY_PRESETS: ClassVar[dict[int, dict[str, Any]]] = {
         1: {  # Fastest - Coarse, for quick prototyping/verification
             "name": "Fastest",
@@ -352,7 +359,8 @@ class ObjectSurface(PathOp.ObjectOp):
                 QT_TRANSLATE_NOOP(
                     "App::Property",
                     "Surface Scan: limit the scan by the outer outline of the Base Geometry faces "
-                    "only, machining over their holes. Off: holes in the selected faces are kept out.",
+                    "only, machining over their holes. Off: holes in the selected faces are kept out. "
+                    "Needs a Base Geometry selection.",
                 ),
             ),
             # -- Clearing Options --
@@ -411,12 +419,26 @@ class ObjectSurface(PathOp.ObjectOp):
                 ),
             ),
             (
+                "App::PropertyEnumeration",
+                "WaterlineOrder",
+                "Clearing Options",
+                QT_TRANSLATE_NOOP(
+                    "App::Property",
+                    "Order of the Waterline contours. Level: all walls and islands at one "
+                    "height before stepping down. Wall: each wall or island top to bottom "
+                    "before moving to the next, with fewer moves between them.",
+                ),
+            ),
+            (
                 "App::PropertyDistance",
                 "DepthOffset",
                 "Clearing Options",
                 QT_TRANSLATE_NOOP(
                     "App::Property",
-                    "Set the Z-axis depth offset from the target surface.",
+                    "Shifts every move up (positive) or down (negative) in Z. A Z shift, not a "
+                    "stock allowance: on steep walls the material left measured square to the "
+                    "wall tends to zero. Negative values cut into the model (engraving, "
+                    "texturing).",
                 ),
             ),
             (
@@ -554,7 +576,8 @@ class ObjectSurface(PathOp.ObjectOp):
                 "LeadIn/LeadOut",
                 QT_TRANSLATE_NOOP(
                     "App::Property",
-                    "Vertical lift distance applied to the lead-in / lead-out.",
+                    "Height of the lead-in / lead-out arc's free end above the cut. Above zero "
+                    "the arcs descend onto (or rise off) the cut as helical moves.",
                 ),
             ),
             # -- Volumetric Feed Rate --
@@ -819,6 +842,10 @@ class ObjectSurface(PathOp.ObjectOp):
                 (translate("CAM_PlanarSurface", "Level"), "Level"),
                 (translate("CAM_PlanarSurface", "Wall"), "Wall"),
             ],
+            "WaterlineOrder": [
+                (translate("CAM_PlanarSurface", "Level"), "Level"),
+                (translate("CAM_PlanarSurface", "Wall"), "Wall"),
+            ],
             "AdaptiveAccuracy": [
                 (translate("CAM_PlanarSurface", "Very Low"), "0.15"),
                 (translate("CAM_PlanarSurface", "Low"), "0.1"),
@@ -877,7 +904,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "SamplingAccuracy": "4",
             "LeadInOut": False,
             "LeadFeed": 75,
-            "VolumetricFeedPercent": 25,
+            "VolumetricFeedPercent": 0,
             "LeadLiftDistance": 1.0,
             "AdaptiveAccuracy": "0.1",
             "LiftDistance": 0.05,
@@ -887,10 +914,11 @@ class ObjectSurface(PathOp.ObjectOp):
             "HelixMaxRampAngle": 3.00,
             "HelixMaxDiameterPercent": 75,
             "FinishSteepWalls": False,
-            "SteepMaxDraftAngle": 18.0,
+            "SteepMaxDraftAngle": 45.0,
             "SteepMinDraftAngle": 2.0,
             "SteepStepDown": 0.0,
             "SteepOrder": "Level",
+            "WaterlineOrder": "Level",
             "FinishFillets": False,
             "FilletMaxRadius": 10.0,
             "FilletIncludeConcave": False,
@@ -937,7 +965,10 @@ class ObjectSurface(PathOp.ObjectOp):
         obj.setEditorMode("CutPattern", A)
         obj.setEditorMode("LayerMode", A)
         obj.setEditorMode("ProfileEdges", A)
-        obj.setEditorMode("BoundaryOutline", A)
+        # Outline only limits a Base Geometry selection: read-only while there is
+        # none (the model outline already machines over its holes)
+        has_base = bool(getattr(obj, "Base", None))
+        obj.setEditorMode("BoundaryOutline", A if (A == hide or has_base) else read_only)
         # Smart Lead-In/Lead-Out: Surface Scan and Waterline
         leads_mode = show if (is_surface_scan or is_waterline) else hide
         obj.setEditorMode("LeadInOut", leads_mode)
@@ -1006,6 +1037,7 @@ class ObjectSurface(PathOp.ObjectOp):
         obj.setEditorMode("CutMode", show)
         obj.setEditorMode("DepthOffset", show)
         obj.setEditorMode("CutPatternReversed", hide if is_waterline else show)
+        obj.setEditorMode("WaterlineOrder", show if is_waterline else hide)
         obj.setEditorMode("KeepToolDown", show if not is_waterline else hide)
         obj.setEditorMode("KeepToolDownRatio", show if not is_waterline else hide)
         # Waterline: Boundary Adjustment applies to its Base / Avoid boundary
@@ -1031,6 +1063,7 @@ class ObjectSurface(PathOp.ObjectOp):
             "CutPattern",
             "CutPatternZLevel",
             "AdaptiveSampling",
+            "Base",
             "AvoidGeometry",
             "LayerMode",
             "FinishSteepWalls",
@@ -1247,7 +1280,7 @@ class ObjectSurface(PathOp.ObjectOp):
 
         # Limit the Finishing Passes settings
         if not 2.0 < obj.SteepMaxDraftAngle.Value < 60.0:
-            obj.SteepMaxDraftAngle = 18.0
+            obj.SteepMaxDraftAngle = 45.0
             Path.Log.error("Steep Max Draft Angle must be between 2 and 60 degrees.")
         if not 2.0 <= obj.SteepMinDraftAngle.Value < obj.SteepMaxDraftAngle.Value:
             obj.SteepMinDraftAngle = 2.0
@@ -1391,6 +1424,8 @@ class ObjectSurface(PathOp.ObjectOp):
         edge_height = float(getattr(tool, "CuttingEdgeHeight", 0.0))
         edge_angle = float(getattr(tool, "CuttingEdgeAngle", 0.0))
         length_offset = float(getattr(tool, "LengthOffset", 0.0))
+        taper_angle = float(getattr(tool, "TaperAngle", 0.0))
+        taper_diameter = float(getattr(tool, "TaperDiameter", 0.0))
 
         Path.Log.debug(
             f"Surface tool: type={tool_type}, diameter={diameter}, edge_height={edge_height}, "
@@ -1405,6 +1440,8 @@ class ObjectSurface(PathOp.ObjectOp):
             "edge_height": edge_height,
             "edge_angle": edge_angle,
             "length_offset": length_offset,
+            "taper_angle": taper_angle,
+            "taper_diameter": taper_diameter,
         }
 
     def _generate_scan_lines(self, obj, tool_diam, bb, boundary_face, finishing_lines=()):
@@ -1507,7 +1544,7 @@ class ObjectSurface(PathOp.ObjectOp):
             obj.LinearDeflection.Value, self.ACCURACY_PRESETS[5]
         )
         step_over = tool_diam * (obj.StepOver / 100.0)
-        cut_climb = (obj.CutMode == "Climb") != obj.CutPatternReversed
+        cut_climb = obj.CutMode == "Climb"
         lines = []
         if steep_faces:
             lines += surface_finishing.generate_steep_scan_lines(
@@ -1567,7 +1604,9 @@ class ObjectSurface(PathOp.ObjectOp):
                 )
 
         # Reconstruct the results
-        scan_lines = surface_pattern.reconstruct_scan_lines(results_flat, sample_interval * 2.5)
+        scan_lines = surface_pattern.reconstruct_scan_lines(
+            results_flat, sample_interval * self.SCAN_LINE_GAP
+        )
 
         return scan_lines
 
@@ -1788,6 +1827,8 @@ class ObjectSurface(PathOp.ObjectOp):
             cut_climb=cut_climb,
             open_data=open_data,
             leads=leads,
+            order=getattr(obj, "WaterlineOrder", "Level"),
+            wall_tolerance=3.0 * step_down + 2.0 * sample_interval,
         )
 
         return cmds
@@ -1890,7 +1931,7 @@ class ObjectSurface(PathOp.ObjectOp):
         # 3. Fill selected holes (own list, independent of Base Geometry)
         fill_prop = self.featureShapes(obj, "FillHoleFaces")
         if fill_prop:
-            fill_holes_masks = surface_zlevel.fill_selected(fill_prop)
+            fill_holes_masks = surface_boundary.fill_selected(fill_prop)
 
         # 4. Boundary preparation
         buffer = tool_diam + obj.BoundaryAdjustment.Value
@@ -2278,7 +2319,7 @@ class ObjectSurface(PathOp.ObjectOp):
         if not fill_prop:
             return []
         caps = []
-        for height, cap in surface_zlevel.fill_selected(fill_prop):
+        for height, cap in surface_boundary.fill_selected(fill_prop):
             lifted = cap.copy()
             lifted.translate(FreeCAD.Vector(0, 0, height - cap.BoundBox.ZMin))
             caps.append(lifted)
@@ -2389,23 +2430,58 @@ class ObjectSurface(PathOp.ObjectOp):
             return None
         # Steep-wall and fillet passes reach outside boundary_face
         region = boundaries.reach_region
-        return surface_boundary.BoundaryClipper(
+        return surface_clipper.BoundaryClipper(
             boundaries.boundary_face if region is None else region,
             reach=tool_radius + max(stl_filter_adj, 0.0) + 1.0,
             tolerance=obj.LinearDeflection.Value,
         )
 
+    def _warnCutDepth(self, obj, cmds, edge_height):
+        """
+        Warns when the cut goes further below Start Depth than the tool's
+        cutting edge is long: the OCL cutter is only the fluted part, so in a
+        deep cavity the shank or holder can still rub on, or hit, the walls.
+        Nothing is checked when the tool has no cutting edge height.
+        """
+        if edge_height <= 0:
+            return
+        cut_z = [
+            c.Parameters["Z"] for c in cmds if c.Name in ("G1", "G2", "G3") and "Z" in c.Parameters
+        ]
+        if not cut_z:
+            return
+        depth = obj.StartDepth.Value - min(cut_z)
+        if depth > edge_height + 1e-6:
+            Path.Log.warning(
+                translate(
+                    "CAM_PlanarSurface",
+                    "The cut goes {:.2f} mm below Start Depth, deeper than the tool's cutting "
+                    "edge height ({:.2f} mm). The shank or holder may hit the part: check the "
+                    "tool's reach.",
+                ).format(depth, edge_height)
+            )
+
     def _makeCutter(self, obj, tool_params):
         """
-        The OCL cutter for the Tool Controller's tool, or None (logged).
+        The OCL cutter for the Tool Controller's tool.
 
-        Waterline: the cutter's shaft spans the whole operation depth (plus its
-        cutting edge), so it cannot pass through vertical walls that mesh
-        optimization removed.
+        Waterline: the cutter's shaft must span the whole operation depth, or
+        the contours pass through the vertical walls that mesh optimization
+        and C++ tessellation leave out of the mesh. It is extended by the
+        operation depth (plus its cutting edge); a cutter OCL still builds
+        shorter (it fixes the tapered ball-nose's length itself) needs the
+        full mesh instead.
+
+        Returns:
+            tuple: (cutter, needs_full_mesh). cutter is None when it cannot be
+                built (logged); needs_full_mesh is True (with a warning) for a
+                Waterline cutter shorter than the operation depth: the caller
+                turns mesh optimization and C++ tessellation off.
         """
+        is_waterline = obj.Strategy == "Waterline"
+        op_depth = obj.StartDepth.Value - obj.FinalDepth.Value
         length_offset = tool_params["length_offset"]
-        if obj.Strategy == "Waterline":
-            op_depth = obj.StartDepth.Value - obj.FinalDepth.Value
+        if is_waterline:
             length_offset = op_depth + tool_params["edge_height"]
 
         cutter = surface_common.make_ocl_cutter(
@@ -2416,17 +2492,29 @@ class ObjectSurface(PathOp.ObjectOp):
             flat_radius=tool_params["flat_radius"],
             edge_angle=tool_params["edge_angle"],
             length_offset=length_offset,
+            taper_angle=tool_params.get("taper_angle", 0.0),
+            taper_diameter=tool_params.get("taper_diameter", 0.0),
         )
         if cutter is None:
             Path.Log.error(
                 translate("CAM_PlanarSurface", "Error creating OCL cutter from tool parameters.")
             )
-            return None
+            return None, False
         Path.Log.debug(
             f"Surface OCL cutter created: getDiameter()={cutter.getDiameter()}, "
             f"StepOver={obj.StepOver}%"
         )
-        return cutter
+
+        needs_full_mesh = is_waterline and cutter.getLength() < op_depth
+        if needs_full_mesh:
+            Path.Log.warning(
+                translate(
+                    "CAM_PlanarSurface",
+                    "The cutter model ({:.2f} mm) is shorter than the operation depth ({:.2f} mm): "
+                    "mesh optimization and C++ tessellation are turned off for this run.",
+                ).format(cutter.getLength(), op_depth)
+            )
+        return cutter, needs_full_mesh
 
     def _buildMeshes(self, obj, geometry, boundaries, boundary_clipper, mesh_settings, tool_diam):
         """
@@ -2523,14 +2611,16 @@ class ObjectSurface(PathOp.ObjectOp):
         """
         Generates the Planar Surface toolpath.
 
-        1. Setup: the Job, property limits, the tool, and what the strategy
-           needs from the OCL mesh (_meshSettings).
+        1. Setup: the Job, property limits, the tool, what the strategy needs
+           from the OCL mesh (_meshSettings), and for the mesh strategies the
+           OCL cutter (_makeCutter; a Waterline cutter shorter than the
+           operation depth turns mesh optimization off).
         2. Geometry: the model bodies as one working shape (_prepare_geometry).
         3. Boundaries: the Base / Avoid selection, the outline and the region
            the tool centre may visit (buildBoundaries), and the cutter's reach
            from it (_boundaryClipper).
-        4. Mesh strategies (Surface Scan, Waterline): the OCL cutter
-           (_makeCutter) and the primary and safe meshes (_buildMeshes).
+        4. Mesh strategies (Surface Scan, Waterline): the primary and safe
+           meshes (_buildMeshes).
         5. G-code: the header (_appendHeader), then the strategy's commands
            (_executeSurfaceScan, _executeWaterline, _executeZLevelHybrid).
 
@@ -2550,9 +2640,20 @@ class ObjectSurface(PathOp.ObjectOp):
         tool_diam = tool_params.get("diameter", 0.0)
         tool_radius = tool_diam / 2.0
         mesh_settings = self._meshSettings(obj, tool_radius)
+        optimize = getattr(obj, "OptimizeMeshConversion", True)
+
+        # OCL cutter, before the geometry: it decides whether the full mesh is needed
+        cutter = None
+        if mesh_settings.needs_stl:
+            cutter, needs_full_mesh = self._makeCutter(obj, tool_params)
+            if cutter is None:
+                return
+            if needs_full_mesh:
+                optimize = False
+                mesh_settings = mesh_settings._replace(use_cpp_tessellation=False)
 
         # 2. Geometry
-        geometry = self._prepare_geometry(getattr(obj, "OptimizeMeshConversion", True))
+        geometry = self._prepare_geometry(optimize)
         if geometry is None:
             return
         model_shape, _, optimized_shape, _, is_triangulated = geometry
@@ -2572,12 +2673,9 @@ class ObjectSurface(PathOp.ObjectOp):
             obj, boundaries, tool_radius, mesh_settings.stl_filter_adj
         )
 
-        # 4. OCL cutter and meshes
-        cutter = stl = safe_stl = None
+        # 4. Meshes
+        stl = safe_stl = None
         if mesh_settings.needs_stl:
-            cutter = self._makeCutter(obj, tool_params)
-            if cutter is None:
-                return
             tool_diam = cutter.getDiameter()
             stl, safe_stl = self._buildMeshes(
                 obj, geometry, boundaries, boundary_clipper, mesh_settings, tool_diam
@@ -2586,6 +2684,13 @@ class ObjectSurface(PathOp.ObjectOp):
                 return
 
         # 5. G-code
+        if obj.DepthOffset.Value < 0:
+            Path.Log.warning(
+                translate(
+                    "CAM_PlanarSurface",
+                    "Depth Offset is negative: every pass cuts {:.3f} mm into the model.",
+                ).format(-obj.DepthOffset.Value)
+            )
         self._appendHeader(obj, tool_params)
         cmds = []
         if strategy == "SurfaceScan":
@@ -2620,6 +2725,7 @@ class ObjectSurface(PathOp.ObjectOp):
                 obj, job, model_shape, boundaries.boundary_face, tool_params, is_triangulated
             )
         self.commandlist.extend(cmds)
+        self._warnCutDepth(obj, cmds, tool_params["edge_height"])
 
         elapsed = time.strftime("%Hh:%Mm:%Ss", time.gmtime(time.time() - start_time))
         Path.Log.info(f"Surface operation completed in {elapsed}")

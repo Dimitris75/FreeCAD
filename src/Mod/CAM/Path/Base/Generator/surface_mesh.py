@@ -82,20 +82,23 @@ def _apply_mesh_simplification(vertices, facets, simplification_level, silence):
         Path.Log.debug("surface_mesh: Mesh simplification disabled or level 1 (no reduction)")
         return vertices, facets
 
-    # Map simplification level (1-7) to reduction ratios
-    reduction = 0.75  # 75% High reduction ratio at low angle to terget only flat surfaces
+    # Map simplification level (1-7) to the decimation feature angle.
+    # Flat regions reduce fully at any angle; the angle only decides how much
+    # of a gently curved surface gets merged. Up to 0.1 deg stays well inside
+    # the mesh deflection; 6-7 may exceed it on large-radius surfaces.
+    reduction = 0.75
     angle_level = {
-        1: 0.0,  # No reduction (Highest accuracy)
-        2: 1.0,  # 1 Degree (Extremely safe: merges ONLY perfectly flat surfaces)
-        3: 2.0,  # 2 Degrees
-        4: 3.0,  # 3 Degrees
-        5: 4.0,  # 4 Degrees
-        6: 5.0,  # 5 Degrees
-        7: 6.0,  # 6 Degrees (Fastest processing, might flatten very shallow curves)
+        1: 0.0,  # Off
+        2: 0.02,
+        3: 0.05,
+        4: 0.08,
+        5: 0.1,  # Safe ceiling for curved surfaces
+        6: 0.15,
+        7: 0.25,  # Fastest; may flatten very shallow curves
     }
 
     target_angle = angle_level.get(simplification_level, 0.0)
-    if target_angle < 1.0:
+    if target_angle <= 0.0:
         return vertices, facets
 
     start_time = time.perf_counter()
@@ -312,7 +315,7 @@ def _shape_to_stl(
     if _HAS_CPP and use_cpp_tessellation:
         try:
             verts, faces = _shape_to_stl_cpp(shape, linear_deflection, angular_deflection)
-        except RuntimeError as e:
+        except Exception as e:
             Path.Log.warning(
                 f"High-speed mesh generation failed. Falling back to the slower standard method. (Error: {e})"
             )
@@ -525,7 +528,7 @@ def _model_optimization(
             it (e.g. reused from boundary-face construction), to avoid re-deriving
             FreeCAD's freshly-built face wrappers again here. Falls back to
             shape.Faces if not provided.
-        reach (surface_boundary.BoundaryClipper, optional): The area the cutter
+        reach (surface_clipper.BoundaryClipper, optional): The area the cutter
             can reach, e.g. a Custom boundary grown by the tool radius. When
             given, faces whose bounds miss it are dropped, with or without a
             face selection, and it replaces the selection-based clip box.
@@ -593,7 +596,8 @@ def _model_optimization(
             )
             filtered.append(face)
 
-    # Nothing filtered, return original
+    # Every face rejected: keep the whole model. An empty mesh would abort
+    # OpenCamLib, and extra faces only cost time (the cutter rides over them).
     if not filtered:
         return shape
 
@@ -603,7 +607,7 @@ def _model_optimization(
         f"(below final depth or outside boundary)."
     )
 
-    # All filtered! Return original
+    # Nothing rejected: return the original
     if len(filtered) == len(faces):
         return shape
 
@@ -648,7 +652,8 @@ def _make_safe_stl(
         use_cpp_tessellation (bool): See _shape_to_stl.
 
     Returns:
-        ocl.STLSurf: The safety mesh, or None on failure (logged).
+        ocl.STLSurf: The safety mesh, or None on failure (logged). An Avoid lid
+            that cannot be built is left out, with an error.
     """
     from . import surface_common
 
@@ -667,7 +672,10 @@ def _make_safe_stl(
             lid.translate(FreeCAD.Vector(0, 0, start_depth + 0.1))
             extras.append(lid)
         except Exception as e:
-            Path.Log.error(f"Generating avoid zones for avoided faces failed: {e}")
+            Path.Log.error(
+                f"Could not build the Avoid Geometry lid of the safety mesh: {e}; "
+                "links and leads may cross the avoided area."
+            )
 
     try:
         extra_stl = _shape_to_stl(
@@ -741,13 +749,14 @@ def generate_stl(
             already has it (e.g. reused from boundary-face construction), to avoid
             re-deriving FreeCAD's freshly-built face wrappers again here.
         use_cpp_tessellation (bool): Temporary Flag to disable C++ tessellation for 3+2 axis on Waterline Op
-        reach (surface_boundary.BoundaryClipper, optional): The area the cutter
+        reach (surface_clipper.BoundaryClipper, optional): The area the cutter
             can reach; faces outside it are left out of the mesh (see
             _model_optimization).
 
     Returns:
         tuple: (stl, safe_stl), where stl is the primary mesh and safe_stl is the
-               collision mesh (stl itself if generation failed or wasn't needed).
+               collision mesh (stl itself when it isn't needed, and for Mesh
+               base objects). (None, None) when either one is needed and fails.
     """
     stl = safe_stl = clipped_shape = optimized_shape = None
 
@@ -845,7 +854,8 @@ def generate_stl(
                 use_cpp_tessellation=use_cpp_tessellation,
             )
 
-        if safe_stl is None:
-            safe_stl = stl
-
-        return stl, safe_stl
+        if not needs_safe_stl:
+            return stl, stl
+        # A required safety mesh is never replaced by the plain one: links and
+        # leads would no longer see the floor or the Avoid lids
+        return (stl, safe_stl) if safe_stl is not None else (None, None)
